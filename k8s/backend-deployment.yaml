@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: i18n-center-backend
+  labels:
+    app: i18n-center-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: i18n-center-backend
+  template:
+    metadata:
+      labels:
+        app: i18n-center-backend
+    spec:
+      containers:
+      - name: backend
+        image: gcr.io/PROJECT_ID/i18n-center-backend:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: i18n-center-secrets
+              key: db-host
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: i18n-center-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: i18n-center-secrets
+              key: db-password
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: i18n-center-secrets
+              key: db-name
+        - name: DB_SSLMODE
+          value: "require"
+        - name: REDIS_HOST
+          value: "redis-service"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: i18n-center-secrets
+              key: jwt-secret
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: i18n-center-secrets
+              key: openai-api-key
+              optional: true
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: i18n-center-backend
+spec:
+  selector:
+    app: i18n-center-backend
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+  type: LoadBalancer
+

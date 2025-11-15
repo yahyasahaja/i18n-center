@@ -1,0 +1,682 @@
+basePath: /api
+definitions:
+  handlers.ApplicationRequest:
+    properties:
+      code:
+        description: Unique identifier
+        type: string
+      description:
+        type: string
+      enabled_languages:
+        items:
+          type: string
+        type: array
+      name:
+        type: string
+      openai_key:
+        description: Accept from frontend
+        type: string
+    required:
+    - code
+    - name
+    type: object
+  handlers.BackfillRequest:
+    properties:
+      source_locale:
+        type: string
+      stage:
+        type: string
+      target_locales:
+        items:
+          type: string
+        type: array
+    required:
+    - source_locale
+    - stage
+    - target_locales
+    type: object
+  handlers.ImportRequest:
+    properties:
+      data:
+        additionalProperties: true
+        type: object
+    required:
+    - data
+    type: object
+  handlers.LoginRequest:
+    properties:
+      password:
+        type: string
+      username:
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  handlers.LoginResponse:
+    properties:
+      token:
+        type: string
+      user:
+        $ref: '#/definitions/models.User'
+    type: object
+  handlers.SaveTranslationRequest:
+    properties:
+      data:
+        $ref: '#/definitions/models.JSONB'
+      locale:
+        type: string
+      stage:
+        type: string
+    required:
+    - data
+    - locale
+    - stage
+    type: object
+  models.Application:
+    properties:
+      code:
+        description: Unique identifier for API access
+        type: string
+      created_at:
+        type: string
+      description:
+        type: string
+      enabled_languages:
+        items:
+          type: string
+        type: array
+      has_openai_key:
+        description: Computed field
+        type: boolean
+      id:
+        type: string
+      name:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  models.Component:
+    properties:
+      application:
+        $ref: '#/definitions/models.Application'
+      application_id:
+        type: string
+      code:
+        description: Unique identifier for API access
+        type: string
+      created_at:
+        type: string
+      default_locale:
+        type: string
+      description:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+      structure:
+        allOf:
+        - $ref: '#/definitions/models.JSONB'
+        description: The JSON structure template
+      updated_at:
+        type: string
+    type: object
+  models.DeploymentStage:
+    enum:
+    - draft
+    - staging
+    - production
+    type: string
+    x-enum-varnames:
+    - StageDraft
+    - StageStaging
+    - StageProduction
+  models.JSONB:
+    additionalProperties: true
+    type: object
+  models.TranslationVersion:
+    properties:
+      component:
+        $ref: '#/definitions/models.Component'
+      component_id:
+        type: string
+      created_at:
+        type: string
+      data:
+        allOf:
+        - $ref: '#/definitions/models.JSONB'
+        description: The translation data
+      id:
+        type: string
+      is_active:
+        type: boolean
+      locale:
+        type: string
+      stage:
+        $ref: '#/definitions/models.DeploymentStage'
+      updated_at:
+        type: string
+      version:
+        description: 1 = before save, 2 = after save
+        type: integer
+    type: object
+  models.User:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: string
+      is_active:
+        type: boolean
+      role:
+        $ref: '#/definitions/models.UserRole'
+      updated_at:
+        type: string
+      username:
+        type: string
+    type: object
+  models.UserRole:
+    enum:
+    - super_admin
+    - operator
+    - user_manager
+    type: string
+    x-enum-varnames:
+    - RoleSuperAdmin
+    - RoleOperator
+    - RoleUserManager
+host: localhost:8080
+info:
+  contact:
+    email: support@swagger.io
+    name: API Support
+    url: http://www.swagger.io/support
+  description: Centralized i18n management service API
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: i18n Center API
+  version: "1.0"
+paths:
+  /applications:
+    get:
+      consumes:
+      - application/json
+      description: Get all applications
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.Application'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List applications
+      tags:
+      - applications
+    post:
+      consumes:
+      - application/json
+      description: Create a new application
+      parameters:
+      - description: Application data
+        in: body
+        name: application
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.ApplicationRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.Application'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create application
+      tags:
+      - applications
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate user and get JWT token
+      parameters:
+      - description: Login credentials
+        in: body
+        name: credentials
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.LoginResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Login
+      tags:
+      - auth
+  /auth/me:
+    get:
+      consumes:
+      - application/json
+      description: Get information about the currently authenticated user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.User'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get current user
+      tags:
+      - auth
+  /components:
+    get:
+      consumes:
+      - application/json
+      description: Get all components, optionally filtered by application
+      parameters:
+      - description: Filter by application ID
+        in: query
+        name: application_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.Component'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List components
+      tags:
+      - components
+  /components/{id}/export:
+    get:
+      consumes:
+      - application/json
+      description: Export translation data for a component as JSON file
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Locale (optional, exports all if not specified)
+        in: query
+        name: locale
+        type: string
+      - description: 'Stage (default: production)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export component
+      tags:
+      - export
+  /components/{id}/import:
+    post:
+      consumes:
+      - application/json
+      description: Import translation data from JSON for a component
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Locale
+        in: query
+        name: locale
+        required: true
+        type: string
+      - description: 'Stage (default: draft)'
+        in: query
+        name: stage
+        type: string
+      - description: Import data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.ImportRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.TranslationVersion'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Import component
+      tags:
+      - import
+  /components/{id}/translations:
+    get:
+      consumes:
+      - application/json
+      description: Get translation data for a component by locale and stage
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Locale (default: en)'
+        in: query
+        name: locale
+        type: string
+      - description: 'Stage (default: production)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get translation
+      tags:
+      - translations
+    post:
+      consumes:
+      - application/json
+      description: Save translation data for a component
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Translation data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.SaveTranslationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.TranslationVersion'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Save translation
+      tags:
+      - translations
+  /components/{id}/translations/backfill:
+    post:
+      consumes:
+      - application/json
+      description: Automatically translate and fill missing locales for a component
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Backfill request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.BackfillRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.TranslationVersion'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Backfill translations
+      tags:
+      - translations
+  /components/{id}/translations/compare:
+    get:
+      consumes:
+      - application/json
+      description: Get version 1 (before save) and version 2 (after save) for comparison
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Locale
+        in: query
+        name: locale
+        required: true
+        type: string
+      - description: 'Stage (default: draft)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Compare versions
+      tags:
+      - translations
+  /translations/bulk:
+    get:
+      consumes:
+      - application/json
+      description: Get translations for multiple components at once. Uses Redis cache
+        efficiently - checks cache first, then database for missing ones. Can use
+        either component_ids or component_codes.
+      parameters:
+      - description: Comma-separated component IDs (UUIDs)
+        in: query
+        name: component_ids
+        type: string
+      - description: Comma-separated component codes
+        in: query
+        name: component_codes
+        type: string
+      - description: 'Locale (default: en)'
+        in: query
+        name: locale
+        type: string
+      - description: 'Stage (default: production)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Map of component_id/code -> translation data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get multiple translations
+      tags:
+      - translations
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer" followed by a space and JWT token.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

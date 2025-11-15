@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+dist/
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Next.js build output
+frontend/.next/
+frontend/out/
+frontend/.next/
+
+# Go binaries
+backend/i18n-center
+backend/*.exe
+backend/*.test
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Temporary files
+tmp/
+temp/
+
+# Air (hot reload)
+backend/tmp/
+backend/build-errors.log
+

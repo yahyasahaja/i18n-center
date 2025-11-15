@@ -1,0 +1,9 @@
+*.md
+.git
+.gitignore
+.env
+.env.local
+coverage.out
+*.test.go
+*_test.go
+
