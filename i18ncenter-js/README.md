@@ -35,7 +35,69 @@ async function MyComponent() {
 }
 ```
 
-### Next.js Integration (Recommended)
+### React Hook Integration (Recommended for Client Components)
+
+#### Using `useTranslation` Hook
+
+```tsx
+// app/product/[id]/page.tsx
+import { GetServerSideProps } from 'next';
+import { I18nCenterClient, withTranslations, TranslationProvider, useTranslation } from 'i18ncenter-js';
+
+const client = new I18nCenterClient({
+  apiUrl: process.env.I18N_CENTER_API_URL!,
+  apiToken: process.env.I18N_CENTER_API_TOKEN,
+});
+
+export const getServerSideProps = withTranslations(
+  {
+    client,
+    applicationCode: 'my_app',
+    componentCodes: ['pdp_form', 'checkout'],
+  },
+  async (context) => {
+    return { props: {} };
+  }
+);
+
+// Page component
+function ProductPage({ __i18n }: { __i18n: any }) {
+  return (
+    <TranslationProvider
+      translations={__i18n.translations}
+      applicationCode={__i18n.applicationCode}
+      locale={__i18n.locale}
+      stage={__i18n.stage}
+      client={client} // Optional: for client-side fetching
+      componentCodes={['pdp_form', 'checkout']}
+    >
+      <ProductContent />
+    </TranslationProvider>
+  );
+}
+
+// Component using translations
+function ProductContent() {
+  const { t } = useTranslation();
+
+  return (
+    <div>
+      <h1>{t('pdp_form.title')}</h1>
+      <p>{t('pdp_form.description', { variables: { name: 'John' } })}</p>
+      <button>{t('pdp_form.button.add_to_cart')}</button>
+    </div>
+  );
+}
+
+export default ProductPage;
+```
+
+**Path Format:** The `t` function supports the format `[componentCode].[path.to.key]`:
+- `t('pdp_form.title')` → Gets `translations.pdp_form.title`
+- `t('pdp_form.form.name.label')` → Gets `translations.pdp_form.form.name.label`
+- `t('checkout.button.submit')` → Gets `translations.checkout.button.submit`
+
+### Next.js Integration (Server-Side)
 
 #### Option 1: Using `getServerSideProps`
 
@@ -151,6 +213,46 @@ export function MyComponent() {
 ```
 
 ## API Reference
+
+### `TranslationProvider`
+
+React context provider that makes translations available to child components via `useTranslation`.
+
+```tsx
+<TranslationProvider
+  translations={translations}        // From SSR props (__i18n.translations)
+  applicationCode="my_app"           // Required
+  locale="en"                        // Optional, default: 'en'
+  stage="production"                 // Optional, default: 'production'
+  client={client}                    // Optional: for client-side fetching
+  componentCodes={['pdp_form']}      // Optional: components to preload
+>
+  {children}
+</TranslationProvider>
+```
+
+### `useTranslation`
+
+React hook to access translations in components.
+
+```tsx
+const { t, translations, locale, stage, setLocale, setStage } = useTranslation();
+
+// Usage
+const label = t('pdp_form.form.name.label');
+const greeting = t('pdp_form.greeting', { variables: { name: 'John' } });
+```
+
+**Returns:**
+- `t(path, options?)` - Translation function
+  - `path`: Format `[componentCode].[path.to.key]` (e.g., `'pdp_form.title'`)
+  - `options.defaultValue`: Fallback if translation not found
+  - `options.variables`: Template variables to replace
+- `translations` - All loaded translations
+- `locale` - Current locale
+- `stage` - Current deployment stage
+- `setLocale(locale)` - Change locale (triggers refetch if client provided)
+- `setStage(stage)` - Change stage (triggers refetch if client provided)
 
 ### `I18nCenterClient`
 

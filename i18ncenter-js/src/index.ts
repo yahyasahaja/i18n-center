@@ -39,6 +39,7 @@
 export { I18nCenterClient } from './client';
 export { createTranslator, createSyncTranslator } from './translator';
 export { preloadTranslations, withTranslations, getLocaleFromContext } from './nextjs';
+export { TranslationProvider, useTranslation } from './react';
 export type {
   I18nCenterConfig,
   DeploymentStage,
@@ -47,6 +48,7 @@ export type {
   TranslateOptions,
   NextJsI18nConfig,
 } from './types';
+export type { TranslationProviderProps } from './react';
 
 // Re-export Next.js types
 export type { GetServerSidePropsContext } from 'next';

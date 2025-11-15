@@ -90,7 +90,7 @@ export function withTranslations(
   }) => Promise<{ props: any }>
 ) {
   return async (context: GetServerSidePropsContext) => {
-    const { t, locale, stage } = await preloadTranslations(config, context);
+    const { t, translations, locale, stage } = await preloadTranslations(config, context);
 
     if (getServerSidePropsFn) {
       const result = await getServerSidePropsFn(context, { t, locale, stage });
@@ -99,8 +99,10 @@ export function withTranslations(
         props: {
           ...result.props,
           __i18n: {
+            translations,
             locale,
             stage,
+            applicationCode: config.applicationCode,
           },
         },
       };
@@ -109,8 +111,10 @@ export function withTranslations(
     return {
       props: {
         __i18n: {
+          translations,
           locale,
           stage,
+          applicationCode: config.applicationCode,
         },
       },
     };
