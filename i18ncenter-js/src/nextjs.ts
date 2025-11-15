@@ -1,4 +1,7 @@
-import { GetServerSidePropsContext } from 'next';
+// Type declaration is in next-types.d.ts to avoid requiring next as a dependency
+// eslint-disable-next-line @typescript-eslint/triple-slash-reference
+/// <reference path="./next-types.d.ts" />
+import type { GetServerSidePropsContext } from 'next';
 import { I18nCenterClient } from './client';
 import { createSyncTranslator } from './translator';
 import { DeploymentStage, TranslationData, NextJsI18nConfig } from './types';
@@ -6,7 +9,7 @@ import { DeploymentStage, TranslationData, NextJsI18nConfig } from './types';
 /**
  * Extract locale from URL path
  * Supports patterns like: /en-us/pdp, /en_us/pdp, /en/pdp, /id/pdp
- * 
+ *
  * @param pathname - URL path (e.g., "/en-us/pdp" or "/en_us/pdp")
  * @returns Locale string or null if not found
  */
@@ -38,7 +41,7 @@ function extractLocaleFromPath(pathname: string): string | null {
 
 /**
  * Get locale from Next.js context (supports next-i18next, next-intl, URL patterns, or custom)
- * 
+ *
  * Priority order:
  * 1. Next.js locale (from next-i18next or next-intl)
  * 2. Query parameter (?locale=en-us)
@@ -75,7 +78,8 @@ export function getLocaleFromContext(
   }
   // Also check req.url (fallback)
   if (context.req?.url) {
-    const urlPath = context.req.url.split('?')[0]; // Remove query string
+    const url = typeof context.req.url === 'string' ? context.req.url : String(context.req.url);
+    const urlPath = url.split('?')[0]; // Remove query string
     const localeFromPath = extractLocaleFromPath(urlPath);
     if (localeFromPath) {
       return localeFromPath;
@@ -85,8 +89,11 @@ export function getLocaleFromContext(
   // Try Accept-Language header
   const acceptLanguage = context.req.headers['accept-language'];
   if (acceptLanguage) {
-    const locale = acceptLanguage.split(',')[0].split('-')[0];
-    return locale;
+    const langHeader = Array.isArray(acceptLanguage) ? acceptLanguage[0] : acceptLanguage;
+    if (typeof langHeader === 'string') {
+      const locale = langHeader.split(',')[0].split('-')[0];
+      return locale;
+    }
   }
 
   return defaultLocale;
