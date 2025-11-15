@@ -59,36 +59,51 @@ export function createTranslator(
   /**
    * Translation function
    * Usage: t('form.name.label') or t('form.name.label', { variables: { name: 'John' } })
+   * 
+   * @returns Always returns a string. Never throws errors.
+   * - Returns the translation value if found
+   * - Returns `defaultValue` if provided and translation not found
+   * - Returns the `path` itself if translation not found and no defaultValue
    */
   async function t(path: string, options?: TranslateOptions): Promise<string> {
-    const locale = options?.locale || defaultLocale || client['config'].defaultLocale;
-    const stage = options?.stage || defaultStage || client['config'].defaultStage;
+    try {
+      const locale = options?.locale || defaultLocale || client['config'].defaultLocale;
+      const stage = options?.stage || defaultStage || client['config'].defaultStage;
 
-    // Check if we need to reload translation
-    if (!cachedTranslation || cachedLocale !== locale || cachedStage !== stage) {
-      cachedTranslation = await client.getTranslation(applicationCode, componentCode, locale, stage);
-      cachedLocale = locale;
-      cachedStage = stage;
-    }
+      // Check if we need to reload translation
+      if (!cachedTranslation || cachedLocale !== locale || cachedStage !== stage) {
+        try {
+          cachedTranslation = await client.getTranslation(applicationCode, componentCode, locale, stage);
+          cachedLocale = locale;
+          cachedStage = stage;
+        } catch (error) {
+          // If translation fetch fails, return defaultValue or path
+          return options?.defaultValue || path;
+        }
+      }
 
-    // Get the translation value
-    let value = getNestedValue(cachedTranslation, path);
+      // Get the translation value
+      let value = getNestedValue(cachedTranslation, path);
 
-    if (value === null) {
-      // Try to return default value or the path itself
+      if (value === null) {
+        // Try to return default value or the path itself
+        return options?.defaultValue || path;
+      }
+
+      // Replace template variables
+      if (options?.variables) {
+        for (const [key, val] of Object.entries(options.variables)) {
+          // Support both {key} and [key] syntax
+          value = value.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val));
+          value = value.replace(new RegExp(`\\[${key}\\]`, 'g'), String(val));
+        }
+      }
+
+      return value;
+    } catch (error) {
+      // Safety net: always return a string, never throw
       return options?.defaultValue || path;
     }
-
-    // Replace template variables
-    if (options?.variables) {
-      for (const [key, val] of Object.entries(options.variables)) {
-        // Support both {key} and [key] syntax
-        value = value.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val));
-        value = value.replace(new RegExp(`\\[${key}\\]`, 'g'), String(val));
-      }
-    }
-
-    return value;
   }
 
   /**
@@ -120,24 +135,34 @@ export function createTranslator(
 
 /**
  * Synchronous translation function (requires preloaded data)
+ * 
+ * @returns Always returns a string. Never throws errors.
+ * - Returns the translation value if found
+ * - Returns `defaultValue` if provided and translation not found
+ * - Returns the `path` itself if translation not found and no defaultValue
  */
 export function createSyncTranslator(translationData: TranslationData) {
   return function t(path: string, options?: { defaultValue?: string; variables?: Record<string, string | number> }): string {
-    let value = getNestedValue(translationData, path);
+    try {
+      let value = getNestedValue(translationData, path);
 
-    if (value === null) {
+      if (value === null) {
+        return options?.defaultValue || path;
+      }
+
+      // Replace template variables
+      if (options?.variables) {
+        for (const [key, val] of Object.entries(options.variables)) {
+          value = value.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val));
+          value = value.replace(new RegExp(`\\[${key}\\]`, 'g'), String(val));
+        }
+      }
+
+      return value;
+    } catch (error) {
+      // Safety net: always return a string, never throw
       return options?.defaultValue || path;
     }
-
-    // Replace template variables
-    if (options?.variables) {
-      for (const [key, val] of Object.entries(options.variables)) {
-        value = value.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val));
-        value = value.replace(new RegExp(`\\[${key}\\]`, 'g'), String(val));
-      }
-    }
-
-    return value;
   };
 }
 

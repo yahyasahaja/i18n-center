@@ -118,13 +118,19 @@ export async function preloadTranslations(
   );
 
   // Create synchronous translation function
+  // Always returns a string, never throws errors
   const t = (componentCode: string, path: string, options?: { defaultValue?: string; variables?: Record<string, string | number> }): string => {
-    const translationData = translations[componentCode];
-    if (!translationData) {
+    try {
+      const translationData = translations[componentCode];
+      if (!translationData) {
+        return options?.defaultValue || path;
+      }
+      const syncT = createSyncTranslator(translationData);
+      return syncT(path, options);
+    } catch (error) {
+      // Safety net: always return a string, never throw
       return options?.defaultValue || path;
     }
-    const syncT = createSyncTranslator(translationData);
-    return syncT(path, options);
   };
 
   return {

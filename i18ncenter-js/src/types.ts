@@ -50,6 +50,8 @@ export interface CacheStorage {
 export interface NextJsI18nConfig {
   /** i18n-center client instance */
   client: any; // I18nCenterClient (avoid circular import)
+  /** Application code (required) */
+  applicationCode: string;
   /** Component codes to preload */
   componentCodes: string[];
   /** Default locale */

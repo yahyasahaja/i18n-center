@@ -97,6 +97,20 @@ export default ProductPage;
 - `t('pdp_form.form.name.label')` → Gets `translations.pdp_form.form.name.label`
 - `t('checkout.button.submit')` → Gets `translations.checkout.button.submit`
 
+**Safety Guarantees:** The `t()` function is **always safe** and **never throws errors**:
+- ✅ Always returns a `string` (never `undefined` or `null`)
+- ✅ Never throws exceptions
+- ✅ If translation not found: returns `defaultValue` (if provided) or the `path` itself
+- ✅ Handles network errors gracefully (returns fallback value)
+- ✅ Safe to use in render functions without try-catch blocks
+
+**Example:**
+```typescript
+// Safe - always returns a string
+const label = t('pdp_form.title'); // Returns translation or 'pdp_form.title'
+const label2 = t('pdp_form.unknown', { defaultValue: 'Default Text' }); // Returns 'Default Text' if not found
+```
+
 ### Locale Detection
 
 The `withTranslations` helper automatically detects the locale from multiple sources (in priority order):
