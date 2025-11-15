@@ -3,9 +3,12 @@
  *
  * This example shows how to use i18ncenter-js in a Next.js page
  * with getServerSideProps for SSR translations.
+ *
+ * Note: This is an example file. In a real Next.js project, you would have
+ * React, Next.js, and their types installed.
  */
 
-import { GetServerSideProps } from 'next';
+// @ts-nocheck - Example file, types are available in actual Next.js projects
 import { I18nCenterClient, withTranslations } from 'i18ncenter-js/nextjs';
 
 // Initialize client (should be in a separate file and reused)
@@ -75,6 +78,7 @@ export default ProductPage;
  * Example 2: Manual preloading (more control)
  */
 /*
+import { GetServerSideProps } from 'next';
 import { preloadTranslations } from 'i18ncenter-js/nextjs';
 
 export const getServerSideProps: GetServerSideProps = async (context) => {

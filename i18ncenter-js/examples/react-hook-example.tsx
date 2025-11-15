@@ -3,9 +3,12 @@
  *
  * This example shows how to use the useTranslation hook with TranslationProvider
  * in a Next.js page component.
+ * 
+ * Note: This is an example file. In a real Next.js project, you would have
+ * React, Next.js, and their types installed.
  */
 
-import { GetServerSideProps } from 'next';
+// @ts-nocheck - Example file, types are available in actual Next.js projects
 import { I18nCenterClient, withTranslations, TranslationProvider, useTranslation } from 'i18ncenter-js';
 
 // Initialize client (should be in a separate file and reused)
