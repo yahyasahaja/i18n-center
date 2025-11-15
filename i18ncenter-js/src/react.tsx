@@ -1,4 +1,5 @@
-// @ts-ignore - React is a peer dependency
+// React is a peer dependency - types will be available when installed
+// @ts-ignore
 import React, { createContext, useContext, useMemo, useState, useEffect, ReactNode } from 'react';
 import { I18nCenterClient } from './client';
 import { TranslationData, DeploymentStage } from './types';
