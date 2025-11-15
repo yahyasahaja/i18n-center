@@ -97,6 +97,25 @@ export default ProductPage;
 - `t('pdp_form.form.name.label')` → Gets `translations.pdp_form.form.name.label`
 - `t('checkout.button.submit')` → Gets `translations.checkout.button.submit`
 
+### Locale Detection
+
+The `withTranslations` helper automatically detects the locale from multiple sources (in priority order):
+
+1. **Next.js locale** (from `next-i18next` or `next-intl`)
+2. **Query parameter** (`?locale=en-us`)
+3. **URL path pattern** (`/en-us/pdp`, `/en_us/pdp`, `/en/pdp`, `/id/pdp`)
+   - Supports both hyphen (`en-us`) and underscore (`en_us`) formats
+   - Normalizes to hyphen format (e.g., `en_us` → `en-us`)
+   - Supports language-only codes (e.g., `en`, `id`, `fr`)
+4. **Accept-Language header** (browser language preference)
+5. **Default locale** (from config or `'en'`)
+
+**Examples:**
+- `https://example.com/en-us/pdp` → locale: `en-us`
+- `https://example.com/en_us/pdp` → locale: `en-us` (normalized)
+- `https://example.com/id/pdp` → locale: `id`
+- `https://example.com/pdp?locale=fr` → locale: `fr` (query param takes priority)
+
 ### Next.js Integration (Server-Side)
 
 #### Option 1: Using `getServerSideProps`

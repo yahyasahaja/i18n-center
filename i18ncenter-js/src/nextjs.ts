@@ -4,7 +4,47 @@ import { createSyncTranslator } from './translator';
 import { DeploymentStage, TranslationData, NextJsI18nConfig } from './types';
 
 /**
- * Get locale from Next.js context (supports next-i18next, next-intl, or custom)
+ * Extract locale from URL path
+ * Supports patterns like: /en-us/pdp, /en_us/pdp, /en/pdp, /id/pdp
+ * 
+ * @param pathname - URL path (e.g., "/en-us/pdp" or "/en_us/pdp")
+ * @returns Locale string or null if not found
+ */
+function extractLocaleFromPath(pathname: string): string | null {
+  // Remove leading slash and split
+  const parts = pathname.split('/').filter(Boolean);
+  if (parts.length === 0) {
+    return null;
+  }
+
+  const firstSegment = parts[0];
+
+  // Check if it matches locale patterns:
+  // - en-us, en_us (language-country)
+  // - en, id, fr (language only, 2-3 chars)
+  // Pattern: 2-3 lowercase letters, optionally followed by - or _ and 2-3 lowercase letters
+  const localePattern = /^([a-z]{2,3})([-_]([a-z]{2,3}))?$/i;
+  const match = firstSegment.match(localePattern);
+
+  if (match) {
+    // Return normalized locale (use hyphen, lowercase)
+    const lang = match[1].toLowerCase();
+    const country = match[3] ? match[3].toLowerCase() : null;
+    return country ? `${lang}-${country}` : lang;
+  }
+
+  return null;
+}
+
+/**
+ * Get locale from Next.js context (supports next-i18next, next-intl, URL patterns, or custom)
+ * 
+ * Priority order:
+ * 1. Next.js locale (from next-i18next or next-intl)
+ * 2. Query parameter (?locale=en-us)
+ * 3. URL path pattern (/en-us/pdp or /en_us/pdp)
+ * 4. Accept-Language header
+ * 5. Default locale
  */
 export function getLocaleFromContext(
   context: GetServerSidePropsContext,
@@ -23,6 +63,23 @@ export function getLocaleFromContext(
   // Try query parameter
   if (context.query.locale && typeof context.query.locale === 'string') {
     return context.query.locale;
+  }
+
+  // Try URL path pattern (e.g., /en-us/pdp, /en_us/pdp, /en/pdp)
+  // Check resolvedUrl first (Pages Router)
+  if (context.resolvedUrl) {
+    const localeFromPath = extractLocaleFromPath(context.resolvedUrl);
+    if (localeFromPath) {
+      return localeFromPath;
+    }
+  }
+  // Also check req.url (fallback)
+  if (context.req?.url) {
+    const urlPath = context.req.url.split('?')[0]; // Remove query string
+    const localeFromPath = extractLocaleFromPath(urlPath);
+    if (localeFromPath) {
+      return localeFromPath;
+    }
   }
 
   // Try Accept-Language header
