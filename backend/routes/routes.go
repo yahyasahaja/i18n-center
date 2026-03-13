@@ -90,6 +90,7 @@ func SetupRoutes() *gin.Engine {
 	translations.POST("/translations/auto-translate", translationHandler.AutoTranslate, middleware.RequireRole("super_admin", "operator"))
 	translations.POST("/translations/backfill", translationHandler.BackfillTranslations, middleware.RequireRole("super_admin", "operator"))
 	translations.GET("/translations/compare", translationHandler.GetVersionComparison, middleware.RequireRole("super_admin", "operator"))
+	translations.GET("/translations/versions", translationHandler.ListVersions, middleware.RequireRole("super_admin", "operator"))
 
 	// Component routes
 	api.GET("/components", componentHandler.GetComponents, middleware.RequireRole("super_admin", "operator"))

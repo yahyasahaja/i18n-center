@@ -42,19 +42,22 @@ func (s *OpenAIService) Translate(text, sourceLang, targetLang string) (string, 
 		return "", fmt.Errorf("OpenAI API key not configured")
 	}
 
-	// Create prompt
+	// Create prompt: preserve only placeholders that are already in [brackets] in the source;
+	// translate everything else normally and do NOT add brackets around translated words.
 	prompt := fmt.Sprintf(
-		"Translate the following text from %s to %s. "+
-			"IMPORTANT: Do NOT translate anything inside square brackets []. "+
-			"Preserve all template values exactly as they are. "+
-			"Only translate the text outside the brackets.\n\nText to translate: %s",
+		"Translate the following text from %s to %s.\n\n"+
+			"RULES:\n"+
+			"1. Copy any segment that appears inside square brackets in the SOURCE text exactly as-is into the output (e.g. [name], [count]). These are placeholders and must not be translated or changed.\n"+
+			"2. Translate all other text normally. Do NOT wrap any part of your translation in square brackets.\n\n"+
+			"Example: \"Hi [name]! Selamat datang di pesta!\" → \"Hi [name]! Welcome to the party!\" (only [name] is preserved; the rest is translated).\n\n"+
+			"Text to translate: %s",
 		sourceLang, targetLang, text,
 	)
 
 	requestBody := OpenAIRequest{
 		Model: "gpt-3.5-turbo",
 		Messages: []Message{
-			{Role: "system", Content: "You are a professional translator. Always preserve template values in square brackets."},
+			{Role: "system", Content: "You are a professional translator. Preserve only existing [bracketed] placeholders from the source; translate everything else and never add new square brackets to the translation."},
 			{Role: "user", Content: prompt},
 		},
 	}
@@ -131,4 +134,3 @@ func (s *OpenAIService) TranslateJSON(data map[string]interface{}, sourceLang, t
 func GetDefaultOpenAIKey() string {
 	return os.Getenv("OPENAI_API_KEY")
 }
-

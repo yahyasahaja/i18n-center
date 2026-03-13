@@ -9,7 +9,6 @@ import (
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/models"
-	"gorm.io/gorm"
 )
 
 type TranslationService struct{}
@@ -18,7 +17,7 @@ func NewTranslationService() *TranslationService {
 	return &TranslationService{}
 }
 
-// GetTranslation retrieves translation for a component by locale and stage
+// GetTranslation retrieves the latest translation version for a component by locale and stage
 func (s *TranslationService) GetTranslation(componentID uuid.UUID, locale string, stage models.DeploymentStage) (*models.TranslationVersion, error) {
 	// Try cache first
 	cacheKey := cache.TranslationKey(componentID.String(), locale, string(stage))
@@ -27,24 +26,14 @@ func (s *TranslationService) GetTranslation(componentID uuid.UUID, locale string
 		return &cached, nil
 	}
 
-	// Get from database
 	var translation models.TranslationVersion
-	result := database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND is_active = ? AND version = ?",
-		componentID, locale, stage, true, 2).First(&translation)
-
-	if result.Error == gorm.ErrRecordNotFound {
-		// Try version 1 if version 2 doesn't exist
-		result = database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND is_active = ? AND version = ?",
-			componentID, locale, stage, true, 1).First(&translation)
-	}
-
+	result := database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND is_active = ?",
+		componentID, locale, stage, true).Order("version DESC").First(&translation)
 	if result.Error != nil {
 		return nil, result.Error
 	}
 
-	// Cache for 1 hour
-	cache.Set(cacheKey, translation, 3600*1000000000) // 1 hour in nanoseconds
-
+	cache.Set(cacheKey, translation, 3600*1000000000) // 1 hour
 	return &translation, nil
 }
 
@@ -121,55 +110,22 @@ func (s *TranslationService) GetMultipleTranslations(componentIDs []uuid.UUID, l
 		}
 	}
 
-	// Second pass: Get missing translations from database
+	// Second pass: Get latest version per component from database (PostgreSQL DISTINCT ON)
 	if len(missingFromCache) > 0 {
 		var translations []models.TranslationVersion
-		componentIDStrings := make([]string, len(missingFromCache))
-		for i, id := range missingFromCache {
-			componentIDStrings[i] = id.String()
-		}
-
-		// Query database for missing translations
-		err := database.DB.Where("component_id IN ? AND locale = ? AND stage = ? AND is_active = ? AND version = ?",
-			missingFromCache, locale, stage, true, 2).Find(&translations).Error
+		err := database.DB.Raw(`
+			SELECT DISTINCT ON (component_id) *
+			FROM translation_versions
+			WHERE component_id IN ? AND locale = ? AND stage = ? AND is_active = ?
+			ORDER BY component_id, version DESC
+		`, missingFromCache, locale, stage, true).Scan(&translations).Error
 
 		if err == nil {
-			// Process found translations
 			for i := range translations {
 				translation := translations[i]
 				results[translation.ComponentID.String()] = &translation
-
-				// Cache for future use
 				cacheKey := cache.TranslationKey(translation.ComponentID.String(), locale, string(stage))
-				cache.Set(cacheKey, translation, 3600*1000000000) // 1 hour
-			}
-
-			// For components not found with version 2, try version 1
-			foundIDs := make(map[string]bool)
-			for _, t := range translations {
-				foundIDs[t.ComponentID.String()] = true
-			}
-
-			stillMissing := make([]uuid.UUID, 0)
-			for _, id := range missingFromCache {
-				if !foundIDs[id.String()] {
-					stillMissing = append(stillMissing, id)
-				}
-			}
-
-			if len(stillMissing) > 0 {
-				var version1Translations []models.TranslationVersion
-				database.DB.Where("component_id IN ? AND locale = ? AND stage = ? AND is_active = ? AND version = ?",
-					stillMissing, locale, stage, true, 1).Find(&version1Translations)
-
-				for i := range version1Translations {
-					translation := version1Translations[i]
-					results[translation.ComponentID.String()] = &translation
-
-					// Cache for future use
-					cacheKey := cache.TranslationKey(translation.ComponentID.String(), locale, string(stage))
-					cache.Set(cacheKey, translation, 3600*1000000000) // 1 hour
-				}
+				cache.Set(cacheKey, translation, 3600*1000000000)
 			}
 		}
 	}
@@ -177,101 +133,85 @@ func (s *TranslationService) GetMultipleTranslations(componentIDs []uuid.UUID, l
 	return results, nil
 }
 
-// SaveTranslation saves a translation version
+// SaveTranslation adds a new version (always insert, never overwrite)
 func (s *TranslationService) SaveTranslation(componentID uuid.UUID, locale string, stage models.DeploymentStage, data models.JSONB, userID uuid.UUID) (*models.TranslationVersion, error) {
-	// Get existing version 2 (after save)
-	var existing models.TranslationVersion
-	result := database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND version = ?",
-		componentID, locale, stage, 2).First(&existing)
-
-	if result.Error == gorm.ErrRecordNotFound {
-		// Create new version 2
-		existing = models.TranslationVersion{
-			ComponentID: componentID,
-			Locale:      locale,
-			Stage:       stage,
-			Version:     2,
-			Data:        data,
-			IsActive:    true,
-			CreatedBy:   userID,
-			UpdatedBy:   userID,
-		}
-		if err := database.DB.Create(&existing).Error; err != nil {
-			return nil, err
-		}
-	} else {
-		// Update existing version 2
-		existing.Data = data
-		existing.UpdatedBy = userID
-		if err := database.DB.Save(&existing).Error; err != nil {
-			return nil, err
-		}
+	nextVersion := 1
+	var current models.TranslationVersion
+	err := database.DB.Where("component_id = ? AND locale = ? AND stage = ?",
+		componentID, locale, stage).Order("version DESC").First(&current).Error
+	if err == nil {
+		nextVersion = current.Version + 1
 	}
 
-	// Ensure version 1 exists (before save)
-	var beforeSave models.TranslationVersion
-	result = database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND version = ?",
-		componentID, locale, stage, 1).First(&beforeSave)
-
-	if result.Error == gorm.ErrRecordNotFound {
-		// Create version 1 from current data
-		beforeSave = models.TranslationVersion{
-			ComponentID: componentID,
-			Locale:      locale,
-			Stage:       stage,
-			Version:     1,
-			Data:        data,
-			IsActive:    true,
-		}
-		database.DB.Create(&beforeSave)
+	newVersion := models.TranslationVersion{
+		ComponentID: componentID,
+		Locale:      locale,
+		Stage:       stage,
+		Version:     nextVersion,
+		Data:        data,
+		IsActive:    true,
+		CreatedBy:   userID,
+		UpdatedBy:   userID,
+	}
+	if err := database.DB.Create(&newVersion).Error; err != nil {
+		return nil, err
 	}
 
-	// Invalidate cache
 	cache.Delete(cache.TranslationKey(componentID.String(), locale, string(stage)))
 	cache.Delete(cache.ComponentKey(componentID.String()))
-
-	// Cleanup old versions
 	database.CleanupOldVersions()
-
-	return &existing, nil
+	return &newVersion, nil
 }
 
-// RevertTranslation reverts to version 1 (before save)
-func (s *TranslationService) RevertTranslation(componentID uuid.UUID, locale string, stage models.DeploymentStage) error {
-	// Get version 1
-	var version1 models.TranslationVersion
-	if err := database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND version = ?",
-		componentID, locale, stage, 1).First(&version1).Error; err != nil {
+// RevertTranslation adds a new version with the previous version's data (undo as new version)
+func (s *TranslationService) RevertTranslation(componentID uuid.UUID, locale string, stage models.DeploymentStage, userID uuid.UUID) error {
+	var current, previous models.TranslationVersion
+	err := database.DB.Where("component_id = ? AND locale = ? AND stage = ?",
+		componentID, locale, stage).Order("version DESC").First(&current).Error
+	if err != nil {
+		return fmt.Errorf("no current version found: %w", err)
+	}
+	err = database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND version = ?",
+		componentID, locale, stage, current.Version-1).First(&previous).Error
+	if err != nil {
 		return fmt.Errorf("no previous version found: %w", err)
 	}
 
-	// Update version 2 with version 1 data
-	var version2 models.TranslationVersion
-	result := database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND version = ?",
-		componentID, locale, stage, 2).First(&version2)
-
-	if result.Error == gorm.ErrRecordNotFound {
-		// Create version 2 from version 1
-		version2 = models.TranslationVersion{
-			ComponentID: componentID,
-			Locale:      locale,
-			Stage:       stage,
-			Version:     2,
-			Data:        version1.Data,
-			IsActive:    true,
-		}
-		return database.DB.Create(&version2).Error
+	newVersion := models.TranslationVersion{
+		ComponentID: componentID,
+		Locale:      locale,
+		Stage:       stage,
+		Version:     current.Version + 1,
+		Data:        previous.Data,
+		IsActive:    true,
+		CreatedBy:   userID,
+		UpdatedBy:   userID,
 	}
-
-	version2.Data = version1.Data
-	if err := database.DB.Save(&version2).Error; err != nil {
+	if err := database.DB.Create(&newVersion).Error; err != nil {
 		return err
 	}
-
-	// Invalidate cache
 	cache.Delete(cache.TranslationKey(componentID.String(), locale, string(stage)))
-
+	database.CleanupOldVersions()
 	return nil
+}
+
+// ListVersions returns all versions for a component/locale/stage, newest first
+func (s *TranslationService) ListVersions(componentID uuid.UUID, locale string, stage models.DeploymentStage) ([]models.TranslationVersion, error) {
+	var versions []models.TranslationVersion
+	err := database.DB.Where("component_id = ? AND locale = ? AND stage = ?",
+		componentID, locale, stage).Order("version DESC").Find(&versions).Error
+	return versions, err
+}
+
+// GetVersionByNumber returns a specific version or nil if not found
+func (s *TranslationService) GetVersionByNumber(componentID uuid.UUID, locale string, stage models.DeploymentStage, version int) (*models.TranslationVersion, error) {
+	var v models.TranslationVersion
+	err := database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND version = ?",
+		componentID, locale, stage, version).First(&v).Error
+	if err != nil {
+		return nil, err
+	}
+	return &v, nil
 }
 
 // DeployToStage deploys translations from draft to staging or staging to production
@@ -327,4 +267,3 @@ func PreserveTemplateValues(text string, translatedText string) string {
 
 	return result
 }
-

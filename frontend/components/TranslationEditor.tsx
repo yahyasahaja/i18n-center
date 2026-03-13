@@ -1,13 +1,14 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
+import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { Button } from './ui/Button'
 import { Card } from './ui/Card'
 import { Badge } from './ui/Badge'
 import { Modal } from './ui/Modal'
 import { CodeEditor } from './CodeEditor'
 import { DiffView } from './DiffView'
-import { Save, RotateCcw, Download, Upload, Languages, Zap, GitCompare } from 'lucide-react'
+import { Save, RotateCcw, Download, Upload, Languages, Zap, GitCompare, History } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { translationApi, exportApi, importApi } from '@/services/api'
 
@@ -19,6 +20,8 @@ interface TranslationEditorProps {
   defaultLocale: string
 }
 
+const STAGE_VALUES = ['draft', 'staging', 'production']
+
 export const TranslationEditor: React.FC<TranslationEditorProps> = ({
   componentId,
   componentName,
@@ -26,8 +29,17 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
   enabledLanguages,
   defaultLocale,
 }) => {
-  const [selectedLocale, setSelectedLocale] = useState(defaultLocale || 'en')
-  const [selectedStage, setSelectedStage] = useState('draft')
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const pathname = usePathname()
+
+  const urlLocale = searchParams.get('locale')
+  const urlStage = searchParams.get('stage')
+  const initialLocale = urlLocale && enabledLanguages.includes(urlLocale) ? urlLocale : (defaultLocale || 'en')
+  const initialStage = urlStage && STAGE_VALUES.includes(urlStage) ? urlStage : 'draft'
+
+  const [selectedLocale, setSelectedLocale] = useState(initialLocale)
+  const [selectedStage, setSelectedStage] = useState(initialStage)
   const [translationData, setTranslationData] = useState<Record<string, any>>({})
   const [jsonText, setJsonText] = useState('{}')
   const [originalJsonText, setOriginalJsonText] = useState('{}')
@@ -40,6 +52,15 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
   const [version2Data, setVersion2Data] = useState<Record<string, any> | null>(null)
   const [deployFromStage, setDeployFromStage] = useState<string>('')
   const [deployToStage, setDeployToStage] = useState<string>('')
+  const [deployDraftStagingHasChanges, setDeployDraftStagingHasChanges] = useState<boolean | null>(null)
+  const [deployStagingProductionHasChanges, setDeployStagingProductionHasChanges] = useState<boolean | null>(null)
+  const [deployingAllLocales, setDeployingAllLocales] = useState(false)
+  const [deployCheckKey, setDeployCheckKey] = useState(0)
+  const [showSaveDiffModal, setShowSaveDiffModal] = useState(false)
+  const [showRevertDiffModal, setShowRevertDiffModal] = useState(false)
+  const [showVersionHistoryModal, setShowVersionHistoryModal] = useState(false)
+  const [versionHistoryList, setVersionHistoryList] = useState<Array<{ version: number; data: Record<string, any>; created_at: string }>>([])
+  const [versionHistoryDiffVersion, setVersionHistoryDiffVersion] = useState<number | null>(null)
 
   // Check if there are unsaved changes
   const hasUnsavedChanges = () => {
@@ -70,12 +91,70 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
     { value: 'production', label: 'Production', color: 'success' as const },
   ]
 
+  // Sync state from URL when query string changes (e.g. browser back/forward)
+  useEffect(() => {
+    const l = searchParams.get('locale')
+    const s = searchParams.get('stage')
+    if (l && enabledLanguages.includes(l)) setSelectedLocale(l)
+    if (s && STAGE_VALUES.includes(s)) setSelectedStage(s)
+  }, [searchParams, enabledLanguages])
+
+  // On mount, if URL has no locale/stage, push current state so URL stays in sync
+  useEffect(() => {
+    if (!searchParams.get('locale') || !searchParams.get('stage')) {
+      updateQueryString(selectedLocale, selectedStage)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const updateQueryString = (locale: string, stage: string) => {
+    const params = new URLSearchParams(searchParams.toString())
+    params.set('locale', locale)
+    params.set('stage', stage)
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+  }
+
   useEffect(() => {
     // Reset original text when component/locale/stage changes
     // Skip confirm on initial load or when changing locale/stage (user already confirmed if needed)
     loadTranslation(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [componentId, selectedLocale, selectedStage])
+
+  // Check if there are changes to deploy (source stage !== target stage) for current locale
+  useEffect(() => {
+    if (!componentId || !selectedLocale) return
+    const checkDeployAvailability = async () => {
+      try {
+        if (selectedStage === 'draft') {
+          const [draftRes, stagingRes] = await Promise.all([
+            translationApi.get(componentId, selectedLocale, 'draft').catch(() => ({ data: {} })),
+            translationApi.get(componentId, selectedLocale, 'staging').catch(() => ({ data: {} })),
+          ])
+          const draftStr = JSON.stringify(draftRes.data || {})
+          const stagingStr = JSON.stringify(stagingRes.data || {})
+          setDeployDraftStagingHasChanges(draftStr !== stagingStr)
+          setDeployStagingProductionHasChanges(null)
+        } else if (selectedStage === 'staging') {
+          const [stagingRes, prodRes] = await Promise.all([
+            translationApi.get(componentId, selectedLocale, 'staging').catch(() => ({ data: {} })),
+            translationApi.get(componentId, selectedLocale, 'production').catch(() => ({ data: {} })),
+          ])
+          const stagingStr = JSON.stringify(stagingRes.data || {})
+          const prodStr = JSON.stringify(prodRes.data || {})
+          setDeployStagingProductionHasChanges(stagingStr !== prodStr)
+          setDeployDraftStagingHasChanges(null)
+        } else {
+          setDeployDraftStagingHasChanges(null)
+          setDeployStagingProductionHasChanges(null)
+        }
+      } catch {
+        setDeployDraftStagingHasChanges(null)
+        setDeployStagingProductionHasChanges(null)
+      }
+    }
+    checkDeployAvailability()
+  }, [componentId, selectedLocale, selectedStage, originalJsonText, deployCheckKey])
 
   const loadTranslation = async (skipConfirm = false) => {
     if (!skipConfirm && hasUnsavedChanges()) {
@@ -107,32 +186,41 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
     }
   }
 
-  const handleSave = async () => {
-    // Validate JSON before saving
+  const handleSaveClick = () => {
     const validation = validateJSON(jsonText)
     if (!validation.valid) {
       setJsonError(validation.error || 'Invalid JSON')
       toast.error(validation.error || 'Please fix JSON errors before saving.')
       return
     }
-
-    let dataToSave: Record<string, any>
     try {
-      dataToSave = JSON.parse(jsonText)
+      JSON.parse(jsonText)
       setJsonError(null)
-    } catch (error) {
+    } catch {
       setJsonError('Invalid JSON. Please fix syntax errors before saving.')
       toast.error('Invalid JSON. Please fix syntax errors before saving.')
       return
     }
+    setVersion1Data(JSON.parse(originalJsonText) || {})
+    setVersion2Data(JSON.parse(jsonText) || {})
+    setShowSaveDiffModal(true)
+  }
 
+  const confirmSaveFromDiff = async () => {
+    setShowSaveDiffModal(false)
+    let dataToSave: Record<string, any>
+    try {
+      dataToSave = JSON.parse(jsonText)
+    } catch {
+      return
+    }
     setSaving(true)
     try {
       await translationApi.save(componentId, selectedLocale, selectedStage, dataToSave)
       setTranslationData(dataToSave)
-      // Update original text after successful save
       setOriginalJsonText(JSON.stringify(dataToSave, null, 2))
       toast.success('Translation saved successfully')
+      setDeployCheckKey((k) => k + 1)
     } catch (error: any) {
       toast.error(error.response?.data?.error || 'Failed to save translation')
     } finally {
@@ -140,17 +228,32 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
     }
   }
 
-  const handleRevert = async () => {
-    const confirmMessage = hasUnsavedChanges()
-      ? 'You have unsaved changes. Reverting will discard them. Are you sure you want to revert to the previous version?'
-      : 'Are you sure you want to revert to the previous version?'
+  const handleRevertClick = async () => {
+    if (hasUnsavedChanges()) {
+      toast.error('Save or discard your changes before reverting')
+      return
+    }
+    try {
+      const comparison = await translationApi.compare(componentId, selectedLocale, selectedStage)
+      if (!comparison.version1 || !comparison.version2) {
+        toast.error('No previous version to revert to')
+        return
+      }
+      setVersion1Data(comparison.version1.data || {})
+      setVersion2Data(comparison.version2.data || {})
+      setShowRevertDiffModal(true)
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || 'Failed to load comparison for revert')
+    }
+  }
 
-    if (!window.confirm(confirmMessage)) return
-
+  const confirmRevertFromDiff = async () => {
+    setShowRevertDiffModal(false)
     try {
       await translationApi.revert(componentId, selectedLocale, selectedStage)
       toast.success('Translation reverted')
-      loadTranslation(true) // Skip confirm since user already confirmed
+      loadTranslation(true)
+      setDeployCheckKey((k) => k + 1)
     } catch (error: any) {
       toast.error(error.response?.data?.error || 'Failed to revert translation')
     }
@@ -164,6 +267,17 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
       setShowDiff(true)
     } catch (error: any) {
       toast.error('Failed to load version comparison')
+    }
+  }
+
+  const openVersionHistoryModal = async () => {
+    try {
+      const res = await translationApi.listVersions(componentId, selectedLocale, selectedStage)
+      setVersionHistoryList(res.versions || [])
+      setVersionHistoryDiffVersion(null)
+      setShowVersionHistoryModal(true)
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || 'Failed to load version history')
     }
   }
 
@@ -196,14 +310,45 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
       toast.success(`Deployed to ${deployToStage}`)
       setShowDeployDiff(false)
       if (selectedStage === deployToStage) {
-        loadTranslation()
+        loadTranslation(true)
       }
+      setDeployCheckKey((k) => k + 1)
     } catch (error: any) {
       toast.error(error.response?.data?.error || 'Failed to deploy')
     }
   }
 
+  const handleDeployAllLocales = async (fromStage: string, toStage: string) => {
+    if (hasUnsavedChanges()) {
+      toast.error('Save changes first before deploying')
+      return
+    }
+    const confirmMsg = `Deploy ${fromStage} → ${toStage} for all locales (${enabledLanguages.join(', ')})?`
+    if (!window.confirm(confirmMsg)) return
+    setDeployingAllLocales(true)
+    try {
+      for (const locale of enabledLanguages) {
+        try {
+          await translationApi.deploy(componentId, locale, fromStage, toStage)
+        } catch (err: any) {
+          toast.error(`Deploy failed for ${locale}: ${err.response?.data?.error || err.message}`)
+        }
+      }
+      toast.success(`Deploy ${fromStage} → ${toStage} completed for all locales`)
+      setDeployCheckKey((k) => k + 1)
+      if (selectedStage === toStage) {
+        loadTranslation(true)
+      }
+    } finally {
+      setDeployingAllLocales(false)
+    }
+  }
+
   const handleAutoTranslate = async (targetLocale: string) => {
+    if (hasUnsavedChanges()) {
+      toast.error('Save changes first before translate')
+      return
+    }
     try {
       setLoading(true)
       await translationApi.autoTranslate(
@@ -224,6 +369,10 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
   }
 
   const handleBackfill = async () => {
+    if (hasUnsavedChanges()) {
+      toast.error('Save changes first before translate')
+      return
+    }
     const missingLocales = enabledLanguages.filter((lang) => lang !== selectedLocale)
     if (missingLocales.length === 0) {
       toast.error('All languages are already translated')
@@ -441,7 +590,9 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
                       return
                     }
                   }
-                  setSelectedLocale(e.target.value)
+                  const next = e.target.value
+                  setSelectedLocale(next)
+                  updateQueryString(next, selectedStage)
                 }}
                 className="block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 bg-white text-gray-900 focus:outline-none focus:ring-primary-500 focus:border-primary-500"
               >
@@ -466,7 +617,9 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
                         return
                       }
                     }
-                    setSelectedStage(e.target.value)
+                    const next = e.target.value
+                    setSelectedStage(next)
+                    updateQueryString(selectedLocale, next)
                   }}
                   className="block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 bg-white text-gray-900 focus:outline-none focus:ring-primary-500 focus:border-primary-500"
                 >
@@ -482,50 +635,31 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
               </div>
             </div>
 
-            <div className="flex items-end space-x-2">
+            <div className="flex flex-wrap items-end gap-2 min-w-0 md:min-w-[280px]">
               <Button
                 variant="primary"
-                onClick={handleSave}
+                onClick={handleSaveClick}
                 isLoading={saving}
-                disabled={!!jsonError}
+                disabled={!!jsonError || !hasUnsavedChanges()}
                 size="sm"
-                title={jsonError ? 'Please fix JSON errors before saving' : ''}
+                title={jsonError ? 'Please fix JSON errors before saving' : !hasUnsavedChanges() ? 'No changes to save' : ''}
               >
-                <Save className="w-4 h-4 mr-2" />
+                <Save className="w-4 h-4 mr-2 shrink-0" />
                 Save
               </Button>
-              <Button variant="outline" onClick={handleRevert} size="sm">
-                <RotateCcw className="w-4 h-4 mr-2" />
+              <Button variant="outline" onClick={handleRevertClick} size="sm">
+                <RotateCcw className="w-4 h-4 mr-2 shrink-0" />
                 Revert
               </Button>
               <Button variant="outline" onClick={loadVersionComparison} size="sm">
-                <GitCompare className="w-4 h-4 mr-2" />
+                <GitCompare className="w-4 h-4 mr-2 shrink-0" />
                 Compare
               </Button>
+              <Button variant="outline" onClick={openVersionHistoryModal} size="sm" title="Version history">
+                <History className="w-4 h-4 mr-2 shrink-0" />
+                <span className="whitespace-nowrap">Version history</span>
+              </Button>
             </div>
-          </div>
-
-          {/* Deployment Actions */}
-          <div className="flex items-center space-x-2 pt-2 border-t">
-            <span className="text-sm text-gray-600">Deploy:</span>
-            {selectedStage === 'draft' && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleDeploy('draft', 'staging')}
-              >
-                Draft → Staging
-              </Button>
-            )}
-            {selectedStage === 'staging' && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleDeploy('staging', 'production')}
-              >
-                Staging → Production
-              </Button>
-            )}
           </div>
 
           {/* Auto-translate Actions */}
@@ -554,6 +688,57 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
               <Zap className="w-4 h-4 mr-2" />
               Backfill All
             </Button>
+          </div>
+
+          {/* Deployment Actions */}
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t">
+            <span className="text-sm text-gray-600">Deploy:</span>
+            {selectedStage === 'draft' && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleDeploy('draft', 'staging')}
+                  disabled={deployDraftStagingHasChanges === false}
+                  title={deployDraftStagingHasChanges === false ? 'No changes to deploy (draft and staging are identical)' : ''}
+                >
+                  Draft → Staging
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleDeployAllLocales('draft', 'staging')}
+                  disabled={deployDraftStagingHasChanges === false}
+                  isLoading={deployingAllLocales}
+                  title={deployDraftStagingHasChanges === false ? 'No changes to deploy' : 'Deploy draft to staging for all locales'}
+                >
+                  Draft → Staging (all locales)
+                </Button>
+              </>
+            )}
+            {selectedStage === 'staging' && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleDeploy('staging', 'production')}
+                  disabled={deployStagingProductionHasChanges === false}
+                  title={deployStagingProductionHasChanges === false ? 'No changes to deploy (staging and production are identical)' : ''}
+                >
+                  Staging → Production
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleDeployAllLocales('staging', 'production')}
+                  disabled={deployStagingProductionHasChanges === false}
+                  isLoading={deployingAllLocales}
+                  title={deployStagingProductionHasChanges === false ? 'No changes to deploy' : 'Deploy staging to production for all locales'}
+                >
+                  Staging → Production (all locales)
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </Card>
@@ -584,11 +769,11 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
         )}
       </Card>
 
-      {/* Version Comparison Modal */}
+      {/* Version Comparison Modal (current vs previous) */}
       <Modal
         isOpen={showDiff}
         onClose={() => setShowDiff(false)}
-        title="Version Comparison (Before Save vs After Save)"
+        title="Version comparison (current vs previous)"
         size="large"
       >
         <DiffView
@@ -618,6 +803,99 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
               Confirm Deploy
             </Button>
           </div>
+        </div>
+      </Modal>
+
+      {/* Save diff modal: show before saving */}
+      <Modal
+        isOpen={showSaveDiffModal}
+        onClose={() => setShowSaveDiffModal(false)}
+        title="Review changes before save"
+        size="large"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">Left: current saved. Right: your edits (will be saved).</p>
+          <DiffView
+            oldValue={JSON.stringify(version1Data, null, 2)}
+            newValue={JSON.stringify(version2Data, null, 2)}
+          />
+          <div className="flex justify-end space-x-2 pt-4 border-t">
+            <Button variant="outline" onClick={() => setShowSaveDiffModal(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={confirmSaveFromDiff}>
+              Confirm Save
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Revert diff modal: show before reverting */}
+      <Modal
+        isOpen={showRevertDiffModal}
+        onClose={() => setShowRevertDiffModal(false)}
+        title="Review revert"
+        size="large"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">Left: current version. Right: previous version (revert will restore this).</p>
+          <DiffView
+            oldValue={JSON.stringify(version1Data, null, 2)}
+            newValue={JSON.stringify(version2Data, null, 2)}
+          />
+          <div className="flex justify-end space-x-2 pt-4 border-t">
+            <Button variant="outline" onClick={() => setShowRevertDiffModal(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={confirmRevertFromDiff}>
+              Confirm Revert
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Version history modal */}
+      <Modal
+        isOpen={showVersionHistoryModal}
+        onClose={() => setShowVersionHistoryModal(false)}
+        title="Version history"
+        size="large"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">Versions (newest first). Click &quot;View changes&quot; to see diff from previous version.</p>
+          <div className="max-h-80 overflow-y-auto border rounded p-2 space-y-2">
+            {versionHistoryList.length === 0 && <p className="text-gray-500 text-sm">No versions yet.</p>}
+            {versionHistoryList.map((v, idx) => (
+              <div key={v.version} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">
+                <span className="text-sm font-medium">Version {v.version}</span>
+                <span className="text-xs text-gray-500">
+                  {v.created_at ? new Date(v.created_at).toLocaleString() : '—'}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={idx >= versionHistoryList.length - 1}
+                  onClick={() => setVersionHistoryDiffVersion(v.version)}
+                >
+                  View changes
+                </Button>
+              </div>
+            ))}
+          </div>
+          {versionHistoryDiffVersion != null && (() => {
+            const v = versionHistoryList.find((x) => x.version === versionHistoryDiffVersion)
+            const prev = versionHistoryList.find((x) => x.version === versionHistoryDiffVersion - 1)
+            if (!v || !prev) return null
+            return (
+              <div className="border-t pt-4">
+                <h4 className="text-sm font-medium mb-2">Version {v.version} vs {prev.version}</h4>
+                <DiffView
+                  oldValue={JSON.stringify(prev.data, null, 2)}
+                  newValue={JSON.stringify(v.data, null, 2)}
+                />
+              </div>
+            )
+          })()}
         </div>
       </Modal>
     </div>

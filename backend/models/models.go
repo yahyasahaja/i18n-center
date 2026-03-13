@@ -178,7 +178,7 @@ type TranslationVersion struct {
 	Component   Component       `gorm:"foreignKey:ComponentID" json:"component,omitempty"`
 	Locale      string          `gorm:"not null;index" json:"locale"`
 	Stage       DeploymentStage `gorm:"type:varchar(50);not null;index" json:"stage"`
-	Version     int             `gorm:"not null;default:1" json:"version"` // 1 = before save, 2 = after save
+	Version     int             `gorm:"not null;default:1" json:"version"` // 1, 2, 3, ... current = latest
 	Data        JSONB           `gorm:"type:jsonb;not null" json:"data"`   // The translation data
 	IsActive    bool            `gorm:"default:true" json:"is_active"`
 	CreatedBy   uuid.UUID       `gorm:"type:uuid;index" json:"created_by"`

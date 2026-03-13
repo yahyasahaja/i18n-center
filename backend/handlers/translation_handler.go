@@ -321,7 +321,8 @@ func (h *TranslationHandler) RevertTranslation(c *gin.Context) {
 		return
 	}
 
-	if err := h.translationService.RevertTranslation(componentID, locale, stage); err != nil {
+	userID, _ := h.getCurrentUser(c)
+	if err := h.translationService.RevertTranslation(componentID, locale, stage, userID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -570,19 +571,15 @@ func (h *TranslationHandler) BackfillTranslations(c *gin.Context) {
 	c.JSON(http.StatusOK, results)
 }
 
-// GetVersionComparison gets both versions for comparison
+// GetVersionComparison returns two versions for diff. Default: latest (version1) vs previous (version2). Optional query: version_a, version_b.
 // @Summary      Compare versions
-// @Description  Get version 1 (before save) and version 2 (after save) for comparison
+// @Description  Get two versions for comparison (default: current vs previous for revert diff)
 // @Tags         translations
-// @Accept       json
-// @Produce      json
-// @Security     BearerAuth
-// @Param        id      path      string  true   "Component ID"
-// @Param        locale  query     string  true   "Locale"
-// @Param        stage   query     string  false  "Stage (default: draft)"
-// @Success      200     {object}  map[string]interface{}
-// @Failure      400     {object}  map[string]string
-// @Failure      401     {object}  map[string]string
+// @Param        id        path      string  true  "Component ID"
+// @Param        locale    query     string  true  "Locale"
+// @Param        stage     query     string  false "Stage (default: draft)"
+// @Param        version_a query     int     false "First version number (default: latest)"
+// @Param        version_b query     int     false "Second version number (default: previous)"
 // @Router       /components/{id}/translations/compare [get]
 func (h *TranslationHandler) GetVersionComparison(c *gin.Context) {
 	componentIDStr := c.Param("id")
@@ -605,35 +602,89 @@ func (h *TranslationHandler) GetVersionComparison(c *gin.Context) {
 		return
 	}
 
-	// Get version 1 (before save)
-	var version1 models.TranslationVersion
-	result1 := database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND version = ?",
-		componentID, locale, stage, 1).First(&version1)
+	versionA, _ := c.GetQuery("version_a")
+	versionB, _ := c.GetQuery("version_b")
 
-	// Get version 2 (after save)
-	var version2 models.TranslationVersion
-	result2 := database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND version = ?",
-		componentID, locale, stage, 2).First(&version2)
+	response := gin.H{"version1": nil, "version2": nil}
 
-	response := gin.H{
-		"version1": nil,
-		"version2": nil,
-	}
-
-	if result1.Error == nil {
-		response["version1"] = gin.H{
-			"data":       version1.Data,
-			"created_at": version1.CreatedAt,
+	if versionA != "" && versionB != "" {
+		var va, vb int
+		if _, err := fmt.Sscanf(versionA, "%d", &va); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid version_a"})
+			return
 		}
-	}
-
-	if result2.Error == nil {
-		response["version2"] = gin.H{
-			"data":       version2.Data,
-			"created_at": version2.CreatedAt,
+		if _, err := fmt.Sscanf(versionB, "%d", &vb); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid version_b"})
+			return
 		}
+		v1, err1 := h.translationService.GetVersionByNumber(componentID, locale, stage, va)
+		v2, err2 := h.translationService.GetVersionByNumber(componentID, locale, stage, vb)
+		if err1 != nil || err2 != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
+			return
+		}
+		response["version1"] = gin.H{"version": v1.Version, "data": v1.Data, "created_at": v1.CreatedAt}
+		response["version2"] = gin.H{"version": v2.Version, "data": v2.Data, "created_at": v2.CreatedAt}
+		c.JSON(http.StatusOK, response)
+		return
 	}
 
+	// Default: latest (current) and previous for revert-diff
+	versions, err := h.translationService.ListVersions(componentID, locale, stage)
+	if err != nil || len(versions) == 0 {
+		c.JSON(http.StatusOK, response)
+		return
+	}
+	response["version1"] = gin.H{"version": versions[0].Version, "data": versions[0].Data, "created_at": versions[0].CreatedAt}
+	if len(versions) > 1 {
+		response["version2"] = gin.H{"version": versions[1].Version, "data": versions[1].Data, "created_at": versions[1].CreatedAt}
+	}
 	c.JSON(http.StatusOK, response)
+}
+
+// ListVersions returns all versions for a component/locale/stage (newest first)
+// @Summary      List translation versions
+// @Tags         translations
+// @Param        id      path      string  true  "Component ID"
+// @Param        locale  query     string  true  "Locale"
+// @Param        stage   query     string  false "Stage (default: draft)"
+// @Router       /components/{id}/translations/versions [get]
+func (h *TranslationHandler) ListVersions(c *gin.Context) {
+	componentIDStr := c.Param("id")
+	locale := c.Query("locale")
+	stageStr := c.Query("stage")
+
+	if locale == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Locale is required"})
+		return
+	}
+
+	stage := models.DeploymentStage(stageStr)
+	if stage == "" {
+		stage = models.StageDraft
+	}
+
+	componentID, err := uuid.Parse(componentIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid component ID"})
+		return
+	}
+
+	versions, err := h.translationService.ListVersions(componentID, locale, stage)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Return slim list for UI (version, created_at; full data optional or fetched on demand)
+	list := make([]gin.H, 0, len(versions))
+	for _, v := range versions {
+		list = append(list, gin.H{
+			"version":    v.Version,
+			"data":       v.Data,
+			"created_at": v.CreatedAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"versions": list})
 }
 

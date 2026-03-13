@@ -275,10 +275,19 @@ func migrateCodeFields() error {
 	return nil
 }
 
-// CleanupOldVersions keeps only 2 versions per component-locale-stage combination
+// CleanupOldVersions keeps only the last 50 versions per component-locale-stage
 func CleanupOldVersions() error {
-	// Delete versions with version > 2
-	result := DB.Where("version > ?", 2).Delete(&models.TranslationVersion{})
+	// Delete rows that are beyond the 50 most recent per (component_id, locale, stage)
+	result := DB.Exec(`
+		DELETE FROM translation_versions
+		WHERE id IN (
+			SELECT id FROM (
+				SELECT id, ROW_NUMBER() OVER (PARTITION BY component_id, locale, stage ORDER BY version DESC) as rn
+				FROM translation_versions
+			) sub
+			WHERE rn > 50
+		)
+	`)
 	if result.Error != nil {
 		return result.Error
 	}

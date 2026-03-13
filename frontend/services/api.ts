@@ -162,9 +162,17 @@ export const translationApi = {
     )
     return response.data
   },
-  compare: async (componentId: string, locale: string, stage: string) => {
+  compare: async (componentId: string, locale: string, stage: string, versionA?: number, versionB?: number) => {
+    let url = `/components/${componentId}/translations/compare?locale=${locale}&stage=${stage}`
+    if (versionA != null && versionB != null) {
+      url += `&version_a=${versionA}&version_b=${versionB}`
+    }
+    const response = await api.get(url)
+    return response.data
+  },
+  listVersions: async (componentId: string, locale: string, stage: string) => {
     const response = await api.get(
-      `/components/${componentId}/translations/compare?locale=${locale}&stage=${stage}`
+      `/components/${componentId}/translations/versions?locale=${locale}&stage=${stage}`
     )
     return response.data
   },
