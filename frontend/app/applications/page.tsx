@@ -11,7 +11,7 @@ import {
 } from '@/store/slices/applicationSlice'
 import { applicationApi } from '@/services/api'
 import toast from 'react-hot-toast'
-import { Plus, Edit, Trash2, ArrowRight, Globe } from 'lucide-react'
+import { Plus, Edit, Trash2, ArrowRight, Globe, Languages } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Table, TableRow, TableCell } from '@/components/ui/Table'
@@ -220,7 +220,7 @@ export default function ApplicationsPage() {
                     )}
                   </TableCell>
                   <TableCell>
-                    <div className="flex items-center space-x-2">
+                    <div className="flex items-center flex-wrap gap-2">
                       <Button
                         variant="primary"
                         size="sm"
@@ -229,6 +229,17 @@ export default function ApplicationsPage() {
                         <ArrowRight className="w-4 h-4 mr-1" />
                         View
                       </Button>
+                      {canManage && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => router.push(`/applications/${app.id}?addLanguage=1`)}
+                          title="Add language"
+                        >
+                          <Languages className="w-4 h-4 mr-1" />
+                          Add language
+                        </Button>
+                      )}
                       {canManage && (
                         <>
                           <Button

@@ -77,6 +77,9 @@ func SetupRoutes() *gin.Engine {
 	api.POST("/applications", appHandler.CreateApplication, middleware.RequireRole("super_admin", "operator"))
 	api.PUT("/applications/:id", appHandler.UpdateApplication, middleware.RequireRole("super_admin", "operator"))
 	api.DELETE("/applications/:id", appHandler.DeleteApplication, middleware.RequireRole("super_admin"))
+	api.POST("/applications/:id/languages", appHandler.AddLanguage, middleware.RequireRole("super_admin", "operator"))
+	api.GET("/applications/:id/pending-deploys", appHandler.GetPendingDeploys, middleware.RequireRole("super_admin", "operator"))
+	api.POST("/applications/:id/deploy-locale", appHandler.DeployLocale, middleware.RequireRole("super_admin", "operator"))
 
 	// Translation routes (must come before component routes to avoid conflict)
 	// Bulk/aggregator endpoint (must come before single component routes)

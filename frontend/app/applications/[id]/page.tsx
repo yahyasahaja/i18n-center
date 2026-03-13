@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useRouter, useParams } from 'next/navigation'
+import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import Layout from '@/components/Layout'
 import { useAppDispatch, useAppSelector } from '@/hooks/redux'
 import { fetchApplication } from '@/store/slices/applicationSlice'
@@ -10,19 +10,40 @@ import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Table, TableRow, TableCell } from '@/components/ui/Table'
 import { Badge } from '@/components/ui/Badge'
-import { ArrowLeft, Plus, Edit, Trash2, ArrowRight } from 'lucide-react'
-import { componentApi } from '@/services/api'
+import { Modal } from '@/components/ui/Modal'
+import { Input } from '@/components/ui/Input'
+import { ArrowLeft, Plus, Edit, Trash2, ArrowRight, Languages, Rocket } from 'lucide-react'
+import { componentApi, applicationApi } from '@/services/api'
 import toast from 'react-hot-toast'
+
+type PendingDeploy = { locale: string; stage_completed: string; next_stage: string }
 
 export default function ApplicationDetailPage() {
   const router = useRouter()
   const params = useParams()
+  const searchParams = useSearchParams()
   const applicationId = params.id as string
   const dispatch = useAppDispatch()
   const { isAuthenticated, user } = useAppSelector((state) => state.auth)
   const { currentApplication } = useAppSelector((state) => state.applications)
   const { components } = useAppSelector((state) => state.components)
   const [loading, setLoading] = useState(true)
+  const [showAddLanguageModal, setShowAddLanguageModal] = useState(false)
+  const [addLanguageLocale, setAddLanguageLocale] = useState('')
+  const [addLanguageAutoTranslate, setAddLanguageAutoTranslate] = useState(true)
+  const [addLanguageLoading, setAddLanguageLoading] = useState(false)
+  const [pendingDeploys, setPendingDeploys] = useState<PendingDeploy[]>([])
+  const [deployingLocale, setDeployingLocale] = useState<string | null>(null)
+
+  const loadPendingDeploys = async () => {
+    if (!applicationId) return
+    try {
+      const res = await applicationApi.getPendingDeploys(applicationId)
+      setPendingDeploys(res.pending_deploys || [])
+    } catch {
+      setPendingDeploys([])
+    }
+  }
 
   useEffect(() => {
     const token = localStorage.getItem('token')
@@ -37,6 +58,7 @@ export default function ApplicationDetailPage() {
           dispatch(fetchApplication(applicationId)),
           dispatch(fetchComponents(applicationId)),
         ])
+        await loadPendingDeploys()
       } catch (error: any) {
         toast.error('Failed to load application data')
       } finally {
@@ -48,6 +70,61 @@ export default function ApplicationDetailPage() {
       loadData()
     }
   }, [applicationId, isAuthenticated, router, dispatch])
+
+  useEffect(() => {
+    if (searchParams.get('addLanguage') === '1' && currentApplication) {
+      setShowAddLanguageModal(true)
+    }
+  }, [searchParams, currentApplication])
+
+  const handleAddLanguage = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const locale = addLanguageLocale.trim().toLowerCase()
+    if (!locale) {
+      toast.error('Enter a language code')
+      return
+    }
+    if (currentApplication?.enabled_languages?.some((l) => l.toLowerCase() === locale)) {
+      toast.error('This language is already enabled')
+      return
+    }
+    setAddLanguageLoading(true)
+    try {
+      await applicationApi.addLanguage(applicationId, {
+        locale,
+        auto_translate: addLanguageAutoTranslate,
+      })
+      toast.success(`Language ${locale.toUpperCase()} added${addLanguageAutoTranslate ? '. Translations created in draft.' : ''}`)
+      setShowAddLanguageModal(false)
+      setAddLanguageLocale('')
+      setAddLanguageAutoTranslate(true)
+      await dispatch(fetchApplication(applicationId))
+      await loadPendingDeploys()
+    } catch (error: any) {
+      const data = error.response?.data
+      const detail = data?.detail || data?.error || 'Failed to add language'
+      const retry = data?.retry ? ' You can retry.' : ''
+      toast.error(detail + retry)
+    } finally {
+      setAddLanguageLoading(false)
+    }
+  }
+
+  const handleDeployLocale = async (locale: string) => {
+    setDeployingLocale(locale)
+    try {
+      await applicationApi.deployLocale(applicationId, locale)
+      const item = pendingDeploys.find((p) => p.locale === locale)
+      toast.success(`Deployed ${locale.toUpperCase()} to ${item?.next_stage || 'next stage'}`)
+      await loadPendingDeploys()
+    } catch (error: any) {
+      const data = error.response?.data
+      const detail = data?.detail || data?.error || 'Deploy failed'
+      toast.error(detail + (data?.retry ? ' You can retry.' : ''))
+    } finally {
+      setDeployingLocale(null)
+    }
+  }
 
   const handleDeleteComponent = async (id: string) => {
     if (!confirm('Are you sure you want to delete this component?')) return
@@ -122,9 +199,18 @@ export default function ApplicationDetailPage() {
               {applicationComponents.length}
             </div>
           </Card>
-          <Card>
-            <div className="text-sm font-medium text-gray-500">Enabled Languages</div>
-            <div className="mt-2 flex flex-wrap gap-2">
+          <Card
+            title="Enabled Languages"
+            actions={
+              canManage && (
+                <Button variant="outline" size="sm" onClick={() => setShowAddLanguageModal(true)}>
+                  <Languages className="w-4 h-4 mr-2" />
+                  Add language
+                </Button>
+              )
+            }
+          >
+            <div className="flex flex-wrap gap-2">
               {currentApplication.enabled_languages?.map((lang) => (
                 <Badge key={lang} variant="info">
                   {lang.toUpperCase()}
@@ -143,6 +229,38 @@ export default function ApplicationDetailPage() {
             </div>
           </Card>
         </div>
+
+        {pendingDeploys.length > 0 && (
+          <Card title="Pending locale deploys">
+            <p className="text-sm text-gray-600 mb-4">
+              These locales have draft (or staging) translations. Deploy them to the next stage until production. State is saved—you can continue after reload.
+            </p>
+            <Table headers={['Locale', 'Current stage', 'Action']}>
+              {pendingDeploys.map((p) => (
+                <TableRow key={p.locale}>
+                  <TableCell>
+                    <Badge variant="info">{p.locale.toUpperCase()}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <span className="text-sm text-gray-600">{p.stage_completed}</span>
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => handleDeployLocale(p.locale)}
+                      isLoading={deployingLocale === p.locale}
+                      disabled={!!deployingLocale}
+                    >
+                      <Rocket className="w-4 h-4 mr-2" />
+                      Deploy to {p.next_stage}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </Table>
+          </Card>
+        )}
 
         <Card
           title="Components"
@@ -220,6 +338,46 @@ export default function ApplicationDetailPage() {
             </Table>
           )}
         </Card>
+
+        <Modal
+          isOpen={showAddLanguageModal}
+          onClose={() => setShowAddLanguageModal(false)}
+          title="Add language"
+          footer={
+            <>
+              <Button variant="primary" onClick={handleAddLanguage} disabled={addLanguageLoading} isLoading={addLanguageLoading}>
+                Add language
+              </Button>
+              <Button variant="outline" onClick={() => setShowAddLanguageModal(false)} disabled={addLanguageLoading}>
+                Cancel
+              </Button>
+            </>
+          }
+        >
+          <form onSubmit={handleAddLanguage} className="space-y-4">
+            <Input
+              label="Language code"
+              value={addLanguageLocale}
+              onChange={(e) => setAddLanguageLocale(e.target.value)}
+              placeholder="e.g. id, es, fr"
+              helperText="Two-letter or locale code (e.g. en, id, es)"
+            />
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={addLanguageAutoTranslate}
+                onChange={(e) => setAddLanguageAutoTranslate(e.target.checked)}
+                className="rounded border-gray-300"
+              />
+              <span className="text-sm text-gray-700">Auto-translate from each component&apos;s default locale</span>
+            </label>
+            {addLanguageAutoTranslate && (
+              <p className="text-xs text-gray-500">
+                All components will be translated to this locale (draft). You can then deploy draft → staging → production. If any step fails, changes are rolled back and you can retry.
+              </p>
+            )}
+          </form>
+        </Modal>
       </div>
     </Layout>
   )

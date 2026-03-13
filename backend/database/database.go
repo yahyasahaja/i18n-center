@@ -49,6 +49,7 @@ func InitDatabase() error {
 		&models.Component{},
 		&models.TranslationVersion{},
 		&models.AuditLog{},
+		&models.ApplicationLocaleDeploy{},
 	)
 
 	if err != nil {

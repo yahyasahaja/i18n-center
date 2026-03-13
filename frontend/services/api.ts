@@ -74,6 +74,18 @@ export const applicationApi = {
     const response = await api.delete(`/applications/${id}`)
     return response.data
   },
+  addLanguage: async (applicationId: string, data: { locale: string; auto_translate: boolean }) => {
+    const response = await api.post(`/applications/${applicationId}/languages`, data)
+    return response.data
+  },
+  getPendingDeploys: async (applicationId: string) => {
+    const response = await api.get(`/applications/${applicationId}/pending-deploys`)
+    return response.data
+  },
+  deployLocale: async (applicationId: string, locale: string) => {
+    const response = await api.post(`/applications/${applicationId}/deploy-locale`, { locale })
+    return response.data
+  },
 }
 
 export const componentApi = {

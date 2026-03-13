@@ -214,6 +214,19 @@ func (s *TranslationService) GetVersionByNumber(componentID uuid.UUID, locale st
 	return &v, nil
 }
 
+// DeleteTranslationVersionByID deletes a translation version by ID (for rollback). Invalidates cache.
+func (s *TranslationService) DeleteTranslationVersionByID(id uuid.UUID) error {
+	var v models.TranslationVersion
+	if err := database.DB.First(&v, "id = ?", id).Error; err != nil {
+		return err
+	}
+	if err := database.DB.Delete(&v).Error; err != nil {
+		return err
+	}
+	cache.Delete(cache.TranslationKey(v.ComponentID.String(), v.Locale, string(v.Stage)))
+	return nil
+}
+
 // DeployToStage deploys translations from draft to staging or staging to production
 func (s *TranslationService) DeployToStage(componentID uuid.UUID, locale string, fromStage, toStage models.DeploymentStage, userID uuid.UUID) error {
 	// Get source translation
