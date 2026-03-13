@@ -4,11 +4,10 @@ import React, { useState, useEffect } from 'react'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { Button } from './ui/Button'
 import { Card } from './ui/Card'
-import { Badge } from './ui/Badge'
 import { Modal } from './ui/Modal'
 import { CodeEditor } from './CodeEditor'
 import { DiffView } from './DiffView'
-import { Save, RotateCcw, Download, Upload, Languages, Zap, GitCompare, History } from 'lucide-react'
+import { Save, RotateCcw, Download, Upload, Languages, Zap, GitCompare, History, ChevronRight } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { translationApi, exportApi, importApi } from '@/services/api'
 
@@ -608,30 +607,43 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Stage
               </label>
-              <div className="flex items-center space-x-2">
-                <select
-                  value={selectedStage}
-                  onChange={(e) => {
-                    if (hasUnsavedChanges()) {
-                      if (!window.confirm('You have unsaved changes. Changing stage will discard them. Are you sure you want to continue?')) {
-                        return
-                      }
-                    }
-                    const next = e.target.value
-                    setSelectedStage(next)
-                    updateQueryString(selectedLocale, next)
-                  }}
-                  className="block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 bg-white text-gray-900 focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                >
-                  {stages.map((stage) => (
-                    <option key={stage.value} value={stage.value}>
+              <div
+                className="inline-flex items-center rounded-lg border border-gray-200 bg-gray-50 p-0.5"
+                role="tablist"
+                aria-label="Deployment stage"
+              >
+                {stages.map((stage, idx) => (
+                  <React.Fragment key={stage.value}>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={selectedStage === stage.value}
+                      onClick={() => {
+                        if (selectedStage === stage.value) return
+                        if (hasUnsavedChanges()) {
+                          if (!window.confirm('You have unsaved changes. Changing stage will discard them. Are you sure you want to continue?')) return
+                        }
+                        setSelectedStage(stage.value)
+                        updateQueryString(selectedLocale, stage.value)
+                      }}
+                      className={`
+                        inline-flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors
+                        ${selectedStage === stage.value
+                          ? 'bg-white shadow-sm ring-1 ' + (
+                              stage.value === 'draft' ? 'ring-amber-200 text-amber-900'
+                              : stage.value === 'staging' ? 'ring-blue-200 text-blue-900'
+                              : 'ring-green-200 text-green-900'
+                            )
+                          : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'}
+                      `}
+                    >
                       {stage.label}
-                    </option>
-                  ))}
-                </select>
-                {currentStage && (
-                  <Badge variant={currentStage.color}>{currentStage.label}</Badge>
-                )}
+                    </button>
+                    {idx < stages.length - 1 && (
+                      <ChevronRight className="mx-0.5 h-4 w-4 text-gray-400 flex-shrink-0" aria-hidden />
+                    )}
+                  </React.Fragment>
+                ))}
               </div>
             </div>
 

@@ -147,13 +147,40 @@ type Application struct {
 
 // ApplicationLocaleDeploy tracks a locale added to an application and its deploy progress (draft -> staging -> production)
 type ApplicationLocaleDeploy struct {
-	ID             uuid.UUID       `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	ApplicationID  uuid.UUID       `gorm:"type:uuid;not null;uniqueIndex:idx_app_locale" json:"application_id"`
-	Locale         string          `gorm:"type:varchar(20);not null;uniqueIndex:idx_app_locale" json:"locale"`
-	StageCompleted string          `gorm:"type:varchar(50);not null;default:draft" json:"stage_completed"` // draft, staging, production
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
-	DeletedAt      gorm.DeletedAt  `gorm:"index" json:"-"`
+	ID             uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	ApplicationID  uuid.UUID      `gorm:"type:uuid;not null;uniqueIndex:idx_app_locale" json:"application_id"`
+	Locale         string         `gorm:"type:varchar(20);not null;uniqueIndex:idx_app_locale" json:"locale"`
+	StageCompleted string         `gorm:"type:varchar(50);not null;default:draft" json:"stage_completed"` // draft, staging, production
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// AddLanguageJob is a DB-backed job for "add language + auto-translate". No in-memory state; safe for K8s scaling.
+const (
+	JobStatusPending   = "pending"
+	JobStatusRunning  = "running"
+	JobStatusCompleted = "completed"
+	JobStatusFailed   = "failed"
+)
+
+type AddLanguageJob struct {
+	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	ApplicationID uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
+	Locale        string         `gorm:"type:varchar(20);not null" json:"locale"`
+	AutoTranslate bool           `gorm:"not null" json:"auto_translate"`
+	Status        string         `gorm:"type:varchar(50);not null;default:pending;index" json:"status"` // pending, running, completed, failed
+	ErrorMessage  string         `gorm:"type:text" json:"error_message,omitempty"`
+	ErrorDetail   string         `gorm:"type:text" json:"error_detail,omitempty"`
+	ClaimedBy     string         `gorm:"type:varchar(255)" json:"claimed_by,omitempty"` // pod/instance id for debugging (K8s HOSTNAME)
+	CreatedBy     uuid.UUID      `gorm:"type:uuid;index" json:"created_by"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+func (AddLanguageJob) TableName() string {
+	return "add_language_jobs"
 }
 
 // Component represents a component within an application (e.g., pdp_form)
@@ -231,6 +258,13 @@ func (tv *TranslationVersion) BeforeCreate(tx *gorm.DB) error {
 func (a *ApplicationLocaleDeploy) BeforeCreate(tx *gorm.DB) error {
 	if a.ID == uuid.Nil {
 		a.ID = uuid.New()
+	}
+	return nil
+}
+
+func (j *AddLanguageJob) BeforeCreate(tx *gorm.DB) error {
+	if j.ID == uuid.Nil {
+		j.ID = uuid.New()
 	}
 	return nil
 }

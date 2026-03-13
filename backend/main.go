@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
+	"github.com/your-org/i18n-center/jobs"
 	"github.com/your-org/i18n-center/observability"
 	"github.com/your-org/i18n-center/routes"
 
@@ -85,8 +87,14 @@ func main() {
 	// Setup routes
 	r := routes.SetupRoutes()
 
-	// Setup graceful shutdown
-	setupGracefulShutdown()
+	// Start in-process worker (DB-backed, no in-memory state; safe for K8s scaling)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go jobs.Run(ctx)
+	observability.Logger.Info("Add-language worker started (in-process, DB-backed)")
+
+	// Setup graceful shutdown (cancel worker context)
+	setupGracefulShutdown(cancel)
 
 	// Get port from environment
 	port := os.Getenv("PORT")
@@ -102,13 +110,14 @@ func main() {
 	}
 }
 
-func setupGracefulShutdown() {
+func setupGracefulShutdown(cancel context.CancelFunc) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		<-c
 		observability.Logger.Info("Shutting down gracefully...")
+		cancel() // stop worker
 		observability.RecordServiceHealth(false)
 		observability.Logger.Sync()
 		observability.StopTracing()

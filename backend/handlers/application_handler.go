@@ -9,8 +9,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
+	"github.com/your-org/i18n-center/jobs"
 	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/services"
+	"gorm.io/gorm"
 )
 
 type ApplicationHandler struct {
@@ -287,7 +289,9 @@ type AddLanguageRequest struct {
 	AutoTranslate bool   `json:"auto_translate"`
 }
 
-// AddLanguage adds a new language to an application. If auto_translate is true, translates all components from their default locale to the new locale (draft). Atomic: on any error rolls back and returns the error.
+// AddLanguage adds a new language to an application.
+// When auto_translate is false: sync add locale, return 200.
+// When auto_translate is true: add locale, create a job (worker will translate), return 202 with job_id for polling.
 func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 	appIDStr := c.Param("id")
 	appID, err := uuid.Parse(appIDStr)
@@ -323,16 +327,8 @@ func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 		}
 	}
 
-	var components []models.Component
-	if err := database.DB.Where("application_id = ?", appID).Find(&components).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	translationService := services.NewTranslationService()
-	var createdVersionIDs []uuid.UUID
-
 	if req.AutoTranslate {
+		// Validate OpenAI key exists before creating job
 		openAIService := services.NewOpenAIService(application.OpenAIKey)
 		if application.OpenAIKey == "" {
 			openAIService = services.NewOpenAIService(services.GetDefaultOpenAIKey())
@@ -342,80 +338,48 @@ func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 			return
 		}
 
-		for _, comp := range components {
-			sourceTranslation, err := translationService.GetTranslation(comp.ID, comp.DefaultLocale, models.StageDraft)
-			if err != nil {
-				// Rollback: delete all translations we created for this locale
-				for _, vid := range createdVersionIDs {
-					_ = translationService.DeleteTranslationVersionByID(vid)
-				}
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error":   "Translation process failed (rolled back)",
-					"detail":  fmt.Sprintf("Component %s: no draft translation for default locale %s", comp.Code, comp.DefaultLocale),
-					"retry":   true,
-				})
-				return
-			}
-			translatedData, err := openAIService.TranslateJSON(sourceTranslation.Data, comp.DefaultLocale, req.Locale)
-			if err != nil {
-				for _, vid := range createdVersionIDs {
-					_ = translationService.DeleteTranslationVersionByID(vid)
-				}
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error":   "Translation process failed (rolled back)",
-					"detail":  fmt.Sprintf("Component %s: %v", comp.Code, err),
-					"retry":   true,
-				})
-				return
-			}
-			tr, err := translationService.SaveTranslation(comp.ID, req.Locale, models.StageDraft, translatedData, userID)
-			if err != nil {
-				for _, vid := range createdVersionIDs {
-					_ = translationService.DeleteTranslationVersionByID(vid)
-				}
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error":   "Translation process failed (rolled back)",
-					"detail":  fmt.Sprintf("Component %s: %v", comp.Code, err),
-					"retry":   true,
-				})
-				return
-			}
-			createdVersionIDs = append(createdVersionIDs, tr.ID)
+		// Add locale first so it exists even if job fails later
+		application.EnabledLanguages = append(application.EnabledLanguages, req.Locale)
+		if err := database.DB.Save(&application).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update application: " + err.Error()})
+			return
 		}
-	}
 
-	// Add locale to application
-	application.EnabledLanguages = append(application.EnabledLanguages, req.Locale)
-	if err := database.DB.Save(&application).Error; err != nil {
-		if req.AutoTranslate {
-			for _, vid := range createdVersionIDs {
-				_ = translationService.DeleteTranslationVersionByID(vid)
-			}
+		// Create job; worker will do the translate work (no in-memory state, K8s-safe)
+		job := models.AddLanguageJob{
+			ApplicationID:  appID,
+			Locale:        req.Locale,
+			AutoTranslate: true,
+			Status:        models.JobStatusPending,
+			CreatedBy:    userID,
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update application: " + err.Error()})
+		if err := database.DB.Create(&job).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create job: " + err.Error()})
+			return
+		}
+
+		cache.Delete(cache.ApplicationKey(appIDStr))
+		c.Header("Location", fmt.Sprintf("/api/applications/%s/jobs/%s", appIDStr, job.ID.String()))
+		c.JSON(http.StatusAccepted, gin.H{
+			"message":   "Language added. Translation job queued.",
+			"job_id":    job.ID.String(),
+			"locale":    req.Locale,
+			"status":    models.JobStatusPending,
+			"status_url": fmt.Sprintf("/api/applications/%s/jobs/%s", appIDStr, job.ID.String()),
+		})
 		return
 	}
 
-	// Record deploy progress only when we created draft translations (auto_translate)
-	pendingDeploy := req.AutoTranslate
-	if req.AutoTranslate {
-		deploy := models.ApplicationLocaleDeploy{
-			ApplicationID:  appID,
-			Locale:         req.Locale,
-			StageCompleted: "draft",
-		}
-		if err := database.DB.Create(&deploy).Error; err != nil {
-			pendingDeploy = false
-		}
+	// Sync path: add locale only, no translate
+	application.EnabledLanguages = append(application.EnabledLanguages, req.Locale)
+	if err := database.DB.Save(&application).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update application: " + err.Error()})
+		return
 	}
-
 	cache.Delete(cache.ApplicationKey(appIDStr))
 	c.JSON(http.StatusOK, gin.H{
-		"message":          "Language added",
-		"locale":           req.Locale,
-		"auto_translated":  req.AutoTranslate,
-		"components_count": len(components),
-		"pending_deploy":   pendingDeploy,
+		"message": "Language added",
+		"locale":  req.Locale,
 	})
 }
 
@@ -522,5 +486,143 @@ func (h *ApplicationHandler) DeployLocale(c *gin.Context) {
 		"locale":  req.Locale,
 		"stage":   string(toStage),
 	})
+}
+
+// GetAddLanguageJobStatus returns status of an add-language job (for polling after 202).
+func (h *ApplicationHandler) GetAddLanguageJobStatus(c *gin.Context) {
+	appIDStr := c.Param("id")
+	jobIDStr := c.Param("job_id")
+	appID, err := uuid.Parse(appIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid application ID"})
+		return
+	}
+	jobID, err := uuid.Parse(jobIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid job ID"})
+		return
+	}
+
+	job, err := jobs.GetJobStatus(appID, jobID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if job == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+		return
+	}
+
+	resp := gin.H{
+		"job_id": job.ID.String(),
+		"locale": job.Locale,
+		"status": job.Status,
+	}
+	if job.Status == models.JobStatusFailed {
+		resp["error_message"] = job.ErrorMessage
+		resp["error_detail"] = job.ErrorDetail
+		resp["retry"] = true
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// DeleteLanguage removes a locale from an application: removes it from enabled_languages,
+// deletes all translation versions for that locale for all components in the app, and the locale deploy record.
+// Returns 400 if the locale is any component's default_locale.
+func (h *ApplicationHandler) DeleteLanguage(c *gin.Context) {
+	appIDStr := c.Param("id")
+	localeParam := c.Param("locale")
+	appID, err := uuid.Parse(appIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid application ID"})
+		return
+	}
+	locale := strings.TrimSpace(strings.ToLower(localeParam))
+	if locale == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Locale is required"})
+		return
+	}
+
+	var application models.Application
+	if err := database.DB.First(&application, "id = ?", appID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+		return
+	}
+
+	found := false
+	for _, l := range application.EnabledLanguages {
+		if strings.EqualFold(l, locale) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Locale is not enabled for this application"})
+		return
+	}
+
+	var components []models.Component
+	if err := database.DB.Where("application_id = ?", appID).Find(&components).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for _, comp := range components {
+		if strings.EqualFold(comp.DefaultLocale, locale) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("Cannot delete locale %s: it is the default locale of component %s", locale, comp.Code),
+			})
+			return
+		}
+	}
+
+	componentIDs := make([]uuid.UUID, 0, len(components))
+	for _, comp := range components {
+		componentIDs = append(componentIDs, comp.ID)
+	}
+
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if len(componentIDs) > 0 {
+			if err := tx.Where("component_id IN ? AND locale = ?", componentIDs, locale).Delete(&models.TranslationVersion{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("application_id = ? AND locale = ?", appID, locale).Delete(&models.ApplicationLocaleDeploy{}).Error; err != nil {
+			return err
+		}
+		newLangs := make([]string, 0, len(application.EnabledLanguages))
+		for _, l := range application.EnabledLanguages {
+			if !strings.EqualFold(l, locale) {
+				newLangs = append(newLangs, l)
+			}
+		}
+		application.EnabledLanguages = newLangs
+		return tx.Save(&application).Error
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete language: " + err.Error()})
+		return
+	}
+
+	for _, compID := range componentIDs {
+		for _, stage := range []string{"draft", "staging", "production"} {
+			cache.Delete(cache.TranslationKey(compID.String(), locale, stage))
+		}
+		cache.Delete(cache.ComponentKey(compID.String()))
+	}
+	cache.Delete(cache.ApplicationKey(appIDStr))
+
+	userID, username := h.getCurrentUser(c)
+	ipAddress, userAgent := h.getClientInfo(c)
+	h.auditService.LogDelete(
+		userID,
+		username,
+		"application_language",
+		appID,
+		locale,
+		map[string]interface{}{"locale": locale},
+		ipAddress,
+		userAgent,
+	)
+
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Language %s removed", locale), "locale": locale})
 }
 

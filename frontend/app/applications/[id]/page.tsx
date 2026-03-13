@@ -34,6 +34,10 @@ export default function ApplicationDetailPage() {
   const [addLanguageLoading, setAddLanguageLoading] = useState(false)
   const [pendingDeploys, setPendingDeploys] = useState<PendingDeploy[]>([])
   const [deployingLocale, setDeployingLocale] = useState<string | null>(null)
+  const [showDeleteLanguageModal, setShowDeleteLanguageModal] = useState(false)
+  const [deleteLanguageLocale, setDeleteLanguageLocale] = useState<string | null>(null)
+  const [deleteLanguageConfirm, setDeleteLanguageConfirm] = useState('')
+  const [deleteLanguageLoading, setDeleteLanguageLoading] = useState(false)
 
   const loadPendingDeploys = async () => {
     if (!applicationId) return
@@ -77,6 +81,17 @@ export default function ApplicationDetailPage() {
     }
   }, [searchParams, currentApplication])
 
+  const pollJobStatus = async (jobId: string): Promise<'completed' | 'failed'> => {
+    const maxAttempts = 300 // 5 min at 1s interval
+    for (let i = 0; i < maxAttempts; i++) {
+      const res = await applicationApi.getAddLanguageJobStatus(applicationId, jobId)
+      if (res.status === 'completed') return 'completed'
+      if (res.status === 'failed') return 'failed'
+      await new Promise((r) => setTimeout(r, 2000)) // poll every 2s
+    }
+    return 'failed'
+  }
+
   const handleAddLanguage = async (e: React.FormEvent) => {
     e.preventDefault()
     const locale = addLanguageLocale.trim().toLowerCase()
@@ -90,11 +105,25 @@ export default function ApplicationDetailPage() {
     }
     setAddLanguageLoading(true)
     try {
-      await applicationApi.addLanguage(applicationId, {
+      const data = await applicationApi.addLanguage(applicationId, {
         locale,
         auto_translate: addLanguageAutoTranslate,
       })
-      toast.success(`Language ${locale.toUpperCase()} added${addLanguageAutoTranslate ? '. Translations created in draft.' : ''}`)
+      if (data.job_id) {
+        toast.loading(`Adding ${locale.toUpperCase()} and translating components…`, { id: 'add-lang' })
+        const result = await pollJobStatus(data.job_id)
+        toast.dismiss('add-lang')
+        if (result === 'failed') {
+          const jobStatus = await applicationApi.getAddLanguageJobStatus(applicationId, data.job_id)
+          const detail = jobStatus?.error_detail || jobStatus?.error_message || 'Job failed'
+          toast.error(detail + (jobStatus?.retry ? ' You can retry.' : ''))
+          await dispatch(fetchApplication(applicationId))
+          return
+        }
+        toast.success(`Language ${locale.toUpperCase()} added. Translations created in draft.`)
+      } else {
+        toast.success(`Language ${locale.toUpperCase()} added`)
+      }
       setShowAddLanguageModal(false)
       setAddLanguageLocale('')
       setAddLanguageAutoTranslate(true)
@@ -123,6 +152,44 @@ export default function ApplicationDetailPage() {
       toast.error(detail + (data?.retry ? ' You can retry.' : ''))
     } finally {
       setDeployingLocale(null)
+    }
+  }
+
+  const deleteLanguageConfirmPhrase = deleteLanguageLocale ? `Delete ${deleteLanguageLocale.toUpperCase()}` : ''
+  const canConfirmDeleteLanguage = deleteLanguageConfirm.trim() === deleteLanguageConfirmPhrase
+
+  const handleDeleteLanguage = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!deleteLanguageLocale || !canConfirmDeleteLanguage) return
+    setDeleteLanguageLoading(true)
+    try {
+      await applicationApi.deleteLanguage(applicationId, deleteLanguageLocale)
+      toast.success(`Language ${deleteLanguageLocale.toUpperCase()} removed`)
+      setDeleteLanguageLocale(null)
+      setDeleteLanguageConfirm('')
+      setShowDeleteLanguageModal(false)
+      await dispatch(fetchApplication(applicationId))
+      await loadPendingDeploys()
+    } catch (error: any) {
+      const data = error.response?.data
+      const detail = data?.error || 'Failed to delete language'
+      toast.error(detail)
+    } finally {
+      setDeleteLanguageLoading(false)
+    }
+  }
+
+  const openDeleteLanguageModal = (locale: string) => {
+    setDeleteLanguageLocale(locale)
+    setDeleteLanguageConfirm('')
+    setShowDeleteLanguageModal(true)
+  }
+
+  const closeDeleteLanguageModal = () => {
+    if (!deleteLanguageLoading) {
+      setShowDeleteLanguageModal(false)
+      setDeleteLanguageLocale(null)
+      setDeleteLanguageConfirm('')
     }
   }
 
@@ -210,12 +277,27 @@ export default function ApplicationDetailPage() {
               )
             }
           >
-            <div className="flex flex-wrap gap-2">
-              {currentApplication.enabled_languages?.map((lang) => (
-                <Badge key={lang} variant="info">
-                  {lang.toUpperCase()}
-                </Badge>
-              )) || <span className="text-gray-400">None</span>}
+            <div className="flex flex-wrap gap-2 items-center">
+              {currentApplication.enabled_languages?.map((lang) => {
+                const isDefaultLocale = applicationComponents.some((c) => c.default_locale?.toLowerCase() === lang.toLowerCase())
+                return (
+                  <span key={lang} className="inline-flex items-center gap-1 rounded-full bg-blue-100 text-blue-800 px-2.5 py-0.5 text-sm font-medium">
+                    {lang.toUpperCase()}
+                    {canManage && (
+                      <button
+                        type="button"
+                        onClick={() => !isDefaultLocale && openDeleteLanguageModal(lang)}
+                        disabled={isDefaultLocale}
+                        className="rounded p-0.5 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                        title={isDefaultLocale ? `Cannot delete: ${lang.toUpperCase()} is the default locale of one or more components` : `Delete ${lang.toUpperCase()}`}
+                        aria-label={isDefaultLocale ? `${lang.toUpperCase()} is default locale` : `Delete language ${lang.toUpperCase()}`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </span>
+                )
+              }) || <span className="text-gray-400">None</span>}
             </div>
           </Card>
           <Card>
@@ -377,6 +459,46 @@ export default function ApplicationDetailPage() {
               </p>
             )}
           </form>
+        </Modal>
+
+        <Modal
+          isOpen={showDeleteLanguageModal}
+          onClose={closeDeleteLanguageModal}
+          title="Delete language"
+          footer={
+            <>
+              <Button
+                variant="danger"
+                onClick={handleDeleteLanguage}
+                disabled={!canConfirmDeleteLanguage || deleteLanguageLoading}
+                isLoading={deleteLanguageLoading}
+              >
+                Delete {deleteLanguageLocale?.toUpperCase()}
+              </Button>
+              <Button variant="outline" onClick={closeDeleteLanguageModal} disabled={deleteLanguageLoading}>
+                Cancel
+              </Button>
+            </>
+          }
+        >
+          {deleteLanguageLocale && (
+            <form onSubmit={handleDeleteLanguage} className="space-y-4">
+              <p className="text-sm text-gray-700">
+                Removing <strong>{deleteLanguageLocale.toUpperCase()}</strong> will delete all translations for this language across all components (draft, staging, and production). This cannot be undone.
+              </p>
+              <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                To confirm, type <strong>{deleteLanguageConfirmPhrase}</strong> below.
+              </p>
+              <Input
+                label="Confirmation"
+                value={deleteLanguageConfirm}
+                onChange={(e) => setDeleteLanguageConfirm(e.target.value)}
+                placeholder={deleteLanguageConfirmPhrase}
+                autoComplete="off"
+                className="font-mono"
+              />
+            </form>
+          )}
         </Modal>
       </div>
     </Layout>

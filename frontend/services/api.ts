@@ -86,6 +86,14 @@ export const applicationApi = {
     const response = await api.post(`/applications/${applicationId}/deploy-locale`, { locale })
     return response.data
   },
+  getAddLanguageJobStatus: async (applicationId: string, jobId: string) => {
+    const response = await api.get(`/applications/${applicationId}/jobs/${jobId}`)
+    return response.data
+  },
+  deleteLanguage: async (applicationId: string, locale: string) => {
+    const response = await api.delete(`/applications/${applicationId}/languages/${encodeURIComponent(locale)}`)
+    return response.data
+  },
 }
 
 export const componentApi = {

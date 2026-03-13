@@ -78,6 +78,8 @@ func SetupRoutes() *gin.Engine {
 	api.PUT("/applications/:id", appHandler.UpdateApplication, middleware.RequireRole("super_admin", "operator"))
 	api.DELETE("/applications/:id", appHandler.DeleteApplication, middleware.RequireRole("super_admin"))
 	api.POST("/applications/:id/languages", appHandler.AddLanguage, middleware.RequireRole("super_admin", "operator"))
+	api.DELETE("/applications/:id/languages/:locale", appHandler.DeleteLanguage, middleware.RequireRole("super_admin", "operator"))
+	api.GET("/applications/:id/jobs/:job_id", appHandler.GetAddLanguageJobStatus, middleware.RequireRole("super_admin", "operator"))
 	api.GET("/applications/:id/pending-deploys", appHandler.GetPendingDeploys, middleware.RequireRole("super_admin", "operator"))
 	api.POST("/applications/:id/deploy-locale", appHandler.DeployLocale, middleware.RequireRole("super_admin", "operator"))
 

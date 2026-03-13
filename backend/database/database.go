@@ -50,6 +50,7 @@ func InitDatabase() error {
 		&models.TranslationVersion{},
 		&models.AuditLog{},
 		&models.ApplicationLocaleDeploy{},
+		&models.AddLanguageJob{},
 	)
 
 	if err != nil {
