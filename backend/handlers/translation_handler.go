@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/middleware"
 	"github.com/your-org/i18n-center/models"
@@ -280,6 +282,13 @@ func (h *TranslationHandler) GetTranslationsByTag(c *gin.Context) {
 		return
 	}
 
+	cacheKey := cache.TranslationsByTagKey(applicationIDStr, tagCode, locale, string(stage))
+	var response map[string]interface{}
+	if err := cache.Get(cacheKey, &response); err == nil {
+		c.JSON(http.StatusOK, response)
+		return
+	}
+
 	var tag models.Tag
 	if err := database.DB.First(&tag, "application_id = ? AND code = ?", applicationID, tagCode).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Tag not found"})
@@ -288,7 +297,9 @@ func (h *TranslationHandler) GetTranslationsByTag(c *gin.Context) {
 
 	var componentIDs []uuid.UUID
 	if err := database.DB.Table("component_tags").Where("tag_id = ?", tag.ID).Pluck("component_id", &componentIDs).Error; err != nil || len(componentIDs) == 0 {
-		c.JSON(http.StatusOK, gin.H{})
+		empty := gin.H{}
+		_ = cache.Set(cacheKey, empty, time.Hour)
+		c.JSON(http.StatusOK, empty)
 		return
 	}
 
@@ -308,12 +319,13 @@ func (h *TranslationHandler) GetTranslationsByTag(c *gin.Context) {
 		idToCode[comp.ID.String()] = comp.Code
 	}
 
-	response := make(map[string]interface{})
+	response = make(map[string]interface{})
 	for idStr, tv := range translations {
 		if code, ok := idToCode[idStr]; ok && tv != nil {
 			response[code] = tv.Data
 		}
 	}
+	_ = cache.Set(cacheKey, response, time.Hour)
 	c.JSON(http.StatusOK, response)
 }
 
@@ -361,6 +373,13 @@ func (h *TranslationHandler) GetTranslationsByPage(c *gin.Context) {
 		return
 	}
 
+	cacheKey := cache.TranslationsByPageKey(applicationIDStr, pageCode, locale, string(stage))
+	var response map[string]interface{}
+	if err := cache.Get(cacheKey, &response); err == nil {
+		c.JSON(http.StatusOK, response)
+		return
+	}
+
 	var page models.Page
 	if err := database.DB.First(&page, "application_id = ? AND code = ?", applicationID, pageCode).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Page not found"})
@@ -369,7 +388,9 @@ func (h *TranslationHandler) GetTranslationsByPage(c *gin.Context) {
 
 	var componentIDs []uuid.UUID
 	if err := database.DB.Table("component_pages").Where("page_id = ?", page.ID).Pluck("component_id", &componentIDs).Error; err != nil || len(componentIDs) == 0 {
-		c.JSON(http.StatusOK, gin.H{})
+		empty := gin.H{}
+		_ = cache.Set(cacheKey, empty, time.Hour)
+		c.JSON(http.StatusOK, empty)
 		return
 	}
 
@@ -389,12 +410,13 @@ func (h *TranslationHandler) GetTranslationsByPage(c *gin.Context) {
 		idToCode[comp.ID.String()] = comp.Code
 	}
 
-	response := make(map[string]interface{})
+	response = make(map[string]interface{})
 	for idStr, tv := range translations {
 		if code, ok := idToCode[idStr]; ok && tv != nil {
 			response[code] = tv.Data
 		}
 	}
+	_ = cache.Set(cacheKey, response, time.Hour)
 	c.JSON(http.StatusOK, response)
 }
 

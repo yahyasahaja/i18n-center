@@ -108,3 +108,13 @@ func ApplicationKey(applicationID string) string {
 	return fmt.Sprintf("application:%s", applicationID)
 }
 
+// TranslationsByTagKey cache key for GET /applications/:id/translations/by-tag/:tagCode
+func TranslationsByTagKey(applicationID, tagCode, locale, stage string) string {
+	return fmt.Sprintf("translations:bytag:%s:%s:%s:%s", applicationID, tagCode, locale, stage)
+}
+
+// TranslationsByPageKey cache key for GET /applications/:id/translations/by-page/:pageCode
+func TranslationsByPageKey(applicationID, pageCode, locale, stage string) string {
+	return fmt.Sprintf("translations:bypage:%s:%s:%s:%s", applicationID, pageCode, locale, stage)
+}
+
