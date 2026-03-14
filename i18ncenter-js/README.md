@@ -20,7 +20,7 @@ import { I18nCenterClient, createTranslator } from 'i18ncenter-js';
 // Initialize client
 const client = new I18nCenterClient({
   apiUrl: 'https://api.example.com/api',
-  apiToken: 'your-api-token', // Optional, if API requires auth
+  apiToken: 'sk_xxxxxxxx...', // Application API key (required for translations API)
   defaultLocale: 'en',
   defaultStage: 'production',
 });
@@ -34,6 +34,16 @@ async function MyComponent() {
   return <div>{label}</div>;
 }
 ```
+
+### Authentication (API key)
+
+The translations API requires an **application API key**:
+
+1. In the i18n-center dashboard, open an application and go to the **API Keys** section (super_admin only).
+2. Click **Add API Key** and copy the key (it is shown only once; format `sk_...`).
+3. Pass it as `apiToken` when creating the client. The client sends it as `Authorization: Bearer <key>`.
+
+The same key is used for all translation endpoints (bulk, by-tag, by-page). The key is scoped to one application.
 
 ### React Hook Integration (Recommended for Client Components)
 

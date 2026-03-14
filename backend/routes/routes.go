@@ -26,7 +26,7 @@ func SetupRoutes() *gin.Engine {
 		}
 		c.Writer.Header().Set("Access-Control-Allow-Origin", corsOrigin)
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-API-Key, accept, origin, Cache-Control, X-Requested-With")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
 
 		if c.Request.Method == "OPTIONS" {
@@ -42,7 +42,10 @@ func SetupRoutes() *gin.Engine {
 	authHandler := handlers.NewAuthHandler()
 	appHandler := handlers.NewApplicationHandler()
 	componentHandler := handlers.NewComponentHandler()
+	tagHandler := handlers.NewTagHandler()
+	pageHandler := handlers.NewPageHandler()
 	translationHandler := handlers.NewTranslationHandler()
+	apiKeyHandler := handlers.NewAPIKeyHandler()
 	exportHandler := handlers.NewExportHandler()
 	importHandler := handlers.NewImportHandler()
 	auditHandler := handlers.NewAuditHandler()
@@ -61,7 +64,15 @@ func SetupRoutes() *gin.Engine {
 	// Public routes
 	r.POST("/api/auth/login", authHandler.Login)
 
-	// Protected routes
+	// Translation API: accepts JWT (dashboard) or Application API Key (client apps)
+	apiTranslations := r.Group("/api")
+	apiTranslations.Use(middleware.TranslationAuthMiddleware())
+	apiTranslations.Use(middleware.RequireTranslationAccess("super_admin", "operator"))
+	apiTranslations.GET("/translations/bulk", translationHandler.GetMultipleTranslations)
+	apiTranslations.GET("/applications/:id/translations/by-tag/:tagCode", translationHandler.GetTranslationsByTag)
+	apiTranslations.GET("/applications/:id/translations/by-page/:pageCode", translationHandler.GetTranslationsByPage)
+
+	// Protected routes (JWT only)
 	api := r.Group("/api")
 	api.Use(middleware.AuthMiddleware())
 
@@ -82,10 +93,25 @@ func SetupRoutes() *gin.Engine {
 	api.GET("/applications/:id/jobs/:job_id", appHandler.GetAddLanguageJobStatus, middleware.RequireRole("super_admin", "operator"))
 	api.GET("/applications/:id/pending-deploys", appHandler.GetPendingDeploys, middleware.RequireRole("super_admin", "operator"))
 	api.POST("/applications/:id/deploy-locale", appHandler.DeployLocale, middleware.RequireRole("super_admin", "operator"))
+	api.POST("/applications/:id/api-keys", apiKeyHandler.Create, middleware.RequireRole("super_admin"))
+	api.GET("/applications/:id/api-keys", apiKeyHandler.List, middleware.RequireRole("super_admin"))
+	api.DELETE("/applications/:id/api-keys/:key_id", apiKeyHandler.Delete, middleware.RequireRole("super_admin"))
 
-	// Translation routes (must come before component routes to avoid conflict)
-	// Bulk/aggregator endpoint (must come before single component routes)
-	api.GET("/translations/bulk", translationHandler.GetMultipleTranslations, middleware.RequireRole("super_admin", "operator"))
+	// Tag routes (list/create under application; get/update/delete/components under /tags/:id)
+	api.GET("/applications/:id/tags", tagHandler.ListByApplication, middleware.RequireRole("super_admin", "operator"))
+	api.POST("/applications/:id/tags", tagHandler.Create, middleware.RequireRole("super_admin", "operator"))
+	api.GET("/tags/:id", tagHandler.Get, middleware.RequireRole("super_admin", "operator"))
+	api.PUT("/tags/:id", tagHandler.Update, middleware.RequireRole("super_admin", "operator"))
+	api.DELETE("/tags/:id", tagHandler.Delete, middleware.RequireRole("super_admin", "operator"))
+	api.GET("/tags/:id/components", tagHandler.GetComponents, middleware.RequireRole("super_admin", "operator"))
+
+	// Page routes
+	api.GET("/applications/:id/pages", pageHandler.ListByApplication, middleware.RequireRole("super_admin", "operator"))
+	api.POST("/applications/:id/pages", pageHandler.Create, middleware.RequireRole("super_admin", "operator"))
+	api.GET("/pages/:id", pageHandler.Get, middleware.RequireRole("super_admin", "operator"))
+	api.PUT("/pages/:id", pageHandler.Update, middleware.RequireRole("super_admin", "operator"))
+	api.DELETE("/pages/:id", pageHandler.Delete, middleware.RequireRole("super_admin", "operator"))
+	api.GET("/pages/:id/components", pageHandler.GetComponents, middleware.RequireRole("super_admin", "operator"))
 
 	translations := api.Group("/components/:id")
 	translations.GET("/translations", translationHandler.GetTranslation, middleware.RequireRole("super_admin", "operator"))

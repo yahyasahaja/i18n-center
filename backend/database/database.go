@@ -42,10 +42,18 @@ func InitDatabase() error {
 		return fmt.Errorf("failed to migrate code fields: %w", err)
 	}
 
+	// Drop name column from tags and pages (identifiers are code-only now)
+	if err := dropTagPageNameColumns(); err != nil {
+		return fmt.Errorf("failed to drop tag/page name columns: %w", err)
+	}
+
 	// Auto-migrate tables
 	err = DB.AutoMigrate(
 		&models.User{},
 		&models.Application{},
+		&models.ApplicationAPIKey{},
+		&models.Tag{},
+		&models.Page{},
 		&models.Component{},
 		&models.TranslationVersion{},
 		&models.AuditLog{},
@@ -274,6 +282,30 @@ func migrateCodeFields() error {
 		}
 	}
 
+	return nil
+}
+
+// dropTagPageNameColumns drops the name column from tags and pages tables if present.
+// Tag and Page are now identified by code only.
+func dropTagPageNameColumns() error {
+	for _, table := range []string{"tags", "pages"} {
+		var hasName bool
+		err := DB.Raw(`
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'name'
+			)
+		`, table).Scan(&hasName).Error
+		if err != nil {
+			return fmt.Errorf("failed to check %s.name column: %w", table, err)
+		}
+		if hasName {
+			if err := DB.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS name", table)).Error; err != nil {
+				return fmt.Errorf("failed to drop %s.name: %w", table, err)
+			}
+			log.Printf("Dropped column name from table %s", table)
+		}
+	}
 	return nil
 }
 

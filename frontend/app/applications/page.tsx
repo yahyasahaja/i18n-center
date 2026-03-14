@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Layout from '@/components/Layout'
+import { useAppContext } from '@/context/AppContext'
 import { useAppDispatch, useAppSelector } from '@/hooks/redux'
 import {
   fetchApplications,
@@ -23,6 +24,7 @@ import { Badge } from '@/components/ui/Badge'
 export default function ApplicationsPage() {
   const router = useRouter()
   const dispatch = useAppDispatch()
+  const { push, stage } = useAppContext()
   const { isAuthenticated, user } = useAppSelector((state) => state.auth)
   const { applications, loading } = useAppSelector(
     (state) => state.applications
@@ -224,7 +226,7 @@ export default function ApplicationsPage() {
                       <Button
                         variant="primary"
                         size="sm"
-                        onClick={() => router.push(`/applications/${app.id}`)}
+                        onClick={() => push(`/applications/${app.id}`, { extraParams: { application_id: app.id, stage } })}
                       >
                         <ArrowRight className="w-4 h-4 mr-1" />
                         View
@@ -233,7 +235,7 @@ export default function ApplicationsPage() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => router.push(`/applications/${app.id}?addLanguage=1`)}
+                          onClick={() => push(`/applications/${app.id}`, { extraParams: { application_id: app.id, stage, addLanguage: '1' } })}
                           title="Add language"
                         >
                           <Languages className="w-4 h-4 mr-1" />

@@ -135,7 +135,7 @@ Main client for interacting with the i18n-center API.
 ```go
 client := i18ncenter.NewClient(i18ncenter.Config{
     APIBaseURL:  string,              // Required: API base URL
-    APIToken:    string,              // Optional: Bearer token
+    APIToken:    string,              // Optional: Application API key (sk_...) for translations API
     DefaultLocale: string,            // Default: "en"
     DefaultStage: DeploymentStage,     // Default: StageProduction
     CacheTTL:    time.Duration,       // Default: 1 hour
@@ -192,6 +192,25 @@ greeting := translator.Tf("greeting", map[string]interface{}{"name": "John"})
 data := translator.GetRaw()
 ```
 
+## Authentication (API key)
+
+The translations API requires authentication. Use an **application API key** for client apps:
+
+1. In the i18n-center dashboard, open an application and go to the **API Keys** section (super_admin only).
+2. Click **Add API Key** and copy the key (it is shown only once; format `sk_...`).
+3. Pass it as `APIToken` when creating the client. The client sends it as `Authorization: Bearer <key>`.
+
+```go
+client := i18ncenter.NewClient(i18ncenter.Config{
+    APIBaseURL:  "https://api.example.com/api",
+    APIToken:    "sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", // Application API key
+    DefaultLocale: "en",
+    DefaultStage:  i18ncenter.StageProduction,
+})
+```
+
+The same key is used for all translation endpoints (bulk, by-tag, by-page). The key is scoped to one application; use the correct key for each application.
+
 ## Configuration
 
 ### Environment Variables
@@ -199,7 +218,7 @@ data := translator.GetRaw()
 ```go
 client := i18ncenter.NewClient(i18ncenter.Config{
     APIBaseURL:  os.Getenv("I18N_CENTER_API_URL"),
-    APIToken:    os.Getenv("I18N_CENTER_API_TOKEN"),
+    APIToken:    os.Getenv("I18N_CENTER_API_KEY"), // Application API key (sk_...)
     DefaultLocale: "en",
     DefaultStage:  i18ncenter.StageProduction,
 })

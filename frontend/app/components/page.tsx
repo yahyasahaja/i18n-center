@@ -4,42 +4,30 @@ import { useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Layout from '@/components/Layout'
 import { useAppDispatch, useAppSelector } from '@/hooks/redux'
-import {
-  fetchComponents,
-  createComponent,
-  updateComponent,
-} from '@/store/slices/componentSlice'
+import { useAppContext } from '@/context/AppContext'
+import { fetchComponents } from '@/store/slices/componentSlice'
 import { fetchApplications } from '@/store/slices/applicationSlice'
-import { componentApi } from '@/services/api'
+import { componentApi, type Tag, type Page } from '@/services/api'
 import toast from 'react-hot-toast'
 import { Plus, Edit, Trash2, ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Table, TableRow, TableCell } from '@/components/ui/Table'
 import { Modal } from '@/components/ui/Modal'
-import { Input } from '@/components/ui/Input'
-import { Textarea } from '@/components/ui/Textarea'
-import { Select } from '@/components/ui/Select'
 import { Badge } from '@/components/ui/Badge'
+import { ComponentFormModal } from '@/components/ComponentFormModal'
 
 export default function ComponentsPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const dispatch = useAppDispatch()
+  const { applicationId: contextApplicationId, stage: contextStage, push } = useAppContext()
   const { isAuthenticated, user } = useAppSelector((state) => state.auth)
   const { components, loading } = useAppSelector((state) => state.components)
   const { applications } = useAppSelector((state) => state.applications)
   const [showModal, setShowModal] = useState(false)
   const [editingComponent, setEditingComponent] = useState<any>(null)
-  const [filterApplication, setFilterApplication] = useState<string>('')
-  const [formData, setFormData] = useState({
-    application_id: searchParams.get('application_id') || '',
-    name: '',
-    code: '',
-    description: '',
-    structure: {} as Record<string, any>,
-    default_locale: 'en',
-  })
+  const [listModal, setListModal] = useState<{ type: 'tags' | 'pages'; items: { code: string }[]; title: string } | null>(null)
 
   useEffect(() => {
     const token = localStorage.getItem('token')
@@ -57,48 +45,13 @@ export default function ComponentsPage() {
   useEffect(() => {
     const editId = searchParams.get('edit')
     if (editId && components.length > 0) {
-      const component = components.find((c) => c.id === editId)
+      const component = components.find((c) => c.id === editId) as any
       if (component) {
         setEditingComponent(component)
-        setFormData({
-          application_id: component.application_id,
-          name: component.name,
-          code: component.code || '',
-          description: component.description || '',
-          structure: component.structure || {},
-          default_locale: component.default_locale,
-        })
         setShowModal(true)
       }
     }
   }, [searchParams, components])
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    try {
-      if (editingComponent) {
-        await dispatch(
-          updateComponent({ id: editingComponent.id, data: formData })
-        ).unwrap()
-        toast.success('Component updated')
-      } else {
-        await dispatch(createComponent(formData)).unwrap()
-        toast.success('Component created')
-      }
-      setShowModal(false)
-      setEditingComponent(null)
-      setFormData({
-        application_id: '',
-        name: '',
-        code: '',
-        description: '',
-        structure: {},
-        default_locale: 'en',
-      })
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to save component')
-    }
-  }
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this component?')) return
@@ -116,8 +69,8 @@ export default function ComponentsPage() {
   const canManage =
     user?.role === 'super_admin' || user?.role === 'operator'
 
-  const filteredComponents = filterApplication
-    ? components.filter((c) => c.application_id === filterApplication)
+  const filteredComponents = contextApplicationId
+    ? components.filter((c) => c.application_id === contextApplicationId)
     : components
 
   const getApplicationName = (appId: string) => {
@@ -134,14 +87,6 @@ export default function ComponentsPage() {
               variant="primary"
               onClick={() => {
                 setEditingComponent(null)
-                setFormData({
-                  application_id: searchParams.get('application_id') || '',
-                  name: '',
-                  code: '',
-                  description: '',
-                  structure: {},
-                  default_locale: 'en',
-                })
                 setShowModal(true)
               }}
             >
@@ -151,22 +96,17 @@ export default function ComponentsPage() {
           )}
         </div>
 
-        <Card>
-          <div className="mb-4">
-            <Select
-              label="Filter by Application"
-              value={filterApplication}
-              onChange={(e) => setFilterApplication(e.target.value)}
-              options={[
-                { value: '', label: 'All Applications' },
-                ...applications.map((app) => ({
-                  value: app.id,
-                  label: app.name,
-                })),
-              ]}
-            />
-          </div>
+        {contextApplicationId && (
+          <p className="text-sm text-gray-600">
+            Showing components for: <strong>{getApplicationName(contextApplicationId)}</strong>
+            {' '}(change application in the sidebar)
+          </p>
+        )}
+        {!contextApplicationId && (
+          <p className="text-sm text-gray-500">Select an application in the sidebar to filter components.</p>
+        )}
 
+        <Card>
           {loading ? (
             <div className="text-center py-8 text-gray-500">Loading...</div>
           ) : filteredComponents.length === 0 ? (
@@ -174,10 +114,16 @@ export default function ComponentsPage() {
               No components found. Create one to get started.
             </div>
           ) : (
+            <>
             <Table
-              headers={['Name', 'Code', 'Application', 'Description', 'Default Locale', 'Actions']}
+              headers={['Name', 'Code', 'Tags', 'Pages', 'Description', 'Default Locale', 'Actions']}
             >
-              {filteredComponents.map((comp) => (
+              {filteredComponents.map((comp) => {
+                const compAny = comp as any
+                const tags = compAny.tags || []
+                const pages = compAny.pages || []
+                const maxShow = 2
+                return (
                 <TableRow key={comp.id}>
                   <TableCell>
                     <div className="font-medium text-gray-900">{comp.name}</div>
@@ -186,7 +132,42 @@ export default function ComponentsPage() {
                     <div className="text-sm font-mono text-gray-600">{comp.code}</div>
                   </TableCell>
                   <TableCell>
-                    <Badge variant="info">{getApplicationName(comp.application_id)}</Badge>
+                    <div className="flex flex-wrap items-center gap-1">
+                      {tags.slice(0, maxShow).map((t: Tag) => (
+                        <Badge key={t.id} variant="secondary" className="text-xs">{t.code}</Badge>
+                      ))}
+                      {tags.length > maxShow && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-6 px-1.5 text-xs"
+                          onClick={() => setListModal({ type: 'tags', items: tags, title: `Tags for ${comp.name}` })}
+                        >
+                          +{tags.length - maxShow}
+                        </Button>
+                      )}
+                      {tags.length === 0 && <span className="text-gray-400 text-sm">—</span>}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap items-center gap-1">
+                      {pages.slice(0, maxShow).map((p: Page) => (
+                        <Badge key={p.id} variant="secondary" className="text-xs">{p.code}</Badge>
+                      ))}
+                      {pages.length > maxShow && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-6 px-1.5 text-xs"
+                          onClick={() => setListModal({ type: 'pages', items: pages, title: `Pages for ${comp.name}` })}
+                        >
+                          +{pages.length - maxShow}
+                        </Button>
+                      )}
+                      {pages.length === 0 && <span className="text-gray-400 text-sm">—</span>}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <div className="text-sm text-gray-500 max-w-md truncate">
@@ -201,9 +182,7 @@ export default function ComponentsPage() {
                       <Button
                         variant="primary"
                         size="sm"
-                        onClick={() =>
-                          router.push(`/components/${comp.id}/translations`)
-                        }
+                        onClick={() => push(`/components/${comp.id}/translations`)}
                       >
                         <ArrowRight className="w-4 h-4 mr-1" />
                         Manage
@@ -215,14 +194,6 @@ export default function ComponentsPage() {
                             size="sm"
                             onClick={() => {
                               setEditingComponent(comp)
-                              setFormData({
-                                application_id: comp.application_id,
-                                name: comp.name,
-                                code: comp.code || '',
-                                description: comp.description || '',
-                                structure: comp.structure || {},
-                                default_locale: comp.default_locale,
-                              })
                               setShowModal(true)
                             }}
                           >
@@ -240,100 +211,43 @@ export default function ComponentsPage() {
                     </div>
                   </TableCell>
                 </TableRow>
-              ))}
+                )
+              })}
             </Table>
+
+        {listModal && (
+          <Modal
+            isOpen={!!listModal}
+            onClose={() => setListModal(null)}
+            title={listModal.title}
+            footer={<Button variant="outline" onClick={() => setListModal(null)}>Close</Button>}
+          >
+            <ul className="space-y-1.5">
+              {listModal.items.map((item: { id?: string; code: string }) => (
+                <li key={item.id || item.code} className="text-sm font-mono text-gray-700">{item.code}</li>
+              ))}
+            </ul>
+          </Modal>
+        )}
+            </>
           )}
         </Card>
 
-        <Modal
+        <ComponentFormModal
           isOpen={showModal}
           onClose={() => {
             setShowModal(false)
             setEditingComponent(null)
           }}
-          title={editingComponent ? 'Edit Component' : 'Create Component'}
-          footer={
-            <>
-              <Button
-                variant="primary"
-                onClick={handleSubmit}
-                type="submit"
-                form="component-form"
-              >
-                {editingComponent ? 'Update' : 'Create'}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setShowModal(false)
-                  setEditingComponent(null)
-                }}
-              >
-                Cancel
-              </Button>
-            </>
-          }
-        >
-          <form id="component-form" onSubmit={handleSubmit} className="space-y-4">
-            <Select
-              label="Application"
-              required
-              value={formData.application_id}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  application_id: e.target.value,
-                })
-              }
-              options={[
-                { value: '', label: 'Select application' },
-                ...applications.map((app) => ({
-                  value: app.id,
-                  label: app.name,
-                })),
-              ]}
-            />
-            <Input
-              label="Name"
-              required
-              value={formData.name}
-              onChange={(e) =>
-                setFormData({ ...formData, name: e.target.value })
-              }
-              helperText="Display name for the component"
-            />
-            <Input
-              label="Code"
-              required
-              value={formData.code}
-              onChange={(e) =>
-                setFormData({ ...formData, code: e.target.value })
-              }
-              helperText="Unique code identifier (e.g., pdp_form, checkout_form). Used in API calls."
-              placeholder="e.g., pdp_form"
-            />
-            <Textarea
-              label="Description"
-              value={formData.description}
-              onChange={(e) =>
-                setFormData({ ...formData, description: e.target.value })
-              }
-              rows={3}
-            />
-            <Input
-              label="Default Locale"
-              required
-              value={formData.default_locale}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  default_locale: e.target.value,
-                })
-              }
-              helperText="Default language for this component (e.g., en, id, es)"
-            />
-          </form>
-        </Modal>
+          component={editingComponent}
+          applications={applications}
+          defaultApplicationId={contextApplicationId || undefined}
+          onSaved={() => {
+            dispatch(fetchComponents())
+            setShowModal(false)
+            setEditingComponent(null)
+          }}
+        />
       </div>
     </Layout>
   )

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/patrickmn/go-cache"
@@ -205,11 +207,121 @@ func (c *Client) GetMultipleTranslations(applicationCode string, componentCodes 
 	return results, nil
 }
 
+// GetTranslationsByTag fetches translations for all components that have the given tag
+// applicationID is the application UUID
+func (c *Client) GetTranslationsByTag(applicationID string, tagCode string, locale string, stage DeploymentStage) (map[string]TranslationData, error) {
+	if locale == "" {
+		locale = c.config.DefaultLocale
+	}
+	if stage == "" {
+		stage = c.config.DefaultStage
+	}
+	tagCode = strings.ToLower(strings.TrimSpace(tagCode))
+	if tagCode == "" {
+		return nil, fmt.Errorf("tag code is required")
+	}
+
+	cacheKey := fmt.Sprintf("bytag:%s:%s:%s:%s", applicationID, tagCode, locale, string(stage))
+	if c.cache != nil {
+		if cached, found := c.cache.Get(cacheKey); found {
+			return cached.(map[string]TranslationData), nil
+		}
+	}
+
+	url := fmt.Sprintf("%s/applications/%s/translations/by-tag/%s?locale=%s&stage=%s",
+		c.config.APIBaseURL, applicationID, url.PathEscape(tagCode), locale, stage)
+	data, err := c.doGet(url)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]TranslationData)
+	if data != nil {
+		for k, v := range data {
+			if m, ok := v.(map[string]interface{}); ok {
+				result[k] = m
+			}
+		}
+	}
+	if c.cache != nil {
+		c.cache.Set(cacheKey, result, c.config.CacheTTL)
+	}
+	return result, nil
+}
+
+// GetTranslationsByPage fetches translations for all components that have the given page
+// applicationID is the application UUID
+func (c *Client) GetTranslationsByPage(applicationID string, pageCode string, locale string, stage DeploymentStage) (map[string]TranslationData, error) {
+	if locale == "" {
+		locale = c.config.DefaultLocale
+	}
+	if stage == "" {
+		stage = c.config.DefaultStage
+	}
+	pageCode = strings.ToLower(strings.TrimSpace(pageCode))
+	if pageCode == "" {
+		return nil, fmt.Errorf("page code is required")
+	}
+
+	cacheKey := fmt.Sprintf("bypage:%s:%s:%s:%s", applicationID, pageCode, locale, string(stage))
+	if c.cache != nil {
+		if cached, found := c.cache.Get(cacheKey); found {
+			return cached.(map[string]TranslationData), nil
+		}
+	}
+
+	url := fmt.Sprintf("%s/applications/%s/translations/by-page/%s?locale=%s&stage=%s",
+		c.config.APIBaseURL, applicationID, url.PathEscape(pageCode), locale, stage)
+	data, err := c.doGet(url)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]TranslationData)
+	if data != nil {
+		for k, v := range data {
+			if m, ok := v.(map[string]interface{}); ok {
+				result[k] = m
+			}
+		}
+	}
+	if c.cache != nil {
+		c.cache.Set(cacheKey, result, c.config.CacheTTL)
+	}
+	return result, nil
+}
+
 // ClearCache clears all cached translations
 func (c *Client) ClearCache() {
 	if c.cache != nil {
 		c.cache.Flush()
 	}
+}
+
+// doGet performs a GET request and returns the response as map[string]interface{}
+func (c *Client) doGet(url string) (map[string]interface{}, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	if c.config.APIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.config.APIToken)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+	var data map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	return data, nil
 }
 
 // cacheKey generates a cache key (includes application code to differentiate)

@@ -1,4 +1,6 @@
 // Use native fetch (Node 18+) or node-fetch for older versions
+declare const require: (id: string) => unknown;
+
 let fetchFn: typeof fetch;
 if (typeof fetch !== 'undefined') {
   fetchFn = fetch;
@@ -153,6 +155,98 @@ export class I18nCenterClient {
     }
 
     return results;
+  }
+
+  /**
+   * Get translations for all components that have the given tag
+   * @param applicationId - Application UUID
+   * @param tagCode - Tag code (e.g. 'checkout', 'pdp')
+   * @param locale - Optional locale (default from config)
+   * @param stage - Optional stage (default from config)
+   * @returns Map of component code -> translation data
+   */
+  async getTranslationsByTag(
+    applicationId: string,
+    tagCode: string,
+    locale?: string,
+    stage?: DeploymentStage
+  ): Promise<Record<string, TranslationData>> {
+    const loc = locale || this.config.defaultLocale;
+    const stg = stage || this.config.defaultStage;
+    const code = tagCode.trim().toLowerCase();
+    if (!code) {
+      throw new Error('Tag code is required');
+    }
+
+    const cacheKey = `bytag:${applicationId}:${code}:${loc}:${stg}`;
+    if (this.config.enableCache) {
+      const cached = this.cache.get(cacheKey);
+      if (cached) {
+        return cached as Record<string, TranslationData>;
+      }
+    }
+
+    const pathTag = encodeURIComponent(code);
+    const url = `${this.config.apiUrl}/applications/${encodeURIComponent(applicationId)}/translations/by-tag/${pathTag}?locale=${loc}&stage=${stg}`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.config.apiToken) {
+      headers['Authorization'] = `Bearer ${this.config.apiToken}`;
+    }
+    const response = await fetchFn(url, { headers });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch translations by tag: ${response.statusText}`);
+    }
+    const data = (await response.json()) as Record<string, TranslationData>;
+    if (this.config.enableCache) {
+      this.cache.set(cacheKey, data, this.config.cacheTTL);
+    }
+    return data;
+  }
+
+  /**
+   * Get translations for all components that have the given page
+   * @param applicationId - Application UUID
+   * @param pageCode - Page code (e.g. 'home', 'cart')
+   * @param locale - Optional locale (default from config)
+   * @param stage - Optional stage (default from config)
+   * @returns Map of component code -> translation data
+   */
+  async getTranslationsByPage(
+    applicationId: string,
+    pageCode: string,
+    locale?: string,
+    stage?: DeploymentStage
+  ): Promise<Record<string, TranslationData>> {
+    const loc = locale || this.config.defaultLocale;
+    const stg = stage || this.config.defaultStage;
+    const code = pageCode.trim().toLowerCase();
+    if (!code) {
+      throw new Error('Page code is required');
+    }
+
+    const cacheKey = `bypage:${applicationId}:${code}:${loc}:${stg}`;
+    if (this.config.enableCache) {
+      const cached = this.cache.get(cacheKey);
+      if (cached) {
+        return cached as Record<string, TranslationData>;
+      }
+    }
+
+    const pathPage = encodeURIComponent(code);
+    const url = `${this.config.apiUrl}/applications/${encodeURIComponent(applicationId)}/translations/by-page/${pathPage}?locale=${loc}&stage=${stg}`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.config.apiToken) {
+      headers['Authorization'] = `Bearer ${this.config.apiToken}`;
+    }
+    const response = await fetchFn(url, { headers });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch translations by page: ${response.statusText}`);
+    }
+    const data = (await response.json()) as Record<string, TranslationData>;
+    if (this.config.enableCache) {
+      this.cache.set(cacheKey, data, this.config.cacheTTL);
+    }
+    return data;
   }
 
   /**

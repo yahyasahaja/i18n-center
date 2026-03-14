@@ -80,6 +80,8 @@ definitions:
         type: string
       created_at:
         type: string
+      created_by:
+        type: string
       description:
         type: string
       enabled_languages:
@@ -95,6 +97,39 @@ definitions:
         type: string
       updated_at:
         type: string
+      updated_by:
+        type: string
+    type: object
+  models.AuditLog:
+    properties:
+      action:
+        description: CREATE, UPDATE, DELETE
+        type: string
+      changes:
+        allOf:
+        - $ref: '#/definitions/models.JSONB'
+        description: Before/after values
+      created_at:
+        type: string
+      id:
+        type: string
+      ip_address:
+        description: IPv6 compatible
+        type: string
+      resource_code:
+        description: For applications/components, store code for easier lookup
+        type: string
+      resource_id:
+        type: string
+      resource_type:
+        description: application, component, translation, user
+        type: string
+      user_agent:
+        type: string
+      user_id:
+        type: string
+      username:
+        type: string
     type: object
   models.Component:
     properties:
@@ -103,9 +138,11 @@ definitions:
       application_id:
         type: string
       code:
-        description: Unique identifier for API access
+        description: Unique per application (composite with application_id)
         type: string
       created_at:
+        type: string
+      created_by:
         type: string
       default_locale:
         type: string
@@ -115,11 +152,21 @@ definitions:
         type: string
       name:
         type: string
+      pages:
+        items:
+          $ref: '#/definitions/models.Page'
+        type: array
       structure:
         allOf:
         - $ref: '#/definitions/models.JSONB'
         description: The JSON structure template
+      tags:
+        items:
+          $ref: '#/definitions/models.Tag'
+        type: array
       updated_at:
+        type: string
+      updated_by:
         type: string
     type: object
   models.DeploymentStage:
@@ -135,6 +182,38 @@ definitions:
   models.JSONB:
     additionalProperties: true
     type: object
+  models.Page:
+    properties:
+      application:
+        $ref: '#/definitions/models.Application'
+      application_id:
+        type: string
+      code:
+        description: Unique per application
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  models.Tag:
+    properties:
+      application:
+        $ref: '#/definitions/models.Application'
+      application_id:
+        type: string
+      code:
+        description: Unique per application
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      updated_at:
+        type: string
+    type: object
   models.TranslationVersion:
     properties:
       component:
@@ -142,6 +221,8 @@ definitions:
       component_id:
         type: string
       created_at:
+        type: string
+      created_by:
         type: string
       data:
         allOf:
@@ -157,8 +238,10 @@ definitions:
         $ref: '#/definitions/models.DeploymentStage'
       updated_at:
         type: string
+      updated_by:
+        type: string
       version:
-        description: 1 = before save, 2 = after save
+        description: 1, 2, 3, ... current = latest
         type: integer
     type: object
   models.User:
@@ -260,6 +343,209 @@ paths:
       summary: Create application
       tags:
       - applications
+  /applications/{id}/translations/by-page/{pageCode}:
+    get:
+      consumes:
+      - application/json
+      description: Returns translations for all components that have the given page.
+        Response is a map of component code -> translation data.
+      parameters:
+      - description: Application ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Page code (e.g. home, cart)
+        in: path
+        name: pageCode
+        required: true
+        type: string
+      - description: 'Locale (default: en)'
+        in: query
+        name: locale
+        type: string
+      - description: 'Stage (default: production)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Map of component_code -> translation data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get translations by page
+      tags:
+      - translations
+  /applications/{id}/translations/by-tag/{tagCode}:
+    get:
+      consumes:
+      - application/json
+      description: Returns translations for all components that have the given tag.
+        Response is a map of component code -> translation data.
+      parameters:
+      - description: Application ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Tag code (e.g. checkout, pdp)
+        in: path
+        name: tagCode
+        required: true
+        type: string
+      - description: 'Locale (default: en)'
+        in: query
+        name: locale
+        type: string
+      - description: 'Stage (default: production)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Map of component_code -> translation data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get translations by tag
+      tags:
+      - translations
+  /audit/history/{resource_type}/{resource_id}:
+    get:
+      consumes:
+      - application/json
+      description: Get all changes for a specific resource
+      parameters:
+      - description: Resource type (application, component, translation, user)
+        in: path
+        name: resource_type
+        required: true
+        type: string
+      - description: Resource ID
+        in: path
+        name: resource_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.AuditLog'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get resource history
+      tags:
+      - audit
+  /audit/logs:
+    get:
+      consumes:
+      - application/json
+      description: Get audit logs with optional filters
+      parameters:
+      - description: Filter by resource type (application, component, translation,
+          user)
+        in: query
+        name: resource_type
+        type: string
+      - description: Filter by resource ID
+        in: query
+        name: resource_id
+        type: string
+      - description: Filter by user ID
+        in: query
+        name: user_id
+        type: string
+      - description: 'Limit results (default: 100, max: 1000)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.AuditLog'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get audit logs
+      tags:
+      - audit
   /auth/login:
     post:
       consumes:
@@ -581,9 +867,8 @@ paths:
       - translations
   /components/{id}/translations/compare:
     get:
-      consumes:
-      - application/json
-      description: Get version 1 (before save) and version 2 (after save) for comparison
+      description: 'Get two versions for comparison (default: current vs previous
+        for revert diff)'
       parameters:
       - description: Component ID
         in: path
@@ -599,6 +884,44 @@ paths:
         in: query
         name: stage
         type: string
+      - description: 'First version number (default: latest)'
+        in: query
+        name: version_a
+        type: integer
+      - description: 'Second version number (default: previous)'
+        in: query
+        name: version_b
+        type: integer
+      responses: {}
+      summary: Compare versions
+      tags:
+      - translations
+  /components/{id}/translations/versions:
+    get:
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Locale
+        in: query
+        name: locale
+        required: true
+        type: string
+      - description: 'Stage (default: draft)'
+        in: query
+        name: stage
+        type: string
+      responses: {}
+      summary: List translation versions
+      tags:
+      - translations
+  /health:
+    get:
+      consumes:
+      - application/json
+      description: Check service health and dependencies
       produces:
       - application/json
       responses:
@@ -607,34 +930,57 @@ paths:
           schema:
             additionalProperties: true
             type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "401":
-          description: Unauthorized
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Compare versions
+      summary: Health check
       tags:
-      - translations
+      - health
+  /live:
+    get:
+      consumes:
+      - application/json
+      description: Check if service is alive
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Liveness check
+      tags:
+      - health
+  /ready:
+    get:
+      consumes:
+      - application/json
+      description: Check if service is ready to accept traffic
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Readiness check
+      tags:
+      - health
   /translations/bulk:
     get:
       consumes:
       - application/json
       description: Get translations for multiple components at once. Uses Redis cache
         efficiently - checks cache first, then database for missing ones. Can use
-        either component_ids or component_codes.
+        either component_ids or component_codes. When using component_codes, application_code
+        is required to differentiate components with the same code in different applications.
       parameters:
       - description: Comma-separated component IDs (UUIDs)
         in: query
         name: component_ids
+        type: string
+      - description: Application code (required when using component_codes)
+        in: query
+        name: application_code
         type: string
       - description: Comma-separated component codes
         in: query

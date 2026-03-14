@@ -46,10 +46,10 @@ export const Modal: React.FC<ModalProps> = ({
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="mt-4">{children}</div>
+            <div className="mt-4 text-gray-900">{children}</div>
           </div>
           {footer && (
-            <div className="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+            <div className="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse sm:gap-2">
               {footer}
             </div>
           )}

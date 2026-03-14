@@ -50,6 +50,45 @@ func (h *ComponentHandler) getClientInfo(c *gin.Context) (ipAddress, userAgent s
 	return ipAddress, userAgent
 }
 
+// replaceComponentTagsAndPages sets the component's tags and pages by ID (only those belonging to the same application).
+func replaceComponentTagsAndPages(component *models.Component, tagIDs, pageIDs []string) error {
+	if tagIDs != nil {
+		var tags []models.Tag
+		for _, idStr := range tagIDs {
+			id, err := uuid.Parse(strings.TrimSpace(idStr))
+			if err != nil {
+				continue
+			}
+			var t models.Tag
+			if err := database.DB.Where("id = ? AND application_id = ?", id, component.ApplicationID).First(&t).Error; err != nil {
+				continue
+			}
+			tags = append(tags, t)
+		}
+		if err := database.DB.Model(component).Association("Tags").Replace(tags); err != nil {
+			return err
+		}
+	}
+	if pageIDs != nil {
+		var pages []models.Page
+		for _, idStr := range pageIDs {
+			id, err := uuid.Parse(strings.TrimSpace(idStr))
+			if err != nil {
+				continue
+			}
+			var p models.Page
+			if err := database.DB.Where("id = ? AND application_id = ?", id, component.ApplicationID).First(&p).Error; err != nil {
+				continue
+			}
+			pages = append(pages, p)
+		}
+		if err := database.DB.Model(component).Association("Pages").Replace(pages); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // GetComponents lists all components for an application
 // @Summary      List components
 // @Description  Get all components, optionally filtered by application
@@ -65,7 +104,7 @@ func (h *ComponentHandler) GetComponents(c *gin.Context) {
 	applicationID := c.Query("application_id")
 
 	var components []models.Component
-	query := database.DB
+	query := database.DB.Preload("Tags").Preload("Pages")
 	if applicationID != "" {
 		query = query.Where("application_id = ?", applicationID)
 	}
@@ -92,8 +131,8 @@ func (h *ComponentHandler) GetComponent(c *gin.Context) {
 
 	var component models.Component
 	// Try by ID first, then by code
-	if err := database.DB.Preload("Application").First(&component, "id = ?", identifier).Error; err != nil {
-		if err := database.DB.Preload("Application").First(&component, "code = ?", identifier).Error; err != nil {
+	if err := database.DB.Preload("Application").Preload("Tags").Preload("Pages").First(&component, "id = ?", identifier).Error; err != nil {
+		if err := database.DB.Preload("Application").Preload("Tags").Preload("Pages").First(&component, "code = ?", identifier).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
 			return
 		}
@@ -104,10 +143,22 @@ func (h *ComponentHandler) GetComponent(c *gin.Context) {
 	c.JSON(http.StatusOK, component)
 }
 
+// createComponentBody is the request body for creating a component (includes tag_ids and page_ids).
+type createComponentBody struct {
+	Name          string         `json:"name" binding:"required"`
+	Code          string         `json:"code" binding:"required"`
+	ApplicationID uuid.UUID      `json:"application_id" binding:"required"`
+	Description   string         `json:"description"`
+	DefaultLocale string         `json:"default_locale" binding:"required"`
+	Structure     models.JSONB   `json:"structure"`
+	TagIDs        []string       `json:"tag_ids"`
+	PageIDs       []string       `json:"page_ids"`
+}
+
 // CreateComponent creates a new component
 func (h *ComponentHandler) CreateComponent(c *gin.Context) {
-	var component models.Component
-	if err := c.ShouldBindJSON(&component); err != nil {
+	var body createComponentBody
+	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -115,11 +166,18 @@ func (h *ComponentHandler) CreateComponent(c *gin.Context) {
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
 
-	component.CreatedBy = userID
-	component.UpdatedBy = userID
+	component := models.Component{
+		Name:          strings.TrimSpace(body.Name),
+		Code:          strings.TrimSpace(body.Code),
+		ApplicationID: body.ApplicationID,
+		Description:   strings.TrimSpace(body.Description),
+		DefaultLocale: strings.TrimSpace(body.DefaultLocale),
+		Structure:     body.Structure,
+		CreatedBy:     userID,
+		UpdatedBy:     userID,
+	}
 
 	if err := database.DB.Create(&component).Error; err != nil {
-		// Check if it's a unique constraint violation
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Component code already exists for this application"})
 		} else {
@@ -128,19 +186,25 @@ func (h *ComponentHandler) CreateComponent(c *gin.Context) {
 		return
 	}
 
-	// Log audit
-	h.auditService.LogCreate(
-		userID,
-		username,
-		"component",
-		component.ID,
-		component.Code,
-		component,
-		ipAddress,
-		userAgent,
-	)
+	if err := replaceComponentTagsAndPages(&component, body.TagIDs, body.PageIDs); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	database.DB.Preload("Tags").Preload("Pages").First(&component, component.ID)
 
+	h.auditService.LogCreate(userID, username, "component", component.ID, component.Code, component, ipAddress, userAgent)
 	c.JSON(http.StatusCreated, component)
+}
+
+// updateComponentBody is the request body for updating a component (includes optional tag_ids and page_ids).
+type updateComponentBody struct {
+	Name          *string       `json:"name"`
+	Code          *string       `json:"code"`
+	Description   *string       `json:"description"`
+	DefaultLocale *string       `json:"default_locale"`
+	Structure     *models.JSONB `json:"structure"`
+	TagIDs        []string      `json:"tag_ids"`
+	PageIDs       []string      `json:"page_ids"`
 }
 
 // UpdateComponent updates a component
@@ -148,7 +212,7 @@ func (h *ComponentHandler) UpdateComponent(c *gin.Context) {
 	id := c.Param("id")
 	var component models.Component
 
-	if err := database.DB.First(&component, "id = ?", id).Error; err != nil {
+	if err := database.DB.Preload("Tags").Preload("Pages").First(&component, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
 		return
 	}
@@ -156,7 +220,6 @@ func (h *ComponentHandler) UpdateComponent(c *gin.Context) {
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
 
-	// Store before values for audit
 	before := models.Component{
 		Name:          component.Name,
 		Code:          component.Code,
@@ -165,11 +228,27 @@ func (h *ComponentHandler) UpdateComponent(c *gin.Context) {
 		DefaultLocale: component.DefaultLocale,
 	}
 
-	if err := c.ShouldBindJSON(&component); err != nil {
+	var body updateComponentBody
+	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	if body.Name != nil {
+		component.Name = strings.TrimSpace(*body.Name)
+	}
+	if body.Code != nil {
+		component.Code = strings.TrimSpace(*body.Code)
+	}
+	if body.Description != nil {
+		component.Description = strings.TrimSpace(*body.Description)
+	}
+	if body.DefaultLocale != nil {
+		component.DefaultLocale = strings.TrimSpace(*body.DefaultLocale)
+	}
+	if body.Structure != nil {
+		component.Structure = *body.Structure
+	}
 	component.UpdatedBy = userID
 
 	if err := database.DB.Save(&component).Error; err != nil {
@@ -177,7 +256,12 @@ func (h *ComponentHandler) UpdateComponent(c *gin.Context) {
 		return
 	}
 
-	// Store after values for audit
+	if err := replaceComponentTagsAndPages(&component, body.TagIDs, body.PageIDs); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	database.DB.Preload("Tags").Preload("Pages").First(&component, component.ID)
+
 	after := models.Component{
 		Name:          component.Name,
 		Code:          component.Code,
@@ -185,21 +269,7 @@ func (h *ComponentHandler) UpdateComponent(c *gin.Context) {
 		Structure:     component.Structure,
 		DefaultLocale: component.DefaultLocale,
 	}
-
-	// Log audit
-	h.auditService.LogUpdate(
-		userID,
-		username,
-		"component",
-		component.ID,
-		component.Code,
-		before,
-		after,
-		ipAddress,
-		userAgent,
-	)
-
-	// Invalidate cache
+	h.auditService.LogUpdate(userID, username, "component", component.ID, component.Code, before, after, ipAddress, userAgent)
 	cache.Delete(cache.ComponentKey(id))
 	c.JSON(http.StatusOK, component)
 }

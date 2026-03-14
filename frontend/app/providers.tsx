@@ -5,6 +5,7 @@ import { Provider, useDispatch } from 'react-redux'
 import { store } from '@/store/store'
 import { Toaster } from 'react-hot-toast'
 import { getCurrentUser, setToken } from '@/store/slices/authSlice'
+import { AppContextProvider } from '@/context/AppContext'
 
 // Component to initialize auth on app load
 function AuthInitializer({ children }: { children: React.ReactNode }) {
@@ -27,8 +28,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <Provider store={store}>
       <AuthInitializer>
-        {children}
-        <Toaster position="top-right" />
+        <AppContextProvider>
+          {children}
+          <Toaster position="top-right" />
+        </AppContextProvider>
       </AuthInitializer>
     </Provider>
   )

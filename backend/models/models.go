@@ -145,6 +145,21 @@ type Application struct {
 	DeletedAt        gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
+// ApplicationAPIKey is a secret key for an application (used by client apps to access translations API).
+// Only the key prefix is stored for display; the full key is shown once on create.
+const APIKeyPrefix = "sk_"
+
+type ApplicationAPIKey struct {
+	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	ApplicationID uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
+	Application   Application    `gorm:"foreignKey:ApplicationID" json:"-"`
+	KeyHash       string         `gorm:"type:varchar(64);uniqueIndex;not null" json:"-"`   // SHA-256 hex of the full key
+	KeyPrefix     string         `gorm:"type:varchar(20);not null;index" json:"key_prefix"` // First 12 chars for display (e.g. sk_abc12345)
+	Name          string         `gorm:"type:varchar(255)" json:"name"`                     // Optional label
+	CreatedAt     time.Time      `json:"created_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
 // ApplicationLocaleDeploy tracks a locale added to an application and its deploy progress (draft -> staging -> production)
 type ApplicationLocaleDeploy struct {
 	ID             uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
@@ -183,6 +198,28 @@ func (AddLanguageJob) TableName() string {
 	return "add_language_jobs"
 }
 
+// Tag is a label that can be attached to components (scoped per application). Identified by code only.
+type Tag struct {
+	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	ApplicationID uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
+	Application   Application    `gorm:"foreignKey:ApplicationID" json:"application,omitempty"`
+	Code          string         `gorm:"type:varchar(100);not null;uniqueIndex:idx_tag_app_code" json:"code"` // Unique per application
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// Page is a grouping that can be attached to components (scoped per application). Identified by code only.
+type Page struct {
+	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	ApplicationID uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
+	Application   Application    `gorm:"foreignKey:ApplicationID" json:"application,omitempty"`
+	Code          string         `gorm:"type:varchar(100);not null;uniqueIndex:idx_page_app_code" json:"code"` // Unique per application
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
 // Component represents a component within an application (e.g., pdp_form)
 type Component struct {
 	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
@@ -193,6 +230,8 @@ type Component struct {
 	Description   string         `json:"description"`
 	Structure     JSONB          `gorm:"type:jsonb" json:"structure"` // The JSON structure template
 	DefaultLocale string         `gorm:"not null" json:"default_locale"`
+	Tags          []Tag          `gorm:"many2many:component_tags;" json:"tags,omitempty"`
+	Pages         []Page         `gorm:"many2many:component_pages;" json:"pages,omitempty"`
 	CreatedBy     uuid.UUID      `gorm:"type:uuid;index" json:"created_by"`
 	UpdatedBy     uuid.UUID      `gorm:"type:uuid;index" json:"updated_by"`
 	CreatedAt     time.Time      `json:"created_at"`
@@ -244,6 +283,20 @@ func (a *Application) BeforeCreate(tx *gorm.DB) error {
 func (c *Component) BeforeCreate(tx *gorm.DB) error {
 	if c.ID == uuid.Nil {
 		c.ID = uuid.New()
+	}
+	return nil
+}
+
+func (t *Tag) BeforeCreate(tx *gorm.DB) error {
+	if t.ID == uuid.Nil {
+		t.ID = uuid.New()
+	}
+	return nil
+}
+
+func (p *Page) BeforeCreate(tx *gorm.DB) error {
+	if p.ID == uuid.Nil {
+		p.ID = uuid.New()
 	}
 	return nil
 }

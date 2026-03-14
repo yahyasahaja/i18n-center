@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/your-org/i18n-center/database"
+	"github.com/your-org/i18n-center/middleware"
 	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/services"
 )
@@ -146,6 +147,19 @@ func (h *TranslationHandler) GetMultipleTranslations(c *gin.Context) {
 			return
 		}
 
+		// When authenticated via API key, restrict to that application
+		if apiKeyAppID := middleware.GetAPIKeyApplicationID(c); apiKeyAppID != uuid.Nil {
+			var app models.Application
+			if err := database.DB.Where("code = ?", applicationCode).First(&app).Error; err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+				return
+			}
+			if app.ID != apiKeyAppID {
+				c.JSON(http.StatusForbidden, gin.H{"error": "API key does not have access to this application"})
+				return
+			}
+		}
+
 		componentCodeStrings := strings.Split(componentCodesStr, ",")
 		componentCodes := make([]string, 0, len(componentCodeStrings))
 
@@ -175,6 +189,12 @@ func (h *TranslationHandler) GetMultipleTranslations(c *gin.Context) {
 			response[code] = translation.Data
 		}
 		c.JSON(http.StatusOK, response)
+		return
+	}
+
+	// When using component_ids, API key auth is not allowed (no application scope)
+	if middleware.GetAPIKeyApplicationID(c) != uuid.Nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "When using API key, application_code and component_codes are required"})
 		return
 	}
 
@@ -213,6 +233,168 @@ func (h *TranslationHandler) GetMultipleTranslations(c *gin.Context) {
 		response[componentIDStr] = translation.Data
 	}
 
+	c.JSON(http.StatusOK, response)
+}
+
+// GetTranslationsByTag returns translations for all components that have the given tag
+// @Summary      Get translations by tag
+// @Description  Returns translations for all components that have the given tag. Response is a map of component code -> translation data.
+// @Tags         translations
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id        path      string  true   "Application ID (UUID)"
+// @Param        tagCode   path      string  true   "Tag code (e.g. checkout, pdp)"
+// @Param        locale    query     string  false  "Locale (default: en)"
+// @Param        stage     query     string  false  "Stage (default: production)"
+// @Success      200       {object}  map[string]interface{}  "Map of component_code -> translation data"
+// @Failure      400       {object}  map[string]string
+// @Failure      401       {object}  map[string]string
+// @Failure      404       {object}  map[string]string
+// @Router       /applications/{id}/translations/by-tag/{tagCode} [get]
+func (h *TranslationHandler) GetTranslationsByTag(c *gin.Context) {
+	applicationIDStr := c.Param("id")
+	tagCode := strings.TrimSpace(strings.ToLower(c.Param("tagCode")))
+	locale := c.Query("locale")
+	stageStr := c.Query("stage")
+
+	if locale == "" {
+		locale = "en"
+	}
+	stage := models.DeploymentStage(stageStr)
+	if stage == "" {
+		stage = models.StageProduction
+	}
+
+	applicationID, err := uuid.Parse(applicationIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid application ID"})
+		return
+	}
+	if tagCode == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Tag code is required"})
+		return
+	}
+	if apiKeyAppID := middleware.GetAPIKeyApplicationID(c); apiKeyAppID != uuid.Nil && apiKeyAppID != applicationID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "API key does not have access to this application"})
+		return
+	}
+
+	var tag models.Tag
+	if err := database.DB.First(&tag, "application_id = ? AND code = ?", applicationID, tagCode).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Tag not found"})
+		return
+	}
+
+	var componentIDs []uuid.UUID
+	if err := database.DB.Table("component_tags").Where("tag_id = ?", tag.ID).Pluck("component_id", &componentIDs).Error; err != nil || len(componentIDs) == 0 {
+		c.JSON(http.StatusOK, gin.H{})
+		return
+	}
+
+	translations, err := h.translationService.GetMultipleTranslations(componentIDs, locale, stage)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var components []models.Component
+	if err := database.DB.Where("id IN ?", componentIDs).Find(&components).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	idToCode := make(map[string]string)
+	for _, comp := range components {
+		idToCode[comp.ID.String()] = comp.Code
+	}
+
+	response := make(map[string]interface{})
+	for idStr, tv := range translations {
+		if code, ok := idToCode[idStr]; ok && tv != nil {
+			response[code] = tv.Data
+		}
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+// GetTranslationsByPage returns translations for all components that have the given page
+// @Summary      Get translations by page
+// @Description  Returns translations for all components that have the given page. Response is a map of component code -> translation data.
+// @Tags         translations
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id        path      string  true   "Application ID (UUID)"
+// @Param        pageCode  path      string  true   "Page code (e.g. home, cart)"
+// @Param        locale    query     string  false  "Locale (default: en)"
+// @Param        stage     query     string  false  "Stage (default: production)"
+// @Success      200       {object}  map[string]interface{}  "Map of component_code -> translation data"
+// @Failure      400       {object}  map[string]string
+// @Failure      401       {object}  map[string]string
+// @Failure      404       {object}  map[string]string
+// @Router       /applications/{id}/translations/by-page/{pageCode} [get]
+func (h *TranslationHandler) GetTranslationsByPage(c *gin.Context) {
+	applicationIDStr := c.Param("id")
+	pageCode := strings.TrimSpace(strings.ToLower(c.Param("pageCode")))
+	locale := c.Query("locale")
+	stageStr := c.Query("stage")
+
+	if locale == "" {
+		locale = "en"
+	}
+	stage := models.DeploymentStage(stageStr)
+	if stage == "" {
+		stage = models.StageProduction
+	}
+
+	applicationID, err := uuid.Parse(applicationIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid application ID"})
+		return
+	}
+	if pageCode == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Page code is required"})
+		return
+	}
+	if apiKeyAppID := middleware.GetAPIKeyApplicationID(c); apiKeyAppID != uuid.Nil && apiKeyAppID != applicationID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "API key does not have access to this application"})
+		return
+	}
+
+	var page models.Page
+	if err := database.DB.First(&page, "application_id = ? AND code = ?", applicationID, pageCode).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Page not found"})
+		return
+	}
+
+	var componentIDs []uuid.UUID
+	if err := database.DB.Table("component_pages").Where("page_id = ?", page.ID).Pluck("component_id", &componentIDs).Error; err != nil || len(componentIDs) == 0 {
+		c.JSON(http.StatusOK, gin.H{})
+		return
+	}
+
+	translations, err := h.translationService.GetMultipleTranslations(componentIDs, locale, stage)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var components []models.Component
+	if err := database.DB.Where("id IN ?", componentIDs).Find(&components).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	idToCode := make(map[string]string)
+	for _, comp := range components {
+		idToCode[comp.ID.String()] = comp.Code
+	}
+
+	response := make(map[string]interface{})
+	for idStr, tv := range translations {
+		if code, ok := idToCode[idStr]; ok && tv != nil {
+			response[code] = tv.Data
+		}
+	}
 	c.JSON(http.StatusOK, response)
 }
 

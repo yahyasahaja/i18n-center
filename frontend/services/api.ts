@@ -94,6 +94,77 @@ export const applicationApi = {
     const response = await api.delete(`/applications/${applicationId}/languages/${encodeURIComponent(locale)}`)
     return response.data
   },
+  listApiKeys: async (applicationId: string) => {
+    const response = await api.get(`/applications/${applicationId}/api-keys`)
+    return response.data
+  },
+  createApiKey: async (applicationId: string, data?: { name?: string }) => {
+    const response = await api.post(`/applications/${applicationId}/api-keys`, data ?? {})
+    return response.data
+  },
+  deleteApiKey: async (applicationId: string, keyId: string) => {
+    const response = await api.delete(`/applications/${applicationId}/api-keys/${keyId}`)
+    return response.data
+  },
+}
+
+export type ApplicationAPIKey = { id: string; key_prefix: string; name: string; created_at: string }
+
+export type Tag = { id: string; application_id: string; code: string }
+export type Page = { id: string; application_id: string; code: string }
+
+export const tagApi = {
+  listByApplication: async (applicationId: string) => {
+    const response = await api.get(`/applications/${applicationId}/tags`)
+    return response.data as Tag[]
+  },
+  get: async (id: string) => {
+    const response = await api.get(`/tags/${id}`)
+    return response.data as Tag
+  },
+  create: async (applicationId: string, data: { code: string }) => {
+    const response = await api.post(`/applications/${applicationId}/tags`, data)
+    return response.data as Tag
+  },
+  update: async (id: string, data: { code?: string }) => {
+    const response = await api.put(`/tags/${id}`, data)
+    return response.data as Tag
+  },
+  delete: async (id: string) => {
+    const response = await api.delete(`/tags/${id}`)
+    return response.data
+  },
+  getComponents: async (tagId: string) => {
+    const response = await api.get(`/tags/${tagId}/components`)
+    return response.data
+  },
+}
+
+export const pageApi = {
+  listByApplication: async (applicationId: string) => {
+    const response = await api.get(`/applications/${applicationId}/pages`)
+    return response.data as Page[]
+  },
+  get: async (id: string) => {
+    const response = await api.get(`/pages/${id}`)
+    return response.data as Page
+  },
+  create: async (applicationId: string, data: { code: string }) => {
+    const response = await api.post(`/applications/${applicationId}/pages`, data)
+    return response.data as Page
+  },
+  update: async (id: string, data: { code?: string }) => {
+    const response = await api.put(`/pages/${id}`, data)
+    return response.data as Page
+  },
+  delete: async (id: string) => {
+    const response = await api.delete(`/pages/${id}`)
+    return response.data
+  },
+  getComponents: async (pageId: string) => {
+    const response = await api.get(`/pages/${pageId}/components`)
+    return response.data
+  },
 }
 
 export const componentApi = {

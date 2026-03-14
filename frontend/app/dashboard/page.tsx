@@ -1,20 +1,19 @@
 'use client'
 
 import { useEffect } from 'react'
-import { useRouter } from 'next/navigation'
 import Layout from '@/components/Layout'
 import { useAppDispatch, useAppSelector } from '@/hooks/redux'
 import { useAuth } from '@/hooks/useAuth'
+import { useAppContext } from '@/context/AppContext'
 import { fetchApplications } from '@/store/slices/applicationSlice'
 import { fetchComponents } from '@/store/slices/componentSlice'
-import Link from 'next/link'
 import { Globe, Layers, ArrowRight, Users } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 
 export default function DashboardPage() {
-  const router = useRouter()
   const dispatch = useAppDispatch()
+  const { push } = useAppContext()
   const { isAuthenticated, user, loading } = useAuth()
   const { applications } = useAppSelector((state) => state.applications)
   const { components } = useAppSelector((state) => state.components)
@@ -67,7 +66,7 @@ export default function DashboardPage() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => router.push('/applications')}
+                onClick={() => push('/applications')}
               >
                 View all <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
@@ -88,7 +87,7 @@ export default function DashboardPage() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => router.push('/components')}
+                onClick={() => push('/components')}
               >
                 View all <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
@@ -110,7 +109,7 @@ export default function DashboardPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => router.push('/users')}
+                  onClick={() => push('/users')}
                 >
                   Manage Users <ArrowRight className="ml-2 h-4 w-4" />
                 </Button>
@@ -123,7 +122,7 @@ export default function DashboardPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Button
               variant="primary"
-              onClick={() => router.push('/applications')}
+              onClick={() => push('/applications')}
               className="justify-start"
             >
               <Globe className="w-5 h-5 mr-2" />
@@ -131,7 +130,7 @@ export default function DashboardPage() {
             </Button>
             <Button
               variant="primary"
-              onClick={() => router.push('/components')}
+              onClick={() => push('/components')}
               className="justify-start"
             >
               <Layers className="w-5 h-5 mr-2" />
