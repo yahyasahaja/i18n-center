@@ -78,3 +78,9 @@ You can:
 
 See [API_DOCUMENTATION.md](./API_DOCUMENTATION.md) for details.
 
+## Documentation
+
+- **[SETUP.md](./SETUP.md)** — Local setup, testing, deployment.
+- **[API_DOCUMENTATION.md](./API_DOCUMENTATION.md)** — API overview and Swagger.
+- **[contexts/](./contexts/README.md)** — Live docs: architecture, API design, DB schema, auth, translation system, frontend, deployment, patterns, troubleshooting. Update these when making significant changes.
+

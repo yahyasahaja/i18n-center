@@ -1,0 +1,14 @@
+---
+description: Backend Go — handlers, services, cache, DB
+globs: backend/**/*.go
+alwaysApply: false
+---
+
+# Backend (Go) Conventions
+
+- **Handlers** in `handlers/`: parse params, call services, return JSON. Add Swagger comments for new endpoints. Use `middleware.RequireRole(...)` or translation auth (JWT or API key) as appropriate.
+- **Services** in `services/`: business logic. Use `cache.Get`/`cache.Set` for read-heavy data; invalidate on write (see `cache/cache.go` key helpers).
+- **Models** in `models/models.go`. New tables: add to `database.InitDatabase()` AutoMigrate.
+- **Routes** in `routes/routes.go`. Translation endpoints that accept API key are on `apiTranslations` group; dashboard-only routes on `api` with `RequireRole`.
+
+Refer to [contexts/DEVELOPMENT_GUIDELINES.md](../../contexts/DEVELOPMENT_GUIDELINES.md) for Go style, error handling, and [API_DOCUMENTATION.md](../../API_DOCUMENTATION.md) for auth and updating Swagger.

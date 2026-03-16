@@ -1,0 +1,42 @@
+---
+description: i18n-center project context — read this and key docs before implementing
+alwaysApply: true
+---
+
+# i18n-center: Agent Context
+
+When implementing or changing anything in this repo, **use project docs for context** so changes are correct and consistent.
+
+## What this repo is
+
+- **Backend**: Go (Gin), PostgreSQL (GORM), Redis cache. REST API for translations, applications, components, tags, pages, API keys.
+- **Frontend**: Next.js (App Router), React, Redux Toolkit, Tailwind. Admin backoffice.
+- **SDKs**: `i18ncenter-go/`, `i18ncenter-js/` — client libs for the translations API (bulk, by-tag, by-page); auth via application API key or JWT.
+
+## Docs to refer to (by task)
+
+| Task | Read first |
+|------|------------|
+| Setup / run locally | [SETUP.md](../../SETUP.md) |
+| API contracts, auth, new endpoints | [API_DOCUMENTATION.md](../../API_DOCUMENTATION.md) |
+| Code style, Git, tests, adding features | [contexts/DEVELOPMENT_GUIDELINES.md](../../contexts/DEVELOPMENT_GUIDELINES.md) |
+| High-level architecture | [README.md](../../README.md) |
+
+## contexts/ folder — use it
+
+The **contexts/** folder is the project’s live documentation. Use it for deep context:
+
+- **[contexts/README.md](../../contexts/README.md)** — Index of all context docs.
+- **Architecture, API design, DB, auth, translation flow, frontend, deployment**: see the files listed in that README (e.g. ARCHITECTURE.md, API_DESIGN.md, DATABASE_SCHEMA.md, AUTHENTICATION.md, TRANSLATION_SYSTEM.md, FRONTEND_ARCHITECTURE.md, DEPLOYMENT.md).
+- **Patterns and troubleshooting**: [COMMON_PATTERNS.md](../../contexts/COMMON_PATTERNS.md), [TROUBLESHOOTING.md](../../contexts/TROUBLESHOOTING.md).
+
+When adding features or changing design, read the relevant context file and **update contexts/ when you make significant changes** (per contexts/README.md).
+
+## Conventions to follow
+
+- **New API endpoints**: Add Swagger annotations; document in API_DOCUMENTATION.md if user-facing; consider Redis cache for read-heavy translation endpoints; respect RBAC (super_admin, operator, user_manager) and application API key scope.
+- **DB changes**: Prefer migrations / `AutoMigrate` in `backend/database/`; avoid breaking existing data.
+- **Frontend**: Preserve AppContext (application_id, stage) in navigation; use `LinkWithContext` or `push()` from `useAppContext()` for links that must keep sidebar state.
+- **LapakGaming code review**: Follow the workspace Code Review Standard (small PRs, EXPLAIN for new SQL, Redis invalidation, error observability, microservice boundaries).
+
+When in doubt, open the relevant doc and implement accordingly.

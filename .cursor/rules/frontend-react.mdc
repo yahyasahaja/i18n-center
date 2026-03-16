@@ -1,0 +1,14 @@
+---
+description: Frontend Next.js / React — pages, context, navigation
+globs: frontend/**/*.ts, frontend/**/*.tsx
+alwaysApply: false
+---
+
+# Frontend (Next.js / React) Conventions
+
+- **App context**: `AppContext` holds `applicationId`, `stage`. Use `buildHref()`, `push()`, `replace()` from `useAppContext()` for navigation so sidebar state is preserved. Use `LinkWithContext` for links.
+- **API**: `frontend/services/api.ts` — add new endpoints and types there; use existing auth interceptor.
+- **State**: Redux (slices in `store/slices/`) for applications, components, auth. Prefer local state for UI-only.
+- **Styling**: Tailwind; use existing components in `components/` and `components/ui/`.
+
+Refer to [contexts/DEVELOPMENT_GUIDELINES.md](../../contexts/DEVELOPMENT_GUIDELINES.md) for TypeScript/React style and [README.md](../../README.md) for structure.
