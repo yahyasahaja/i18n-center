@@ -48,6 +48,7 @@ func SetupRoutes() *gin.Engine {
 	apiKeyHandler := handlers.NewAPIKeyHandler()
 	exportHandler := handlers.NewExportHandler()
 	importHandler := handlers.NewImportHandler()
+	bootstrapHandler := handlers.NewBootstrapHandler()
 	auditHandler := handlers.NewAuditHandler()
 
 	// Swagger documentation
@@ -134,6 +135,9 @@ func SetupRoutes() *gin.Engine {
 	api.GET("/applications/:id/export", exportHandler.ExportApplication, middleware.RequireRole("super_admin", "operator"))
 	api.GET("/components/:id/export", exportHandler.ExportComponent, middleware.RequireRole("super_admin", "operator"))
 	api.POST("/components/:id/import", importHandler.ImportComponent, middleware.RequireRole("super_admin", "operator"))
+
+	// Bootstrap route — one-time bulk seed of components + translations from a locale JSON
+	api.POST("/applications/:id/bootstrap", bootstrapHandler.BootstrapApplication, middleware.RequireRole("super_admin", "operator"))
 
 	// Audit routes
 	api.GET("/audit/logs", auditHandler.GetAuditLogs, middleware.RequireRole("super_admin", "operator"))

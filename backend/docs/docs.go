@@ -1150,7 +1150,141 @@ const docTemplate = `{
             }
         }
     },
-    "definitions": {
+            "/applications/{id}/bootstrap": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Bulk-creates components and seeds draft translations from a locale JSON. Object values at the top level become one component each. Primitive (string/number/bool) values are grouped under a 'common' component. Existing components are upserted (translation version added, component metadata preserved).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "bootstrap"
+                ],
+                "summary": "Bootstrap application translations",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Application ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Locale to seed (default: en)",
+                        "name": "locale",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Target stage (default: draft)",
+                        "name": "stage",
+                        "in": "query"
+                    },
+                    {
+                        "description": "Full locale JSON keyed by component code",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.BootstrapRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.BootstrapResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+"definitions": {
+        "handlers.BootstrapRequest": {
+            "type": "object",
+            "required": [
+                "data"
+            ],
+            "properties": {
+                "data": {
+                    "description": "Full locale JSON. Object values become one component per key. Primitive values are grouped under 'common'.",
+                    "type": "object"
+                }
+            }
+        },
+        "handlers.BootstrapResult": {
+            "type": "object",
+            "properties": {
+                "components": {
+                    "description": "List of component codes created or updated",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "components_created": {
+                    "description": "Number of new components created",
+                    "type": "integer"
+                },
+                "components_updated": {
+                    "description": "Number of existing components updated",
+                    "type": "integer"
+                },
+                "flat_keys_in_common": {
+                    "description": "Number of primitive root-level keys grouped into common",
+                    "type": "integer"
+                },
+                "keys_imported": {
+                    "description": "Total translation keys imported",
+                    "type": "integer"
+                }
+            }
+        },
         "handlers.ApplicationRequest": {
             "type": "object",
             "required": [
