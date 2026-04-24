@@ -240,7 +240,8 @@ func (s *TranslationService) DeployToStage(componentID uuid.UUID, locale string,
 	return err
 }
 
-// ExtractTemplateValues extracts template values from text (values in brackets)
+// ExtractTemplateValues extracts template variable names from text (without brackets).
+// e.g. "Hi [name]!" → ["name"]
 func ExtractTemplateValues(text string) []string {
 	re := regexp.MustCompile(`\[([^\]]+)\]`)
 	matches := re.FindAllStringSubmatch(text, -1)
@@ -253,29 +254,49 @@ func ExtractTemplateValues(text string) []string {
 	return values
 }
 
-// PreserveTemplateValues preserves template values during translation
+// ExtractTemplatePlaceholders extracts full bracketed placeholders from text.
+// e.g. "Hi [name], you have [count] items" → ["[name]", "[count]"]
+// Used by validatePlaceholders to check placeholder survival after translation.
+func ExtractTemplatePlaceholders(text string) []string {
+	re := regexp.MustCompile(`\[[^\]]+\]`)
+	matches := re.FindAllString(text, -1)
+	if matches == nil {
+		return []string{}
+	}
+	return matches
+}
+
+// PreserveTemplateValues ensures every [placeholder] from the source text is
+// present in the translated text. Strategy:
+//  1. If the placeholder already survived — nothing to do.
+//  2. If the translated text has a bracket token in the same ordinal position
+//     (GPT changed the variable name but kept the brackets) — replace it with
+//     the original placeholder.
+//  3. If the placeholder is completely absent and there's no bracket to swap —
+//     append it to the end of the string so it's never silently lost.
 func PreserveTemplateValues(text string, translatedText string) string {
-	// Extract template values from original
-	templateValues := ExtractTemplateValues(text)
-	if len(templateValues) == 0 {
+	placeholders := ExtractTemplatePlaceholders(text)
+	if len(placeholders) == 0 {
 		return translatedText
 	}
 
-	// Replace template placeholders in translated text
+	re := regexp.MustCompile(`\[[^\]]+\]`)
 	result := translatedText
-	for i, value := range templateValues {
-		// Try to find and preserve the template value
-		placeholder := fmt.Sprintf("[%s]", value)
-		if !strings.Contains(result, placeholder) {
-			// If the template value is missing, try to restore it
-			// This is a simple approach - in production, you might want more sophisticated matching
-			re := regexp.MustCompile(`\[([^\]]+)\]`)
-			matches := re.FindAllStringSubmatch(result, -1)
-			if i < len(matches) {
-				// Replace the i-th match with the original template value
-				result = strings.Replace(result, matches[i][0], placeholder, 1)
-			}
+
+	for i, placeholder := range placeholders {
+		if strings.Contains(result, placeholder) {
+			continue // already present — nothing to do
 		}
+
+		// Try ordinal swap: replace the i-th bracket token in the translated text
+		translatedMatches := re.FindAllString(result, -1)
+		if i < len(translatedMatches) {
+			result = strings.Replace(result, translatedMatches[i], placeholder, 1)
+			continue
+		}
+
+		// Last resort: append so we never lose the placeholder
+		result = strings.TrimSpace(result) + " " + placeholder
 	}
 
 	return result

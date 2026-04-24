@@ -44,6 +44,9 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
   const [originalJsonText, setOriginalJsonText] = useState('{}')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  // translating is separate from loading so the JSON editor stays interactive
+  // while an async translate/backfill job is polling in the background
+  const [translating, setTranslating] = useState(false)
   const [jsonError, setJsonError] = useState<string | null>(null)
   const [showDiff, setShowDiff] = useState(false)
   const [showDeployDiff, setShowDeployDiff] = useState(false)
@@ -343,51 +346,114 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
     }
   }
 
+  // Polls a single TranslateJob until it reaches a terminal state.
+  // Returns { status, error } — never throws.
+  const pollTranslateJob = async (
+    jobId: string,
+    maxAttempts = 120 // 4 min at 2s
+  ): Promise<{ status: 'completed' | 'failed'; error?: string }> => {
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        const res = await translationApi.getTranslateJobStatus(jobId)
+        if (res.status === 'completed') return { status: 'completed' }
+        if (res.status === 'failed') {
+          return { status: 'failed', error: res.error_message || res.error_detail || 'Job failed' }
+        }
+      } catch {
+        // Transient network error — keep polling
+      }
+      await new Promise((r) => setTimeout(r, 2000))
+    }
+    return { status: 'failed', error: 'Timed out after 4 minutes' }
+  }
+
   const handleAutoTranslate = async (targetLocale: string) => {
     if (hasUnsavedChanges()) {
-      toast.error('Save changes first before translate')
+      toast.error('Save changes first before translating')
       return
     }
+    setTranslating(true)
+    const toastId = `translate-${targetLocale}`
     try {
-      setLoading(true)
-      await translationApi.autoTranslate(
+      // 202 Accepted — backend enqueues a job
+      const data = await translationApi.autoTranslate(
         componentId,
         selectedLocale,
         targetLocale,
         selectedStage
       )
-      toast.success(`Translated to ${targetLocale}`)
-      if (targetLocale === selectedLocale) {
-        loadTranslation()
+      const jobId: string = data.job_id
+      toast.loading(`Translating to ${targetLocale.toUpperCase()}…`, { id: toastId })
+
+      const result = await pollTranslateJob(jobId)
+      toast.dismiss(toastId)
+
+      if (result.status === 'failed') {
+        toast.error(`Translation to ${targetLocale.toUpperCase()} failed: ${result.error}`)
+      } else {
+        toast.success(`Translated to ${targetLocale.toUpperCase()}`)
+        // If the translated locale is currently selected, reload the editor
+        if (targetLocale === selectedLocale) {
+          loadTranslation(true)
+        }
       }
     } catch (error: any) {
-      toast.error(error.response?.data?.error || 'Failed to translate')
+      toast.dismiss(toastId)
+      toast.error(error.response?.data?.error || 'Failed to start translation')
     } finally {
-      setLoading(false)
+      setTranslating(false)
     }
   }
 
   const handleBackfill = async () => {
     if (hasUnsavedChanges()) {
-      toast.error('Save changes first before translate')
+      toast.error('Save changes first before translating')
       return
     }
     const missingLocales = enabledLanguages.filter((lang) => lang !== selectedLocale)
     if (missingLocales.length === 0) {
-      toast.error('All languages are already translated')
+      toast.error('All languages already have translations')
       return
     }
+    if (!confirm(`Backfill translations for: ${missingLocales.join(', ')}?`)) return
 
-    if (!confirm(`Backfill translations for ${missingLocales.join(', ')}?`)) return
-
+    setTranslating(true)
+    const toastId = 'backfill'
     try {
-      setLoading(true)
-      await translationApi.backfill(componentId, selectedLocale, missingLocales, selectedStage)
-      toast.success('Backfill completed')
+      // 202 Accepted — returns { job_ids: string[], count: number }
+      const data = await translationApi.backfill(componentId, selectedLocale, missingLocales, selectedStage)
+      const jobIds: string[] = data.job_ids
+      const total = jobIds.length
+
+      toast.loading(`Backfilling ${total} locale(s)…`, { id: toastId })
+
+      // Poll all jobs in parallel; update the toast with running progress
+      let done = 0
+      let failed = 0
+      await Promise.all(
+        jobIds.map(async (jobId) => {
+          const result = await pollTranslateJob(jobId)
+          if (result.status === 'failed') failed++
+          else done++
+          toast.loading(`Backfilling… ${done + failed}/${total} done`, { id: toastId })
+        })
+      )
+
+      toast.dismiss(toastId)
+      if (failed > 0) {
+        toast.error(`Backfill finished with ${failed} failure(s). Check individual locales.`)
+      } else {
+        toast.success(`Backfill completed for ${done} locale(s)`)
+      }
+      // Reload if any completed locale is the one currently displayed
+      if (missingLocales.includes(selectedLocale)) {
+        loadTranslation(true)
+      }
     } catch (error: any) {
-      toast.error(error.response?.data?.error || 'Failed to backfill')
+      toast.dismiss(toastId)
+      toast.error(error.response?.data?.error || 'Failed to start backfill')
     } finally {
-      setLoading(false)
+      setTranslating(false)
     }
   }
 
@@ -675,7 +741,7 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
           </div>
 
           {/* Auto-translate Actions */}
-          <div className="flex items-center space-x-2 pt-2 border-t">
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t">
             <span className="text-sm text-gray-600">Translate:</span>
             {enabledLanguages
               .filter((lang) => lang !== selectedLocale)
@@ -685,7 +751,8 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
                   variant="outline"
                   size="sm"
                   onClick={() => handleAutoTranslate(lang)}
-                  isLoading={loading}
+                  disabled={translating}
+                  isLoading={translating}
                 >
                   <Languages className="w-4 h-4 mr-1" />
                   {lang.toUpperCase()}
@@ -695,11 +762,17 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
               variant="primary"
               size="sm"
               onClick={handleBackfill}
-              isLoading={loading}
+              disabled={translating}
+              isLoading={translating}
             >
               <Zap className="w-4 h-4 mr-2" />
               Backfill All
             </Button>
+            {translating && (
+              <span className="text-xs text-gray-500 animate-pulse">
+                Translation in progress…
+              </span>
+            )}
           </div>
 
           {/* Deployment Actions */}

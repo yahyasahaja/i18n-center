@@ -198,6 +198,36 @@ func (AddLanguageJob) TableName() string {
 	return "add_language_jobs"
 }
 
+// TranslateJob is a DB-backed job for async per-component translation (auto_translate or backfill).
+// Job types:
+//   - "auto_translate"  : translate a single component into a single target locale
+//   - "backfill"        : translate a single component into multiple target locales
+const (
+	TranslateJobTypeAutoTranslate = "auto_translate"
+	TranslateJobTypeBackfill      = "backfill"
+)
+
+type TranslateJob struct {
+	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	ApplicationID uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
+	ComponentID   uuid.UUID      `gorm:"type:uuid;not null;index" json:"component_id"`
+	JobType       string         `gorm:"type:varchar(50);not null" json:"job_type"` // auto_translate | backfill
+	SourceLocale  string         `gorm:"type:varchar(20);not null" json:"source_locale"`
+	TargetLocales StringArray    `gorm:"type:text[]" json:"target_locales"` // one or more locales
+	Status        string         `gorm:"type:varchar(50);not null;default:pending;index" json:"status"` // pending, running, completed, failed
+	ErrorMessage  string         `gorm:"type:text" json:"error_message,omitempty"`
+	ErrorDetail   string         `gorm:"type:text" json:"error_detail,omitempty"`
+	ClaimedBy     string         `gorm:"type:varchar(255)" json:"claimed_by,omitempty"`
+	CreatedBy     uuid.UUID      `gorm:"type:uuid;index" json:"created_by"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+func (TranslateJob) TableName() string {
+	return "translate_jobs"
+}
+
 // Tag is a label that can be attached to components (scoped per application). Identified by code only.
 type Tag struct {
 	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
@@ -316,6 +346,13 @@ func (a *ApplicationLocaleDeploy) BeforeCreate(tx *gorm.DB) error {
 }
 
 func (j *AddLanguageJob) BeforeCreate(tx *gorm.DB) error {
+	if j.ID == uuid.Nil {
+		j.ID = uuid.New()
+	}
+	return nil
+}
+
+func (j *TranslateJob) BeforeCreate(tx *gorm.DB) error {
 	if j.ID == uuid.Nil {
 		j.ID = uuid.New()
 	}

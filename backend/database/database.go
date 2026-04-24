@@ -59,6 +59,7 @@ func InitDatabase() error {
 		&models.AuditLog{},
 		&models.ApplicationLocaleDeploy{},
 		&models.AddLanguageJob{},
+		&models.TranslateJob{},
 	)
 
 	if err != nil {

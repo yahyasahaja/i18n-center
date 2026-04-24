@@ -1,7 +1,11 @@
-.PHONY: help build-backend build-frontend test-backend docker-build docker-push deploy run run-deps run-backend run-frontend
+.PHONY: help build-backend build-frontend test-backend docker-build docker-push deploy \
+        dev run run-deps run-backend run-frontend stop logs
 
 help:
 	@echo "Available targets:"
+	@echo "  dev              - Start everything (DB, Redis, backend, frontend) — main dev command"
+	@echo "  stop             - Stop all Docker containers (Postgres, Redis)"
+	@echo "  logs             - Tail logs of all Docker containers"
 	@echo "  run              - Start deps (Postgres, Redis) and run backend locally"
 	@echo "  run-deps         - Start Postgres and Redis via docker-compose"
 	@echo "  run-backend      - Run Go backend (requires run-deps or existing DB/Redis)"
@@ -12,6 +16,35 @@ help:
 	@echo "  docker-build     - Build Docker images"
 	@echo "  docker-push      - Push Docker images to GCR"
 	@echo "  deploy           - Deploy to GKE"
+
+# ── Main dev command ─────────────────────────────────────────────────────────
+# Starts Postgres + Redis, waits until healthy, then runs backend & frontend
+# concurrently. Ctrl-C cleanly kills all three.
+
+dev: run-deps wait-deps
+	@echo "==> Starting backend and frontend..."
+	@trap 'echo "\n==> Shutting down..."; kill 0' INT; \
+	  (cd backend && go run main.go 2>&1 | sed "s/^/[backend] /") & \
+	  (cd frontend && yarn install --frozen-lockfile --silent 2>/dev/null; yarn dev 2>&1 | sed "s/^/[frontend] /") & \
+	  wait
+
+wait-deps:
+	@echo "==> Waiting for Postgres to be ready..."
+	@until docker exec i18n-center-postgres pg_isready -U i18n_user -q 2>/dev/null; do \
+	  printf '.'; sleep 1; \
+	done; echo " ready."
+	@echo "==> Waiting for Redis to be ready..."
+	@until docker exec i18n-center-redis redis-cli ping 2>/dev/null | grep -q PONG; do \
+	  printf '.'; sleep 1; \
+	done; echo " ready."
+
+stop:
+	docker-compose down
+
+logs:
+	docker-compose logs -f
+
+# ── Individual targets ────────────────────────────────────────────────────────
 
 build-backend:
 	cd backend && go build -o bin/main ./main.go

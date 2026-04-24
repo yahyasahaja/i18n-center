@@ -253,6 +253,17 @@ export const translationApi = {
     )
     return response.data
   },
+  // Async job endpoints (202-based auto-translate / backfill)
+  getTranslateJobStatus: async (jobId: string) => {
+    const response = await api.get(`/translate-jobs/${jobId}`)
+    return response.data
+  },
+  listComponentTranslateJobs: async (componentId: string, statusFilter?: string) => {
+    const params = statusFilter ? { status: statusFilter } : {}
+    const response = await api.get(`/components/${componentId}/translate-jobs`, { params })
+    return response.data
+  },
+
   compare: async (componentId: string, locale: string, stage: string, versionA?: number, versionB?: number) => {
     let url = `/components/${componentId}/translations/compare?locale=${locale}&stage=${stage}`
     if (versionA != null && versionB != null) {

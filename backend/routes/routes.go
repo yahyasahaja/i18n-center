@@ -123,6 +123,7 @@ func SetupRoutes() *gin.Engine {
 	translations.POST("/translations/backfill", translationHandler.BackfillTranslations, middleware.RequireRole("super_admin", "operator"))
 	translations.GET("/translations/compare", translationHandler.GetVersionComparison, middleware.RequireRole("super_admin", "operator"))
 	translations.GET("/translations/versions", translationHandler.ListVersions, middleware.RequireRole("super_admin", "operator"))
+	translations.GET("/translate-jobs", translationHandler.ListComponentTranslateJobs, middleware.RequireRole("super_admin", "operator"))
 
 	// Component routes
 	api.GET("/components", componentHandler.GetComponents, middleware.RequireRole("super_admin", "operator"))
@@ -138,6 +139,9 @@ func SetupRoutes() *gin.Engine {
 
 	// Bootstrap route — one-time bulk seed of components + translations from a locale JSON
 	api.POST("/applications/:id/bootstrap", bootstrapHandler.BootstrapApplication, middleware.RequireRole("super_admin", "operator"))
+
+	// Async translate job status
+	api.GET("/translate-jobs/:job_id", translationHandler.GetTranslateJobStatus, middleware.RequireRole("super_admin", "operator"))
 
 	// Audit routes
 	api.GET("/audit/logs", auditHandler.GetAuditLogs, middleware.RequireRole("super_admin", "operator"))

@@ -610,7 +610,22 @@ type AutoTranslateRequest struct {
 	Stage        string `json:"stage" binding:"required"`
 }
 
-// AutoTranslate translates a component to target locale using OpenAI
+// AutoTranslate enqueues an async job to translate a component to a target locale using OpenAI.
+// Returns 202 Accepted with a job_id that can be polled via GET /translate-jobs/:job_id.
+//
+// @Summary      Auto-translate component (async)
+// @Description  Enqueue an OpenAI translation job for a single component + target locale. Poll the returned job_id for status.
+// @Tags         translations
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id       path      string               true  "Component ID"
+// @Param        request  body      AutoTranslateRequest true  "Auto-translate request"
+// @Success      202      {object}  map[string]string    "job_id"
+// @Failure      400      {object}  map[string]string
+// @Failure      401      {object}  map[string]string
+// @Failure      404      {object}  map[string]string
+// @Router       /components/{id}/translations/auto-translate [post]
 func (h *TranslationHandler) AutoTranslate(c *gin.Context) {
 	componentIDStr := c.Param("id")
 	componentID, err := uuid.Parse(componentIDStr)
@@ -625,92 +640,64 @@ func (h *TranslationHandler) AutoTranslate(c *gin.Context) {
 		return
 	}
 
-	// Get source translation
-	stage := models.DeploymentStage(req.Stage)
-	sourceTranslation, err := h.translationService.GetTranslation(componentID, req.SourceLocale, stage)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Source translation not found"})
-		return
-	}
-
-	// Get component to find application
+	// Verify component + application exist before enqueuing
 	var component models.Component
 	if err := database.DB.First(&component, "id = ?", componentID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
 		return
 	}
 
-	// Get application for OpenAI key
-	var application models.Application
-	if err := database.DB.First(&application, "id = ?", component.ApplicationID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+	// Verify source translation exists
+	stage := models.DeploymentStage(req.Stage)
+	if _, err := h.translationService.GetTranslation(componentID, req.SourceLocale, stage); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Source translation not found"})
 		return
 	}
 
-	// Initialize OpenAI service
-	openAIService := services.NewOpenAIService(application.OpenAIKey)
-	if application.OpenAIKey == "" {
-		openAIService = services.NewOpenAIService(services.GetDefaultOpenAIKey())
-	}
+	userID, _ := h.getCurrentUser(c)
 
-	// Translate JSON structure
-	translatedData, err := openAIService.TranslateJSON(sourceTranslation.Data, req.SourceLocale, req.TargetLocale)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	job := models.TranslateJob{
+		ApplicationID: component.ApplicationID,
+		ComponentID:   componentID,
+		JobType:       models.TranslateJobTypeAutoTranslate,
+		SourceLocale:  req.SourceLocale,
+		TargetLocales: models.StringArray{req.TargetLocale},
+		Status:        models.JobStatusPending,
+		CreatedBy:     userID,
+	}
+	if err := database.DB.Create(&job).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue translation job"})
 		return
 	}
 
-	userID, username := h.getCurrentUser(c)
-	ipAddress, userAgent := h.getClientInfo(c)
-
-	// Save translated data
-	translation, err := h.translationService.SaveTranslation(componentID, req.TargetLocale, stage, translatedData, userID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Log audit
-	h.auditService.LogAction(
-		userID,
-		username,
-		"AUTO_TRANSLATE",
-		"translation",
-		translation.ID,
-		component.Code,
-		map[string]interface{}{
-			"action": "AUTO_TRANSLATE",
-			"component_id": componentID.String(),
-			"source_locale": req.SourceLocale,
-			"target_locale": req.TargetLocale,
-			"stage": string(stage),
-			"data": translatedData,
-		},
-		ipAddress,
-		userAgent,
-	)
-
-	c.JSON(http.StatusOK, translation)
+	c.JSON(http.StatusAccepted, gin.H{
+		"job_id":  job.ID.String(),
+		"status":  job.Status,
+		"message": "Translation job enqueued. Poll /translate-jobs/" + job.ID.String() + " for status.",
+	})
 }
 
 type BackfillRequest struct {
-	SourceLocale string   `json:"source_locale" binding:"required"`
+	SourceLocale  string   `json:"source_locale" binding:"required"`
 	TargetLocales []string `json:"target_locales" binding:"required"`
-	Stage        string   `json:"stage" binding:"required"`
+	Stage         string   `json:"stage" binding:"required"`
 }
 
-// BackfillTranslations backfills translations for multiple locales
-// @Summary      Backfill translations
-// @Description  Automatically translate and fill missing locales for a component
+// BackfillTranslations enqueues async jobs to translate a component into multiple target locales.
+// One TranslateJob is created per target locale. Returns 202 Accepted with all job_ids.
+//
+// @Summary      Backfill translations (async)
+// @Description  Enqueue OpenAI translation jobs for multiple target locales. Poll each job_id for individual status.
 // @Tags         translations
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
-// @Param        id       path      string            true  "Component ID"
-// @Param        request  body      BackfillRequest   true  "Backfill request"
-// @Success      200      {array}   models.TranslationVersion
+// @Param        id       path      string          true  "Component ID"
+// @Param        request  body      BackfillRequest true  "Backfill request"
+// @Success      202      {object}  map[string]interface{}  "job_ids array"
 // @Failure      400      {object}  map[string]string
 // @Failure      401      {object}  map[string]string
+// @Failure      404      {object}  map[string]string
 // @Router       /components/{id}/translations/backfill [post]
 func (h *TranslationHandler) BackfillTranslations(c *gin.Context) {
 	componentIDStr := c.Param("id")
@@ -725,54 +712,116 @@ func (h *TranslationHandler) BackfillTranslations(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if len(req.TargetLocales) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "At least one target_locale is required"})
+		return
+	}
 
-	// Get component and application
+	// Verify component exists
 	var component models.Component
 	if err := database.DB.First(&component, "id = ?", componentID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
 		return
 	}
 
-	var application models.Application
-	if err := database.DB.First(&application, "id = ?", component.ApplicationID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
-		return
-	}
-
-	// Get source translation
+	// Verify source translation exists
 	stage := models.DeploymentStage(req.Stage)
-	sourceTranslation, err := h.translationService.GetTranslation(componentID, req.SourceLocale, stage)
-	if err != nil {
+	if _, err := h.translationService.GetTranslation(componentID, req.SourceLocale, stage); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Source translation not found"})
 		return
 	}
 
-	// Initialize OpenAI service
-	openAIService := services.NewOpenAIService(application.OpenAIKey)
-	if application.OpenAIKey == "" {
-		openAIService = services.NewOpenAIService(services.GetDefaultOpenAIKey())
-	}
+	userID, _ := h.getCurrentUser(c)
 
-	// Translate for each target locale
-	results := make([]models.TranslationVersion, 0)
+	// One job per target locale so each can be tracked and retried independently
+	jobIDs := make([]string, 0, len(req.TargetLocales))
 	for _, targetLocale := range req.TargetLocales {
-		translatedData, err := openAIService.TranslateJSON(sourceTranslation.Data, req.SourceLocale, targetLocale)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to translate to " + targetLocale + ": " + err.Error()})
+		job := models.TranslateJob{
+			ApplicationID: component.ApplicationID,
+			ComponentID:   componentID,
+			JobType:       models.TranslateJobTypeBackfill,
+			SourceLocale:  req.SourceLocale,
+			TargetLocales: models.StringArray{targetLocale},
+			Status:        models.JobStatusPending,
+			CreatedBy:     userID,
+		}
+		if err := database.DB.Create(&job).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue job for locale " + targetLocale})
 			return
 		}
-
-		userID, _ := h.getCurrentUser(c)
-		translation, err := h.translationService.SaveTranslation(componentID, targetLocale, stage, models.JSONB(translatedData), userID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save translation for " + targetLocale})
-			return
-		}
-
-		results = append(results, *translation)
+		jobIDs = append(jobIDs, job.ID.String())
 	}
 
-	c.JSON(http.StatusOK, results)
+	c.JSON(http.StatusAccepted, gin.H{
+		"job_ids": jobIDs,
+		"count":   len(jobIDs),
+		"message": fmt.Sprintf("%d translation jobs enqueued. Poll /translate-jobs/:job_id for each status.", len(jobIDs)),
+	})
+}
+
+// GetTranslateJobStatus returns the status of a single TranslateJob by ID.
+//
+// @Summary      Get translate job status
+// @Description  Poll for the status of a single async translation job
+// @Tags         translations
+// @Produce      json
+// @Security     BearerAuth
+// @Param        job_id  path      string  true  "Job ID"
+// @Success      200     {object}  models.TranslateJob
+// @Failure      404     {object}  map[string]string
+// @Router       /translate-jobs/{job_id} [get]
+func (h *TranslationHandler) GetTranslateJobStatus(c *gin.Context) {
+	jobIDStr := c.Param("job_id")
+	jobID, err := uuid.Parse(jobIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid job ID"})
+		return
+	}
+
+	var job models.TranslateJob
+	if err := database.DB.First(&job, "id = ?", jobID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, job)
+}
+
+// ListComponentTranslateJobs returns all TranslateJobs for a component, newest first.
+// The dashboard calls this on mount (and every few seconds while any job is running)
+// to know whether a translation is in-progress, and to surface errors.
+//
+// @Summary      List translate jobs for a component
+// @Description  Returns all async translation jobs for a component (all statuses). Filter by ?status=pending,running to get active jobs only.
+// @Tags         translations
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id      path      string  true   "Component ID"
+// @Param        status  query     string  false  "Comma-separated status filter: pending,running,completed,failed"
+// @Success      200     {array}   models.TranslateJob
+// @Router       /components/{id}/translate-jobs [get]
+func (h *TranslationHandler) ListComponentTranslateJobs(c *gin.Context) {
+	componentIDStr := c.Param("id")
+	componentID, err := uuid.Parse(componentIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid component ID"})
+		return
+	}
+
+	q := database.DB.Where("component_id = ?", componentID)
+
+	if statusFilter := c.Query("status"); statusFilter != "" {
+		statuses := strings.Split(statusFilter, ",")
+		q = q.Where("status IN ?", statuses)
+	}
+
+	var jobs []models.TranslateJob
+	if err := q.Order("created_at DESC").Limit(50).Find(&jobs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"jobs": jobs})
 }
 
 // GetVersionComparison returns two versions for diff. Default: latest (version1) vs previous (version2). Optional query: version_a, version_b.
