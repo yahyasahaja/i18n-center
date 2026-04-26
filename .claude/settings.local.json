@@ -44,7 +44,9 @@
       "Bash(golangci-lint run *)",
       "Bash(go mod *)",
       "Bash(go fmt *)",
-      "Bash(./node_modules/.bin/tsc --noEmit)"
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(kill 82019 82198)",
+      "Bash(grep -n \"Add Component\\\\|Components\" /Users/yahyasahaja/projects/lapakgaming/i18n-center/frontend/app/applications/[id]/page.tsx)"
     ]
   }
 }

@@ -127,6 +127,24 @@ export const applicationApi = {
     const response = await api.delete(`/applications/${applicationId}/api-keys/${keyId}`)
     return response.data
   },
+  bootstrap: async (
+    applicationId: string,
+    data: Record<string, unknown>,
+    locale: string,
+    stage: string
+  ): Promise<{
+    components_created: number
+    components_updated: number
+    keys_imported: number
+    flat_keys_in_common: number
+    components: string[]
+  }> => {
+    const response = await api.post(
+      `/applications/${applicationId}/bootstrap?locale=${encodeURIComponent(locale)}&stage=${encodeURIComponent(stage)}`,
+      { data }
+    )
+    return response.data
+  },
 }
 
 export type ApplicationAPIKey = { id: string; key_prefix: string; name: string; created_at: string }

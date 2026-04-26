@@ -408,10 +408,42 @@ func processTranslateJob(ctx context.Context, job *models.TranslateJob, translat
 		return
 	}
 
-	translatedData, err := openAIService.TranslateJSON(ctx, sourceTranslation.Data, job.SourceLocale, targetLocale)
+	// For backfill jobs: only translate keys that are absent from the existing target
+	// translation. This avoids clobbering already-translated strings when the operator
+	// adds a single new key to the source locale.
+	// For auto_translate jobs: translate everything (full replacement).
+	dataToTranslate := sourceTranslation.Data
+	var existingTargetData map[string]interface{}
+	if job.JobType == "backfill" {
+		existingTarget, err := translationService.GetTranslation(job.ComponentID, targetLocale, models.StageDraft)
+		if err == nil && existingTarget != nil && len(existingTarget.Data) > 0 {
+			existingTargetData = existingTarget.Data
+			missing := missingKeys(sourceTranslation.Data, existingTarget.Data)
+			if len(missing) == 0 {
+				// Nothing missing — mark job completed without an OpenAI call
+				_ = database.DB.Model(&models.TranslateJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
+					"status":     models.JobStatusCompleted,
+					"updated_at": time.Now(),
+				}).Error
+				observability.Logger.Info("TranslateJob skipped (no missing keys)",
+					zap.String("job_id", job.ID.String()),
+					zap.String("target_locale", targetLocale),
+				)
+				return
+			}
+			dataToTranslate = missing
+		}
+	}
+
+	translatedData, err := openAIService.TranslateJSON(ctx, dataToTranslate, job.SourceLocale, targetLocale)
 	if err != nil {
 		_ = markTranslateJobFailed(job.ID, "Translation failed", err.Error())
 		return
+	}
+
+	// For backfill: merge translated missing keys into existing target data
+	if job.JobType == "backfill" && existingTargetData != nil {
+		translatedData = mergeTranslations(existingTargetData, translatedData)
 	}
 
 	if _, err := translationService.SaveTranslation(job.ComponentID, targetLocale, models.StageDraft, translatedData, job.CreatedBy); err != nil {
@@ -442,6 +474,49 @@ func markTranslateJobFailed(jobID uuid.UUID, msg, detail string) error {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// missingKeys returns a subset of source containing only keys (recursively) that are
+// absent from target. Used by backfill jobs so we never re-translate existing strings.
+func missingKeys(source, target map[string]interface{}) map[string]interface{} {
+	missing := make(map[string]interface{})
+	for k, sv := range source {
+		tv, exists := target[k]
+		if !exists {
+			missing[k] = sv
+			continue
+		}
+		// Both sides are nested objects — recurse
+		if svMap, ok := sv.(map[string]interface{}); ok {
+			if tvMap, ok := tv.(map[string]interface{}); ok {
+				nested := missingKeys(svMap, tvMap)
+				if len(nested) > 0 {
+					missing[k] = nested
+				}
+			}
+		}
+		// Key exists in target as a scalar — not missing
+	}
+	return missing
+}
+
+// mergeTranslations overlays additions onto base (recursively for nested objects).
+// Values in additions take priority; keys only in base are preserved.
+func mergeTranslations(base, additions map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{}, len(base))
+	for k, v := range base {
+		result[k] = v
+	}
+	for k, v := range additions {
+		if addMap, ok := v.(map[string]interface{}); ok {
+			if baseMap, ok := result[k].(map[string]interface{}); ok {
+				result[k] = mergeTranslations(baseMap, addMap)
+				continue
+			}
+		}
+		result[k] = v
+	}
+	return result
+}
 
 // silentDB returns a gorm session with logging suppressed (idle poll queries shouldn't flood logs).
 func silentDB() *gorm.DB {

@@ -600,7 +600,12 @@ func (h *ApplicationHandler) GetActiveJobs(c *gin.Context) {
 			ComponentCode: r.ComponentCode,
 			ComponentName: r.ComponentName,
 			JobType:       r.JobType,
-			TargetLocales: []string(r.TargetLocales),
+			TargetLocales: func() []string {
+					if r.TargetLocales == nil {
+						return []string{}
+					}
+					return []string(r.TargetLocales)
+				}(),
 			Status:        r.Status,
 		})
 	}

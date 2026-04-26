@@ -509,70 +509,66 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
       // First check if it's valid JSON syntax
       JSON.parse(jsonString)
 
-      // Check for duplicate keys in the raw string
-      // JSON.parse() accepts duplicates but we want to catch them
+      // Check for duplicate keys at the top level of the JSON object only.
+      // Uses a depth-aware character scanner so nested objects with the same
+      // key name (e.g. two sibling objects both having "title") are NOT flagged.
       const findDuplicateKeys = (str: string): string[] => {
         const duplicates: string[] = []
-
-        // Simple approach: find all top-level keys in the main object
-        // This handles the most common case of duplicate keys at root level
         const trimmed = str.trim()
-        if (!trimmed.startsWith('{')) {
-          return duplicates
-        }
+        if (!trimmed.startsWith('{')) return duplicates
 
-        // Find the main object content (between first { and matching })
+        const seen = new Set<string>()
         let depth = 0
-        let startIdx = -1
         let inString = false
-        let escapeNext = false
+        let escape = false
+        let i = 0
 
-        for (let i = 0; i < trimmed.length; i++) {
-          const char = trimmed[i]
+        while (i < trimmed.length) {
+          const ch = trimmed[i]
 
-          if (escapeNext) {
-            escapeNext = false
+          if (escape) { escape = false; i++; continue }
+
+          if (inString) {
+            if (ch === '\\') escape = true
+            else if (ch === '"') inString = false
+            i++
             continue
           }
 
-          if (char === '\\') {
-            escapeNext = true
-            continue
-          }
-
-          if (char === '"' && !escapeNext) {
-            inString = !inString
-            continue
-          }
-
-          if (!inString) {
-            if (char === '{') {
-              depth++
-              if (depth === 1) {
-                startIdx = i + 1
+          // Not currently inside a string
+          if (ch === '"') {
+            if (depth === 1) {
+              // Read the string (could be a key or a string value)
+              let token = ''
+              i++
+              while (i < trimmed.length) {
+                const c = trimmed[i]
+                if (c === '\\') { i++; if (i < trimmed.length) token += trimmed[i]; i++; continue }
+                if (c === '"') { i++; break }
+                token += c
+                i++
               }
-            } else if (char === '}') {
-              depth--
-              if (depth === 0 && startIdx >= 0) {
-                // Extract object content
-                const content = trimmed.substring(startIdx, i)
-                // Find all keys in this content
-                const keyRegex = /"([^"]+)":/g
-                const keys: string[] = []
-                let keyMatch
-
-                while ((keyMatch = keyRegex.exec(content)) !== null) {
-                  const key = keyMatch[1]
-                  if (keys.includes(key) && !duplicates.includes(key)) {
-                    duplicates.push(key)
-                  } else {
-                    keys.push(key)
-                  }
+              // Skip whitespace
+              while (i < trimmed.length && /\s/.test(trimmed[i])) i++
+              // Only count it as a key if followed by ':'
+              if (trimmed[i] === ':') {
+                if (seen.has(token)) {
+                  if (!duplicates.includes(token)) duplicates.push(token)
+                } else {
+                  seen.add(token)
                 }
-                break
               }
+              continue // i already advanced past the string
+            } else {
+              inString = true
             }
+          } else if (ch === '{' || ch === '[') {
+            depth++
+          } else if (ch === '}' || ch === ']') {
+            depth--
           }
+
+          i++
         }
 
         return duplicates
