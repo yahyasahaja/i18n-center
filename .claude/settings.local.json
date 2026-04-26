@@ -11,7 +11,28 @@
       "Bash(curl -s http://localhost:8080/api/health)",
       "Bash(curl -s -o /dev/null -w \"Frontend HTTP: %{http_code}\" http://localhost:3000)",
       "Bash(pkill -f \"go run main.go\")",
-      "Bash(pkill -f \"next dev\")"
+      "Bash(pkill -f \"next dev\")",
+      "Bash(python3 *)",
+      "Bash(brew list *)",
+      "Bash(docker exec i18n-center-postgres *)",
+      "Bash(docker exec *)",
+      "mcp__claude_ai_Atlassian_Rovo__getConfluencePage",
+      "Bash(go build *)",
+      "Bash(npx tsc *)",
+      "Bash(lsof -i :8080 -sTCP:LISTEN)",
+      "Bash(kill 8188)",
+      "Bash(ENV=development DB_HOST=localhost DB_PORT=5432 DB_USER=i18n_user DB_PASSWORD=i18n_password DB_NAME=i18n_center DB_SSLMODE=disable REDIS_HOST=localhost REDIS_PORT=6379 JWT_SECRET=dev-secret CORS_ORIGIN=http://localhost:3000 PORT=8080 /tmp/i18n-center-bin)",
+      "Bash(echo \"PID: $!\")",
+      "Bash(pkill -f \"i18n-center\")",
+      "Bash(nohup ./i18n-center)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8080/api/health)",
+      "Bash(pkill -9 -f i18n-center)",
+      "Bash(ls -la /Users/yahyasahaja/projects/lapakgaming/i18n-center/frontend/.env*)",
+      "Bash(curl *)",
+      "Read(//proc/16775/**)",
+      "Bash(pkill -9 -f \"go run main.go\")",
+      "Bash(nohup make *)",
+      "Bash(xargs kill *)"
     ]
   }
 }

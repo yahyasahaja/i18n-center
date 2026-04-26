@@ -197,7 +197,7 @@ export default function ApplicationsPage() {
                     <div className="text-sm font-mono text-gray-600">{app.code}</div>
                   </TableCell>
                   <TableCell>
-                    <div className="text-sm text-gray-500 max-w-md">
+                    <div className="text-sm text-gray-500 max-w-md line-clamp-2 whitespace-pre-line">
                       {app.description || 'No description'}
                     </div>
                   </TableCell>

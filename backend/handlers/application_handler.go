@@ -328,6 +328,24 @@ func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 	}
 
 	if req.AutoTranslate {
+		// Idempotency: reject if a pending or running job already exists for this (application, locale).
+		// This prevents double-submission from UI retries or concurrent operator actions.
+		// The worker itself is also protected by FOR UPDATE SKIP LOCKED, but this gives
+		// the caller an explicit 409 with the existing job_id they can poll instead.
+		var existingJob models.AddLanguageJob
+		if err := database.DB.Where(
+			"application_id = ? AND locale = ? AND status IN ? AND deleted_at IS NULL",
+			appID, req.Locale, []string{models.JobStatusPending, models.JobStatusRunning},
+		).First(&existingJob).Error; err == nil {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":      "A translation job for this locale is already in progress",
+				"job_id":     existingJob.ID.String(),
+				"status":     existingJob.Status,
+				"status_url": fmt.Sprintf("/api/applications/%s/jobs/%s", appIDStr, existingJob.ID.String()),
+			})
+			return
+		}
+
 		// Validate OpenAI key exists before creating job
 		openAIService := services.NewOpenAIService(application.OpenAIKey)
 		if application.OpenAIKey == "" {
@@ -514,9 +532,11 @@ func (h *ApplicationHandler) GetAddLanguageJobStatus(c *gin.Context) {
 	}
 
 	resp := gin.H{
-		"job_id": job.ID.String(),
-		"locale": job.Locale,
-		"status": job.Status,
+		"job_id":               job.ID.String(),
+		"locale":               job.Locale,
+		"status":               job.Status,
+		"total_components":     job.TotalComponents,
+		"completed_components": job.CompletedComponents,
 	}
 	if job.Status == models.JobStatusFailed {
 		resp["error_message"] = job.ErrorMessage

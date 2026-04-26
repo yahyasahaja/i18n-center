@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -140,6 +141,13 @@ func processAddLanguageJob(ctx context.Context, job *models.AddLanguageJob, tran
 		return
 	}
 
+	// Record total up-front so the frontend can show "X / N" immediately.
+	_ = database.DB.Model(&models.AddLanguageJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
+		"total_components":     len(components),
+		"completed_components": 0,
+		"updated_at":           time.Now(),
+	}).Error
+
 	// Goroutine pool — semaphore pattern
 	type result struct {
 		versionID uuid.UUID
@@ -168,6 +176,11 @@ func processAddLanguageJob(ctx context.Context, job *models.AddLanguageJob, tran
 			sourceTranslation, err := translationService.GetTranslation(comp.ID, comp.DefaultLocale, models.StageDraft)
 			if err != nil {
 				results <- result{err: fmt.Errorf("component %s: no draft translation for default locale %s", comp.Code, comp.DefaultLocale), compCode: comp.Code}
+				// Still count as "processed" so the progress bar advances even on per-component errors.
+				_ = database.DB.Exec(
+					"UPDATE add_language_jobs SET completed_components = completed_components + 1, updated_at = NOW() WHERE id = ?",
+					job.ID,
+				).Error
 				return
 			}
 
@@ -175,15 +188,27 @@ func processAddLanguageJob(ctx context.Context, job *models.AddLanguageJob, tran
 			translatedData, err := openAIService.TranslateJSON(ctx, sourceTranslation.Data, comp.DefaultLocale, job.Locale)
 			if err != nil {
 				results <- result{err: fmt.Errorf("component %s: %w", comp.Code, err), compCode: comp.Code}
+				_ = database.DB.Exec(
+					"UPDATE add_language_jobs SET completed_components = completed_components + 1, updated_at = NOW() WHERE id = ?",
+					job.ID,
+				).Error
 				return
 			}
 
 			tr, err := translationService.SaveTranslation(comp.ID, job.Locale, models.StageDraft, translatedData, job.CreatedBy)
 			if err != nil {
 				results <- result{err: fmt.Errorf("component %s: %w", comp.Code, err), compCode: comp.Code}
+				_ = database.DB.Exec(
+					"UPDATE add_language_jobs SET completed_components = completed_components + 1, updated_at = NOW() WHERE id = ?",
+					job.ID,
+				).Error
 				return
 			}
 
+			_ = database.DB.Exec(
+				"UPDATE add_language_jobs SET completed_components = completed_components + 1, updated_at = NOW() WHERE id = ?",
+				job.ID,
+			).Error
 			results <- result{versionID: tr.ID}
 		}()
 	}
@@ -225,14 +250,46 @@ func processAddLanguageJob(ctx context.Context, job *models.AddLanguageJob, tran
 		return
 	}
 
-	// Create deploy tracking
-	deploy := models.ApplicationLocaleDeploy{
-		ApplicationID:  job.ApplicationID,
-		Locale:         job.Locale,
-		StageCompleted: "draft",
+	// Create/reset deploy tracking.
+	// Two cases to handle:
+	//   1. Locale was deleted while job was running → locale no longer in enabled_languages;
+	//      skip creating the deploy record to avoid ghost entries in pending deploys.
+	//   2. Locale was previously deployed to production and is being re-translated;
+	//      the record already exists so Create would fail — upsert back to 'draft' instead.
+	var currentApp models.Application
+	localeStillEnabled := false
+	if err := database.DB.Select("enabled_languages").First(&currentApp, job.ApplicationID).Error; err == nil {
+		for _, l := range currentApp.EnabledLanguages {
+			if strings.EqualFold(l, job.Locale) {
+				localeStillEnabled = true
+				break
+			}
+		}
 	}
-	if err := database.DB.Create(&deploy).Error; err != nil {
-		observability.Logger.Warn("Failed to create ApplicationLocaleDeploy", zap.Error(err))
+	if localeStillEnabled {
+		var existingDeploy models.ApplicationLocaleDeploy
+		err := database.DB.Where("application_id = ? AND locale = ?", job.ApplicationID, job.Locale).First(&existingDeploy).Error
+		if err != nil {
+			// No record yet — create fresh
+			newDeploy := models.ApplicationLocaleDeploy{
+				ApplicationID:  job.ApplicationID,
+				Locale:         job.Locale,
+				StageCompleted: "draft",
+			}
+			if err := database.DB.Create(&newDeploy).Error; err != nil {
+				observability.Logger.Warn("Failed to create ApplicationLocaleDeploy", zap.Error(err))
+			}
+		} else {
+			// Record exists (e.g. locale was re-translated after production) — reset to draft
+			if err := database.DB.Model(&existingDeploy).Update("stage_completed", "draft").Error; err != nil {
+				observability.Logger.Warn("Failed to reset ApplicationLocaleDeploy to draft", zap.Error(err))
+			}
+		}
+	} else {
+		observability.Logger.Info("Skipping deploy record: locale was removed while job ran",
+			zap.String("job_id", job.ID.String()),
+			zap.String("locale", job.Locale),
+		)
 	}
 
 	cache.Delete(cache.ApplicationKey(appIDStr))

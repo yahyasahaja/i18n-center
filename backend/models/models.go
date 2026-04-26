@@ -180,18 +180,20 @@ const (
 )
 
 type AddLanguageJob struct {
-	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	ApplicationID uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
-	Locale        string         `gorm:"type:varchar(20);not null" json:"locale"`
-	AutoTranslate bool           `gorm:"not null" json:"auto_translate"`
-	Status        string         `gorm:"type:varchar(50);not null;default:pending;index" json:"status"` // pending, running, completed, failed
-	ErrorMessage  string         `gorm:"type:text" json:"error_message,omitempty"`
-	ErrorDetail   string         `gorm:"type:text" json:"error_detail,omitempty"`
-	ClaimedBy     string         `gorm:"type:varchar(255)" json:"claimed_by,omitempty"` // pod/instance id for debugging (K8s HOSTNAME)
-	CreatedBy     uuid.UUID      `gorm:"type:uuid;index" json:"created_by"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	ID                  uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	ApplicationID       uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
+	Locale              string         `gorm:"type:varchar(20);not null" json:"locale"`
+	AutoTranslate       bool           `gorm:"not null" json:"auto_translate"`
+	Status              string         `gorm:"type:varchar(50);not null;default:pending;index" json:"status"` // pending, running, completed, failed
+	TotalComponents     int            `gorm:"not null;default:0" json:"total_components"`
+	CompletedComponents int            `gorm:"not null;default:0" json:"completed_components"`
+	ErrorMessage        string         `gorm:"type:text" json:"error_message,omitempty"`
+	ErrorDetail         string         `gorm:"type:text" json:"error_detail,omitempty"`
+	ClaimedBy           string         `gorm:"type:varchar(255)" json:"claimed_by,omitempty"` // pod/instance id for debugging (K8s HOSTNAME)
+	CreatedBy           uuid.UUID      `gorm:"type:uuid;index" json:"created_by"`
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
+	DeletedAt           gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 func (AddLanguageJob) TableName() string {

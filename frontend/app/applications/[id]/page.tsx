@@ -36,6 +36,7 @@ export default function ApplicationDetailPage() {
   const [addLanguageLocale, setAddLanguageLocale] = useState('')
   const [addLanguageAutoTranslate, setAddLanguageAutoTranslate] = useState(true)
   const [addLanguageLoading, setAddLanguageLoading] = useState(false)
+  const [addLanguageProgress, setAddLanguageProgress] = useState<{ completed: number; total: number } | null>(null)
   const [pendingDeploys, setPendingDeploys] = useState<PendingDeploy[]>([])
   const [deployingLocale, setDeployingLocale] = useState<string | null>(null)
   const [showDeleteLanguageModal, setShowDeleteLanguageModal] = useState(false)
@@ -118,12 +119,15 @@ export default function ApplicationDetailPage() {
   }, [searchParams, currentApplication])
 
   const pollJobStatus = async (jobId: string): Promise<'completed' | 'failed'> => {
-    const maxAttempts = 300 // 5 min at 1s interval
+    const maxAttempts = 150 // 5 min at 2s interval
     for (let i = 0; i < maxAttempts; i++) {
       const res = await applicationApi.getAddLanguageJobStatus(applicationId, jobId)
+      if (res.total_components > 0) {
+        setAddLanguageProgress({ completed: res.completed_components, total: res.total_components })
+      }
       if (res.status === 'completed') return 'completed'
       if (res.status === 'failed') return 'failed'
-      await new Promise((r) => setTimeout(r, 2000)) // poll every 2s
+      await new Promise((r) => setTimeout(r, 2000))
     }
     return 'failed'
   }
@@ -140,15 +144,14 @@ export default function ApplicationDetailPage() {
       return
     }
     setAddLanguageLoading(true)
+    setAddLanguageProgress(null)
     try {
       const data = await applicationApi.addLanguage(applicationId, {
         locale,
         auto_translate: addLanguageAutoTranslate,
       })
       if (data.job_id) {
-        toast.loading(`Adding ${locale.toUpperCase()} and translating components…`, { id: 'add-lang' })
         const result = await pollJobStatus(data.job_id)
-        toast.dismiss('add-lang')
         if (result === 'failed') {
           const jobStatus = await applicationApi.getAddLanguageJobStatus(applicationId, data.job_id)
           const detail = jobStatus?.error_detail || jobStatus?.error_message || 'Job failed'
@@ -163,10 +166,28 @@ export default function ApplicationDetailPage() {
       setShowAddLanguageModal(false)
       setAddLanguageLocale('')
       setAddLanguageAutoTranslate(true)
+      setAddLanguageProgress(null)
       await dispatch(fetchApplication(applicationId))
       await loadPendingDeploys()
     } catch (error: any) {
       const data = error.response?.data
+      // 409 — a job is already running; surface the existing job_id so the user can track it
+      if (error.response?.status === 409 && data?.job_id) {
+        toast.error(`A translation job for ${locale.toUpperCase()} is already in progress. Tracking existing job…`, { id: 'add-lang-conflict' })
+        const result = await pollJobStatus(data.job_id)
+        toast.dismiss('add-lang-conflict')
+        if (result === 'completed') {
+          toast.success(`Language ${locale.toUpperCase()} translation completed.`)
+          setShowAddLanguageModal(false)
+          setAddLanguageLocale('')
+          setAddLanguageProgress(null)
+          await dispatch(fetchApplication(applicationId))
+          await loadPendingDeploys()
+        } else {
+          toast.error(`Translation job for ${locale.toUpperCase()} failed. Check job status.`)
+        }
+        return
+      }
       const detail = data?.detail || data?.error || 'Failed to add language'
       const retry = data?.retry ? ' You can retry.' : ''
       toast.error(detail + retry)
@@ -704,14 +725,14 @@ export default function ApplicationDetailPage() {
 
         <Modal
           isOpen={showAddLanguageModal}
-          onClose={() => setShowAddLanguageModal(false)}
+          onClose={() => { if (!addLanguageLoading) { setShowAddLanguageModal(false); setAddLanguageProgress(null) } }}
           title="Add language"
           footer={
             <>
-              <Button variant="primary" onClick={handleAddLanguage} disabled={addLanguageLoading} isLoading={addLanguageLoading}>
-                Add language
+              <Button variant="primary" onClick={handleAddLanguage} disabled={addLanguageLoading} isLoading={addLanguageLoading && !addLanguageProgress}>
+                {addLanguageLoading ? (addLanguageProgress ? 'Translating…' : 'Adding…') : 'Add language'}
               </Button>
-              <Button variant="outline" onClick={() => setShowAddLanguageModal(false)} disabled={addLanguageLoading}>
+              <Button variant="outline" onClick={() => { setShowAddLanguageModal(false); setAddLanguageProgress(null) }} disabled={addLanguageLoading}>
                 Cancel
               </Button>
             </>
@@ -724,6 +745,7 @@ export default function ApplicationDetailPage() {
               onChange={(e) => setAddLanguageLocale(e.target.value)}
               placeholder="e.g. id, es, fr"
               helperText="Two-letter or locale code (e.g. en, id, es)"
+              disabled={addLanguageLoading}
             />
             <label className="flex items-center gap-2 cursor-pointer">
               <input
@@ -731,13 +753,31 @@ export default function ApplicationDetailPage() {
                 checked={addLanguageAutoTranslate}
                 onChange={(e) => setAddLanguageAutoTranslate(e.target.checked)}
                 className="rounded border-gray-300"
+                disabled={addLanguageLoading}
               />
               <span className="text-sm text-gray-700">Auto-translate from each component&apos;s default locale</span>
             </label>
-            {addLanguageAutoTranslate && (
+            {addLanguageAutoTranslate && !addLanguageLoading && (
               <p className="text-xs text-gray-500">
                 All components will be translated to this locale (draft). You can then deploy draft → staging → production. If any step fails, changes are rolled back and you can retry.
               </p>
+            )}
+            {addLanguageLoading && addLanguageProgress && (
+              <div className="space-y-1.5 pt-1">
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>Translating components…</span>
+                  <span className="font-medium tabular-nums">{addLanguageProgress.completed} / {addLanguageProgress.total}</span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                  <div
+                    className="bg-primary-600 h-2 rounded-full transition-all duration-500"
+                    style={{ width: `${Math.round((addLanguageProgress.completed / addLanguageProgress.total) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            {addLanguageLoading && !addLanguageProgress && (
+              <p className="text-xs text-gray-400 animate-pulse">Queuing translation job…</p>
             )}
           </form>
         </Modal>
