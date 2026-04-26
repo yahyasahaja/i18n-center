@@ -1,15 +1,16 @@
 'use client'
 
 import { useEffect } from 'react'
-import { Provider, useDispatch } from 'react-redux'
+import { Provider } from 'react-redux'
 import { store } from '@/store/store'
 import { Toaster } from 'react-hot-toast'
 import { getCurrentUser, setToken } from '@/store/slices/authSlice'
 import { AppContextProvider } from '@/context/AppContext'
+import { useAppDispatch } from '@/hooks/redux'
 
 // Component to initialize auth on app load
 function AuthInitializer({ children }: { children: React.ReactNode }) {
-  const dispatch = useDispatch()
+  const dispatch = useAppDispatch()
 
   useEffect(() => {
     const token = localStorage.getItem('token')

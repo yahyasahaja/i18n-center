@@ -30,7 +30,7 @@ func InitMetrics() error {
 		ddAgentPort = "8125"
 	}
 
-	client, err := statsd.New(ddAgentHost + ":" + ddAgentPort,
+	client, err := statsd.New(ddAgentHost+":"+ddAgentPort,
 		statsd.WithNamespace("i18n_center"),
 		statsd.WithTags([]string{
 			"service:i18n-center",
@@ -211,4 +211,3 @@ func boolToString(b bool) string {
 	}
 	return "false"
 }
-

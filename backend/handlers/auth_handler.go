@@ -55,8 +55,8 @@ type LoginRequest struct {
 }
 
 type LoginResponse struct {
-	Token    string      `json:"token"`
-	User     models.User `json:"user"`
+	Token string      `json:"token"`
+	User  models.User `json:"user"`
 }
 
 // Login handles user login
@@ -102,8 +102,8 @@ func (h *AuthHandler) Login(c *gin.Context) {
 }
 
 type CreateUserRequest struct {
-	Username string        `json:"username" binding:"required"`
-	Password string        `json:"password" binding:"required"`
+	Username string          `json:"username" binding:"required"`
+	Password string          `json:"password" binding:"required"`
 	Role     models.UserRole `json:"role" binding:"required"`
 }
 
@@ -195,9 +195,9 @@ func (h *AuthHandler) UpdateUser(c *gin.Context) {
 	}
 
 	var req struct {
-		IsActive *bool          `json:"is_active"`
+		IsActive *bool            `json:"is_active"`
 		Role     *models.UserRole `json:"role"`
-		Password *string        `json:"password"`
+		Password *string          `json:"password"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -271,4 +271,3 @@ func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
 	user.PasswordHash = ""
 	c.JSON(http.StatusOK, user)
 }
-

@@ -90,6 +90,27 @@ export const applicationApi = {
     const response = await api.get(`/applications/${applicationId}/jobs/${jobId}`)
     return response.data
   },
+  getActiveJobs: async (applicationId: string) => {
+    const response = await api.get(`/applications/${applicationId}/active-jobs`)
+    return response.data as {
+      add_language_jobs: Array<{
+        job_id: string
+        locale: string
+        status: string
+        total_components: number
+        completed_components: number
+      }>
+      translate_jobs: Array<{
+        job_id: string
+        component_id: string
+        component_code: string
+        component_name: string
+        job_type: string
+        target_locales: string[]
+        status: string
+      }>
+    }
+  },
   deleteLanguage: async (applicationId: string, locale: string) => {
     const response = await api.delete(`/applications/${applicationId}/languages/${encodeURIComponent(locale)}`)
     return response.data

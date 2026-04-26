@@ -124,4 +124,3 @@ func getVersion() string {
 	// Could read from environment or build info
 	return "1.0.0"
 }
-

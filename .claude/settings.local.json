@@ -32,7 +32,19 @@
       "Read(//proc/16775/**)",
       "Bash(pkill -9 -f \"go run main.go\")",
       "Bash(nohup make *)",
-      "Bash(xargs kill *)"
+      "Bash(xargs kill *)",
+      "Bash(grep -v \"^$\")",
+      "Bash(go vet *)",
+      "Bash(npx next *)",
+      "Bash(ls *)",
+      "Bash(staticcheck ./...)",
+      "Bash(go list *)",
+      "Bash(staticcheck -f text ./...)",
+      "Bash(go run *)",
+      "Bash(golangci-lint run *)",
+      "Bash(go mod *)",
+      "Bash(go fmt *)",
+      "Bash(./node_modules/.bin/tsc --noEmit)"
     ]
   }
 }

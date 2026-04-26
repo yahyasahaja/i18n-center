@@ -92,6 +92,7 @@ func SetupRoutes() *gin.Engine {
 	api.POST("/applications/:id/languages", appHandler.AddLanguage, middleware.RequireRole("super_admin", "operator"))
 	api.DELETE("/applications/:id/languages/:locale", appHandler.DeleteLanguage, middleware.RequireRole("super_admin", "operator"))
 	api.GET("/applications/:id/jobs/:job_id", appHandler.GetAddLanguageJobStatus, middleware.RequireRole("super_admin", "operator"))
+	api.GET("/applications/:id/active-jobs", appHandler.GetActiveJobs, middleware.RequireRole("super_admin", "operator"))
 	api.GET("/applications/:id/pending-deploys", appHandler.GetPendingDeploys, middleware.RequireRole("super_admin", "operator"))
 	api.POST("/applications/:id/deploy-locale", appHandler.DeployLocale, middleware.RequireRole("super_admin", "operator"))
 	api.POST("/applications/:id/api-keys", apiKeyHandler.Create, middleware.RequireRole("super_admin"))
@@ -149,4 +150,3 @@ func SetupRoutes() *gin.Engine {
 
 	return r
 }
-

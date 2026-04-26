@@ -85,4 +85,3 @@ func (h *ImportHandler) ImportComponent(c *gin.Context) {
 
 	c.JSON(http.StatusOK, translation)
 }
-

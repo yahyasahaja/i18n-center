@@ -153,7 +153,7 @@ type ApplicationAPIKey struct {
 	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
 	ApplicationID uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
 	Application   Application    `gorm:"foreignKey:ApplicationID" json:"-"`
-	KeyHash       string         `gorm:"type:varchar(64);uniqueIndex;not null" json:"-"`   // SHA-256 hex of the full key
+	KeyHash       string         `gorm:"type:varchar(64);uniqueIndex;not null" json:"-"`    // SHA-256 hex of the full key
 	KeyPrefix     string         `gorm:"type:varchar(20);not null;index" json:"key_prefix"` // First 12 chars for display (e.g. sk_abc12345)
 	Name          string         `gorm:"type:varchar(255)" json:"name"`                     // Optional label
 	CreatedAt     time.Time      `json:"created_at"`
@@ -174,9 +174,9 @@ type ApplicationLocaleDeploy struct {
 // AddLanguageJob is a DB-backed job for "add language + auto-translate". No in-memory state; safe for K8s scaling.
 const (
 	JobStatusPending   = "pending"
-	JobStatusRunning  = "running"
+	JobStatusRunning   = "running"
 	JobStatusCompleted = "completed"
-	JobStatusFailed   = "failed"
+	JobStatusFailed    = "failed"
 )
 
 type AddLanguageJob struct {
@@ -215,7 +215,7 @@ type TranslateJob struct {
 	ComponentID   uuid.UUID      `gorm:"type:uuid;not null;index" json:"component_id"`
 	JobType       string         `gorm:"type:varchar(50);not null" json:"job_type"` // auto_translate | backfill
 	SourceLocale  string         `gorm:"type:varchar(20);not null" json:"source_locale"`
-	TargetLocales StringArray    `gorm:"type:text[]" json:"target_locales"` // one or more locales
+	TargetLocales StringArray    `gorm:"type:text[]" json:"target_locales"`                             // one or more locales
 	Status        string         `gorm:"type:varchar(50);not null;default:pending;index" json:"status"` // pending, running, completed, failed
 	ErrorMessage  string         `gorm:"type:text" json:"error_message,omitempty"`
 	ErrorDetail   string         `gorm:"type:text" json:"error_detail,omitempty"`

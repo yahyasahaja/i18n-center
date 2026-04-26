@@ -21,4 +21,3 @@ func TestGetDefaultOpenAIKey(t *testing.T) {
 
 // Note: Actual translation tests would require mocking HTTP calls
 // For unit tests, we focus on the service initialization and structure
-

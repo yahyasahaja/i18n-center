@@ -107,7 +107,7 @@ function LayoutInner({ children }: { children: React.ReactNode }) {
 
             <nav className="mt-6 flex-1 px-2 space-y-1">
               {navigation.map((item) => {
-                if (item.roles && !item.roles.includes(user?.role || '')) return null
+                if (item.roles && !item.roles.includes(user?.role as 'super_admin' | 'user_manager')) return null
                 const Icon = item.icon
                 const disabled = needsApplication(item.href) && !applicationId
                 const baseClass = clsx(

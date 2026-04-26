@@ -148,4 +148,3 @@ func parseInt(s string) (int, error) {
 	_, err := fmt.Sscanf(s, "%d", &result)
 	return result, err
 }
-

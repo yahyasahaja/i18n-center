@@ -101,4 +101,3 @@ func LogRequest(method, path string, statusCode int, latency time.Duration, fiel
 
 	Logger.Check(level, "HTTP Request").Write(allFields...)
 }
-

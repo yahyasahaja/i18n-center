@@ -285,7 +285,7 @@ func (h *ApplicationHandler) DeleteApplication(c *gin.Context) {
 
 // AddLanguageRequest is the body for adding a new language to an application
 type AddLanguageRequest struct {
-	Locale       string `json:"locale" binding:"required"`
+	Locale        string `json:"locale" binding:"required"`
 	AutoTranslate bool   `json:"auto_translate"`
 }
 
@@ -365,11 +365,11 @@ func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 
 		// Create job; worker will do the translate work (no in-memory state, K8s-safe)
 		job := models.AddLanguageJob{
-			ApplicationID:  appID,
+			ApplicationID: appID,
 			Locale:        req.Locale,
 			AutoTranslate: true,
 			Status:        models.JobStatusPending,
-			CreatedBy:    userID,
+			CreatedBy:     userID,
 		}
 		if err := database.DB.Create(&job).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create job: " + err.Error()})
@@ -379,10 +379,10 @@ func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 		cache.Delete(cache.ApplicationKey(appIDStr))
 		c.Header("Location", fmt.Sprintf("/api/applications/%s/jobs/%s", appIDStr, job.ID.String()))
 		c.JSON(http.StatusAccepted, gin.H{
-			"message":   "Language added. Translation job queued.",
-			"job_id":    job.ID.String(),
-			"locale":    req.Locale,
-			"status":    models.JobStatusPending,
+			"message":    "Language added. Translation job queued.",
+			"job_id":     job.ID.String(),
+			"locale":     req.Locale,
+			"status":     models.JobStatusPending,
 			"status_url": fmt.Sprintf("/api/applications/%s/jobs/%s", appIDStr, job.ID.String()),
 		})
 		return
@@ -425,9 +425,9 @@ func (h *ApplicationHandler) GetPendingDeploys(c *gin.Context) {
 			nextStage = "production"
 		}
 		list = append(list, gin.H{
-			"locale":        d.Locale,
+			"locale":          d.Locale,
 			"stage_completed": d.StageCompleted,
-			"next_stage":    nextStage,
+			"next_stage":      nextStage,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"pending_deploys": list})
@@ -485,9 +485,9 @@ func (h *ApplicationHandler) DeployLocale(c *gin.Context) {
 	for _, comp := range components {
 		if err := translationService.DeployToStage(comp.ID, req.Locale, fromStage, toStage, userID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":   "Deploy failed (no changes applied)",
-				"detail":  fmt.Sprintf("Component %s: %v", comp.Code, err),
-				"retry":   true,
+				"error":  "Deploy failed (no changes applied)",
+				"detail": fmt.Sprintf("Component %s: %v", comp.Code, err),
+				"retry":  true,
 			})
 			return
 		}
@@ -544,6 +544,82 @@ func (h *ApplicationHandler) GetAddLanguageJobStatus(c *gin.Context) {
 		resp["retry"] = true
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// GetActiveJobs returns all pending/running AddLanguageJobs and TranslateJobs for an application.
+func (h *ApplicationHandler) GetActiveJobs(c *gin.Context) {
+	appIDStr := c.Param("id")
+	appID, err := uuid.Parse(appIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid application ID"})
+		return
+	}
+
+	activeStatuses := []string{models.JobStatusPending, models.JobStatusRunning}
+
+	// Add-language jobs
+	var addJobs []models.AddLanguageJob
+	if err := database.DB.Where("application_id = ? AND status IN ?", appID, activeStatuses).
+		Order("created_at ASC").Find(&addJobs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Translate jobs — join component name
+	type translateJobRow struct {
+		JobID         string   `json:"job_id"`
+		ComponentID   string   `json:"component_id"`
+		ComponentCode string   `json:"component_code"`
+		ComponentName string   `json:"component_name"`
+		JobType       string   `json:"job_type"`
+		TargetLocales []string `json:"target_locales"`
+		Status        string   `json:"status"`
+	}
+	type rawRow struct {
+		ID            uuid.UUID
+		ComponentID   uuid.UUID
+		ComponentCode string
+		ComponentName string
+		JobType       string
+		TargetLocales models.StringArray
+		Status        string
+	}
+	var rawRows []rawRow
+	database.DB.Table("translate_jobs tj").
+		Select("tj.id, tj.component_id, c.code AS component_code, c.name AS component_name, tj.job_type, tj.target_locales, tj.status").
+		Joins("JOIN components c ON c.id = tj.component_id AND c.deleted_at IS NULL").
+		Where("tj.application_id = ? AND tj.status IN ? AND tj.deleted_at IS NULL", appID, activeStatuses).
+		Order("tj.created_at ASC").
+		Scan(&rawRows)
+
+	translateRows := make([]translateJobRow, 0, len(rawRows))
+	for _, r := range rawRows {
+		translateRows = append(translateRows, translateJobRow{
+			JobID:         r.ID.String(),
+			ComponentID:   r.ComponentID.String(),
+			ComponentCode: r.ComponentCode,
+			ComponentName: r.ComponentName,
+			JobType:       r.JobType,
+			TargetLocales: []string(r.TargetLocales),
+			Status:        r.Status,
+		})
+	}
+
+	addJobList := make([]gin.H, 0, len(addJobs))
+	for _, j := range addJobs {
+		addJobList = append(addJobList, gin.H{
+			"job_id":               j.ID.String(),
+			"locale":               j.Locale,
+			"status":               j.Status,
+			"total_components":     j.TotalComponents,
+			"completed_components": j.CompletedComponents,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"add_language_jobs": addJobList,
+		"translate_jobs":    translateRows,
+	})
 }
 
 // DeleteLanguage removes a locale from an application: removes it from enabled_languages,
@@ -645,4 +721,3 @@ func (h *ApplicationHandler) DeleteLanguage(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Language %s removed", locale), "locale": locale})
 }
-

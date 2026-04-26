@@ -101,7 +101,7 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 		"id":         apiKey.ID,
 		"key":        key,
 		"key_prefix": apiKey.KeyPrefix,
-		"name":      apiKey.Name,
+		"name":       apiKey.Name,
 		"created_at": apiKey.CreatedAt,
 	})
 }

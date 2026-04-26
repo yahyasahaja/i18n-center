@@ -65,4 +65,3 @@ func main() {
 	fmt.Printf("Password: %s\n", password)
 	fmt.Printf("Role: %s\n", models.RoleSuperAdmin)
 }
-

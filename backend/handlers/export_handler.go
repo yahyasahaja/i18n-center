@@ -137,4 +137,3 @@ func (h *ExportHandler) ExportComponent(c *gin.Context) {
 		json.NewEncoder(c.Writer).Encode(exportData)
 	}
 }
-

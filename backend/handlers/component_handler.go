@@ -145,14 +145,14 @@ func (h *ComponentHandler) GetComponent(c *gin.Context) {
 
 // createComponentBody is the request body for creating a component (includes tag_ids and page_ids).
 type createComponentBody struct {
-	Name          string         `json:"name" binding:"required"`
-	Code          string         `json:"code" binding:"required"`
-	ApplicationID uuid.UUID      `json:"application_id" binding:"required"`
-	Description   string         `json:"description"`
-	DefaultLocale string         `json:"default_locale" binding:"required"`
-	Structure     models.JSONB   `json:"structure"`
-	TagIDs        []string       `json:"tag_ids"`
-	PageIDs       []string       `json:"page_ids"`
+	Name          string       `json:"name" binding:"required"`
+	Code          string       `json:"code" binding:"required"`
+	ApplicationID uuid.UUID    `json:"application_id" binding:"required"`
+	Description   string       `json:"description"`
+	DefaultLocale string       `json:"default_locale" binding:"required"`
+	Structure     models.JSONB `json:"structure"`
+	TagIDs        []string     `json:"tag_ids"`
+	PageIDs       []string     `json:"page_ids"`
 }
 
 // CreateComponent creates a new component
@@ -308,4 +308,3 @@ func (h *ComponentHandler) DeleteComponent(c *gin.Context) {
 	cache.Delete(cache.ComponentKey(id))
 	c.JSON(http.StatusOK, gin.H{"message": "Component deleted"})
 }
-

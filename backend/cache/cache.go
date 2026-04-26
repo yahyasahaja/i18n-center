@@ -117,4 +117,3 @@ func TranslationsByTagKey(applicationID, tagCode, locale, stage string) string {
 func TranslationsByPageKey(applicationID, pageCode, locale, stage string) string {
 	return fmt.Sprintf("translations:bypage:%s:%s:%s:%s", applicationID, pageCode, locale, stage)
 }
-

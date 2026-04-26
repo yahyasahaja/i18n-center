@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import Layout from '@/components/Layout'
 import { useAppDispatch, useAppSelector } from '@/hooks/redux'
@@ -13,7 +13,7 @@ import { Table, TableRow, TableCell } from '@/components/ui/Table'
 import { Badge } from '@/components/ui/Badge'
 import { Modal } from '@/components/ui/Modal'
 import { Input } from '@/components/ui/Input'
-import { ArrowLeft, Plus, Edit, Trash2, ArrowRight, Languages, Rocket, Tag, FileText, Key } from 'lucide-react'
+import { ArrowLeft, Plus, Edit, Trash2, ArrowRight, Languages, Rocket, Tag, FileText, Key, Loader2 } from 'lucide-react'
 import { componentApi, applicationApi, tagApi, pageApi, type Tag as TagType, type Page as PageType, type ApplicationAPIKey } from '@/services/api'
 import toast from 'react-hot-toast'
 
@@ -59,6 +59,11 @@ export default function ApplicationDetailPage() {
   const [showNewKeyModal, setShowNewKeyModal] = useState<{ key: string } | null>(null)
   const [addApiKeyLoading, setAddApiKeyLoading] = useState(false)
 
+  type ActiveAddJob = { job_id: string; locale: string; status: string; total_components: number; completed_components: number }
+  type ActiveTranslateJob = { job_id: string; component_id: string; component_code: string; component_name: string; job_type: string; target_locales: string[]; status: string }
+  const [activeJobs, setActiveJobs] = useState<{ add_language_jobs: ActiveAddJob[]; translate_jobs: ActiveTranslateJob[] } | null>(null)
+  const activeJobsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const loadPendingDeploys = async () => {
     if (!applicationId) return
     try {
@@ -66,6 +71,24 @@ export default function ApplicationDetailPage() {
       setPendingDeploys(res.pending_deploys || [])
     } catch {
       setPendingDeploys([])
+    }
+  }
+
+  const pollActiveJobs = async () => {
+    if (activeJobsTimerRef.current) clearTimeout(activeJobsTimerRef.current)
+    try {
+      const res = await applicationApi.getActiveJobs(applicationId)
+      setActiveJobs(res)
+      const hasActive = res.add_language_jobs.length > 0 || res.translate_jobs.length > 0
+      if (hasActive) {
+        activeJobsTimerRef.current = setTimeout(pollActiveJobs, 3000)
+      } else {
+        // Jobs just finished — refresh pending deploys so the section updates
+        await loadPendingDeploys()
+        await dispatch(fetchApplication(applicationId))
+      }
+    } catch {
+      // silently ignore polling errors
     }
   }
 
@@ -111,6 +134,13 @@ export default function ApplicationDetailPage() {
       loadData()
     }
   }, [applicationId, router, dispatch, user?.role])
+
+  // Poll active jobs on mount; restart poll when add-language job finishes
+  useEffect(() => {
+    if (!applicationId) return
+    pollActiveJobs()
+    return () => { if (activeJobsTimerRef.current) clearTimeout(activeJobsTimerRef.current) }
+  }, [applicationId])
 
   useEffect(() => {
     if (searchParams.get('addLanguage') === '1' && currentApplication) {
@@ -169,6 +199,7 @@ export default function ApplicationDetailPage() {
       setAddLanguageProgress(null)
       await dispatch(fetchApplication(applicationId))
       await loadPendingDeploys()
+      pollActiveJobs()
     } catch (error: any) {
       const data = error.response?.data
       // 409 — a job is already running; surface the existing job_id so the user can track it
@@ -586,6 +617,52 @@ export default function ApplicationDetailPage() {
             </div>
           </Card>
         </div>
+
+        {activeJobs && (activeJobs.add_language_jobs.length > 0 || activeJobs.translate_jobs.length > 0) && (
+          <Card title="Active jobs">
+            <div className="space-y-4">
+              {activeJobs.add_language_jobs.map((job) => (
+                <div key={job.job_id} className="space-y-1.5">
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-primary-600 shrink-0" />
+                      <span className="font-medium text-gray-800">
+                        Adding language <Badge variant="info" size="sm">{job.locale.toUpperCase()}</Badge>
+                      </span>
+                    </div>
+                    <span className="text-xs text-gray-500 tabular-nums">
+                      {job.total_components > 0
+                        ? `${job.completed_components} / ${job.total_components} components`
+                        : 'Queuing…'}
+                    </span>
+                  </div>
+                  {job.total_components > 0 && (
+                    <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                      <div
+                        className="bg-primary-600 h-1.5 rounded-full transition-all duration-500"
+                        style={{ width: `${Math.round((job.completed_components / job.total_components) * 100)}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              ))}
+              {activeJobs.translate_jobs.map((job) => (
+                <div key={job.job_id} className="flex items-center gap-2 text-sm">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-primary-600 shrink-0" />
+                  <span className="font-medium text-gray-800">{job.component_name}</span>
+                  <span className="text-xs text-gray-400 font-mono">{job.component_code}</span>
+                  <span className="text-gray-500">→</span>
+                  <div className="flex gap-1 flex-wrap">
+                    {job.target_locales.map((l) => (
+                      <Badge key={l} variant="info" size="sm">{l.toUpperCase()}</Badge>
+                    ))}
+                  </div>
+                  <span className="ml-auto text-xs text-gray-400 capitalize">{job.job_type.replace('_', ' ')}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
 
         {pendingDeploys.length > 0 && (
           <Card title="Pending locale deploys">

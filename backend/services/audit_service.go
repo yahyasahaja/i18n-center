@@ -193,4 +193,3 @@ func CompareValues(before, after interface{}) map[string]interface{} {
 
 	return diff
 }
-

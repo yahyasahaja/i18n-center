@@ -57,4 +57,3 @@ func StopTracing() {
 		tracer.Stop()
 	}
 }
-

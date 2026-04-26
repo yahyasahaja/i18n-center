@@ -17,7 +17,6 @@ import (
 
 type TranslationHandler struct {
 	translationService *services.TranslationService
-	openAIService      *services.OpenAIService
 	auditService       *services.AuditService
 }
 
@@ -421,9 +420,9 @@ func (h *TranslationHandler) GetTranslationsByPage(c *gin.Context) {
 }
 
 type SaveTranslationRequest struct {
-	Locale string          `json:"locale" binding:"required"`
-	Stage  string          `json:"stage" binding:"required"`
-	Data   models.JSONB    `json:"data" binding:"required"`
+	Locale string       `json:"locale" binding:"required"`
+	Stage  string       `json:"stage" binding:"required"`
+	Data   models.JSONB `json:"data" binding:"required"`
 }
 
 // SaveTranslation saves a translation
@@ -589,12 +588,12 @@ func (h *TranslationHandler) DeployTranslation(c *gin.Context) {
 			deployedTranslation.ID,
 			component.Code,
 			map[string]interface{}{
-				"action": "DEPLOY",
+				"action":       "DEPLOY",
 				"component_id": componentID.String(),
-				"locale": req.Locale,
-				"from_stage": string(fromStage),
-				"to_stage": string(toStage),
-				"data": sourceTranslation.Data,
+				"locale":       req.Locale,
+				"from_stage":   string(fromStage),
+				"to_stage":     string(toStage),
+				"data":         sourceTranslation.Data,
 			},
 			ipAddress,
 			userAgent,
@@ -940,4 +939,3 @@ func (h *TranslationHandler) ListVersions(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"versions": list})
 }
-
