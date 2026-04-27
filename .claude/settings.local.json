@@ -57,7 +57,8 @@
       "Bash(npm run *)",
       "Bash(node_modules/.bin/tsc --noEmit)",
       "Bash(lsof -ti:8080)",
-      "Bash(lsof -ti:3000)"
+      "Bash(lsof -ti:3000)",
+      "Bash(lsof *)"
     ]
   }
 }

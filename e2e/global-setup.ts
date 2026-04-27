@@ -61,6 +61,7 @@ export default async function globalSetup() {
     name: APP,
     code: APP,
     description: 'Automated e2e test application — safe to delete',
+    openai_key: 'mock',
   })
   const applicationId: string = app.id
   console.log(`[setup] application: ${applicationId} (${APP})`)

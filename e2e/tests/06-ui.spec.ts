@@ -121,6 +121,23 @@ test.describe('UI — Components & Translation Editor', () => {
     await expect(page.locator('h3', { hasText: /Add language/i })).toBeVisible({ timeout: 5000 })
   })
 
+  test('TC-TMS-060A — Add language submits successfully (manual mode)', async ({ page }) => {
+    const { applicationId } = loadState()
+    await goto(page, `/applications/${applicationId}`)
+    await page.locator('button', { hasText: /Add language/i }).click()
+    await expect(page.locator('h3', { hasText: /Add language/i })).toBeVisible({ timeout: 5000 })
+
+    await page.getByPlaceholder('e.g. id, es, fr').fill('de')
+    const autoTranslateCheckbox = page.getByRole('checkbox')
+    await expect(autoTranslateCheckbox).toBeChecked()
+    await autoTranslateCheckbox.uncheck()
+    await expect(autoTranslateCheckbox).not.toBeChecked()
+
+    await page.getByPlaceholder('e.g. id, es, fr').press('Enter')
+    await expect(page.locator('h3', { hasText: /Add language/i })).not.toBeVisible({ timeout: 10000 })
+    await expect(page.locator('span', { hasText: /^DE$/ })).toBeVisible({ timeout: 10000 })
+  })
+
   test('TC-TMS-061 — Bootstrap Import modal opens and closes', async ({ page }) => {
     const { applicationId } = loadState()
     await goto(page, `/applications/${applicationId}`)

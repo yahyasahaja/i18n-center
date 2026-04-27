@@ -112,6 +112,98 @@ test.describe('Applications API', () => {
     expect([200, 204]).toContain(res.status())
   })
 
+  test('TC-TMS-018A — POST /applications/:id/languages with auto_translate=true completes add-language job and creates draft translations', async ({ request }) => {
+    test.setTimeout(120_000)
+    const ts = Date.now()
+    const appCode = `e2e-auto-${ts}`
+    let tempAppId = ''
+    let tempComponentId = ''
+    const locale = 'es'
+
+    const appRes = await request.post(`${API_URL}/api/applications`, {
+      headers,
+      data: {
+        name: `E2E Auto Translate ${ts}`,
+        code: appCode,
+        description: 'Temp application for auto-translate e2e verification',
+        openai_key: 'mock',
+      },
+    })
+    expect(appRes.status()).toBe(201)
+    tempAppId = (await appRes.json()).id
+
+    try {
+      const addEnRes = await request.post(`${API_URL}/api/applications/${tempAppId}/languages`, {
+        headers,
+        data: { locale: 'en', auto_translate: false },
+      })
+      expect([200, 201, 409]).toContain(addEnRes.status())
+
+      const compRes = await request.post(`${API_URL}/api/components`, {
+        headers,
+        data: {
+          application_id: tempAppId,
+          code: `e2e-auto-component-${ts}`,
+          name: 'E2E Auto Component',
+          default_locale: 'en',
+        },
+      })
+      expect(compRes.status()).toBe(201)
+      tempComponentId = (await compRes.json()).id
+
+      const saveDraftRes = await request.post(`${API_URL}/api/components/${tempComponentId}/translations`, {
+        headers,
+        data: {
+          locale: 'en',
+          stage: 'draft',
+          data: {
+            hello: 'Hello',
+            welcome_message: 'Welcome [name]',
+            url: 'https://example.com',
+          },
+        },
+      })
+      expect(saveDraftRes.status()).toBe(200)
+
+      const createRes = await request.post(`${API_URL}/api/applications/${tempAppId}/languages`, {
+        headers,
+        data: { locale, auto_translate: true },
+      })
+      expect(createRes.status()).toBe(202)
+      const createBody = await createRes.json()
+      expect(createBody).toHaveProperty('job_id')
+      const jobId = createBody.job_id as string
+      expect(jobId).toBeTruthy()
+
+      let finalStatus = 'pending'
+      let statusBody: any = null
+      for (let i = 0; i < 60; i++) {
+        const statusRes = await request.get(`${API_URL}/api/applications/${tempAppId}/jobs/${jobId}`, { headers })
+        expect(statusRes.status()).toBe(200)
+        statusBody = await statusRes.json()
+        finalStatus = statusBody.status
+        if (finalStatus === 'completed' || finalStatus === 'failed') break
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+      }
+      expect(finalStatus, statusBody?.error_detail || statusBody?.error_message || 'auto-translate job failed').toBe('completed')
+
+      const trRes = await request.get(
+        `${API_URL}/api/components/${tempComponentId}/translations?locale=${encodeURIComponent(locale)}&stage=draft`,
+        { headers }
+      )
+      expect(trRes.status()).toBe(200)
+      const trBody = await trRes.json()
+      expect(trBody).toHaveProperty('data')
+      expect(typeof trBody.data).toBe('object')
+      expect(Object.keys(trBody.data)).toContain('hello')
+      expect(String(trBody.data.hello)).toContain(`[${locale.toLowerCase()}-mock]`)
+    } finally {
+      if (tempAppId) {
+        await request.delete(`${API_URL}/api/applications/${tempAppId}`, { headers })
+      }
+    }
+  })
+
   test('TC-TMS-019 — GET /applications/:id with invalid ID returns 400 or 404', async ({ request }) => {
     const res = await request.get(`${API_URL}/api/applications/not-a-uuid`, { headers })
     expect([400, 404]).toContain(res.status())

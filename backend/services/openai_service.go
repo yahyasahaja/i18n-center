@@ -58,6 +58,10 @@ const (
 // Falls back to TranslateJSONPerKey if the serialized JSON exceeds maxBatchChars
 // (very large components).
 func (s *OpenAIService) TranslateJSONBatch(ctx context.Context, data map[string]interface{}, sourceLang, targetLang string) (map[string]interface{}, error) {
+	if s.isMockMode() {
+		return mockTranslateJSON(data, targetLang), nil
+	}
+
 	if s.APIKey == "" {
 		return nil, fmt.Errorf("OpenAI API key not configured")
 	}
@@ -249,6 +253,10 @@ func validatePlaceholders(source, translated string) error {
 // Translate translates a single string, preserving [bracketed] placeholders.
 // Used as the per-key fallback inside TranslateJSONPerKey.
 func (s *OpenAIService) Translate(ctx context.Context, text, sourceLang, targetLang string) (string, error) {
+	if s.isMockMode() {
+		return mockTranslateText(text, targetLang), nil
+	}
+
 	if s.APIKey == "" {
 		return "", fmt.Errorf("OpenAI API key not configured")
 	}
@@ -350,6 +358,46 @@ func (s *OpenAIService) TranslateJSON(ctx context.Context, data map[string]inter
 // GetDefaultOpenAIKey returns the default OpenAI key from environment
 func GetDefaultOpenAIKey() string {
 	return os.Getenv("OPENAI_API_KEY")
+}
+
+func (s *OpenAIService) isMockMode() bool {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("OPENAI_MOCK")), "true") {
+		return true
+	}
+	key := strings.ToLower(strings.TrimSpace(s.APIKey))
+	return key == "mock" || strings.HasPrefix(key, "mock:")
+}
+
+func mockTranslateJSON(data map[string]interface{}, targetLang string) map[string]interface{} {
+	result := make(map[string]interface{}, len(data))
+	for key, value := range data {
+		switch v := value.(type) {
+		case string:
+			result[key] = mockTranslateText(v, targetLang)
+		case map[string]interface{}:
+			result[key] = mockTranslateJSON(v, targetLang)
+		default:
+			result[key] = v
+		}
+	}
+	return result
+}
+
+func mockTranslateText(text, targetLang string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return text
+	}
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+		return text
+	}
+	if strings.Contains(trimmed, "@") && !strings.Contains(trimmed, " ") {
+		return text
+	}
+	if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.Contains(trimmed, " ") {
+		return text
+	}
+	return fmt.Sprintf("%s [%s-mock]", text, strings.ToLower(targetLang))
 }
 
 // openAIRetryDelay decides whether to retry an OpenAI error, and how long to wait.
