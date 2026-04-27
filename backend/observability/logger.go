@@ -23,7 +23,7 @@ func InitLogger() error {
 		config.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
 	} else {
 		config = zap.NewDevelopmentConfig()
-		config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+		config.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
 	}
 
 	config.EncoderConfig.TimeKey = "timestamp"
@@ -52,16 +52,18 @@ func InitLogger() error {
 	return nil
 }
 
-// LogRequest logs an HTTP request at the appropriate level:
+// LogRequest logs an HTTP request only for error responses:
 //   - 5xx → Error  (stack trace attached, logged for alerting)
 //   - 4xx → Warn
-//   - 2xx/3xx → Info
+//   - 2xx/3xx → skipped (no log entry produced)
 func LogRequest(method, path string, statusCode int, latency time.Duration, fields ...zap.Field) {
-	level := zapcore.InfoLevel
+	var level zapcore.Level
 	if statusCode >= 500 {
 		level = zapcore.ErrorLevel
 	} else if statusCode >= 400 {
 		level = zapcore.WarnLevel
+	} else {
+		return // 2xx/3xx — suppress to avoid log bloat
 	}
 
 	base := []zap.Field{
