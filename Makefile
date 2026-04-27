@@ -1,5 +1,6 @@
 .PHONY: help build-backend build-frontend test-backend docker-build docker-push deploy \
-        dev run run-deps run-backend run-frontend stop logs
+        dev run run-deps run-backend run-frontend stop logs \
+        e2e e2e-install e2e-api e2e-ui e2e-report
 
 help:
 	@echo "Available targets:"
@@ -13,6 +14,11 @@ help:
 	@echo "  build-backend    - Build Go backend"
 	@echo "  build-frontend   - Build Next.js frontend"
 	@echo "  test-backend     - Run backend tests"
+	@echo "  e2e-install      - Install Playwright + Chromium (one-time)"
+	@echo "  e2e              - Run full E2E test suite (API + UI)"
+	@echo "  e2e-api          - Run API tests only (no browser)"
+	@echo "  e2e-ui           - Run UI/browser tests only"
+	@echo "  e2e-report       - Open Playwright HTML report"
 	@echo "  docker-build     - Build Docker images"
 	@echo "  docker-push      - Push Docker images to GCR"
 	@echo "  deploy           - Deploy to GKE"
@@ -66,6 +72,24 @@ run: run-backend
 test-backend:
 	cd backend && go test -v -coverprofile=coverage.out ./...
 	cd backend && go tool cover -html=coverage.out -o coverage.html
+
+# ── E2E Tests (Playwright) ────────────────────────────────────────────────────
+
+e2e-install:
+	cd e2e && npm install
+	cd e2e && npx playwright install chromium
+
+e2e:
+	cd e2e && npx playwright test
+
+e2e-api:
+	cd e2e && npx playwright test tests/0[1-5]-*.spec.ts
+
+e2e-ui:
+	cd e2e && npx playwright test tests/06-ui.spec.ts
+
+e2e-report:
+	cd e2e && npx playwright show-report
 
 docker-build:
 	docker build -t i18n-center-backend:latest ./backend

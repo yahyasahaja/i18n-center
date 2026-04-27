@@ -2,29 +2,21 @@ import { I18nCenterClient } from './client';
 import { DeploymentStage, TranslationData } from './types';
 
 /**
- * Get nested value from an object using dot notation path
+ * Get nested value from an object using dot notation path.
+ * Returns the raw value (string or object) without coercion.
  */
-function getNestedValue(obj: any, path: string): string | null {
+function getNestedValue(obj: any, path: string): unknown {
   const keys = path.split('.');
-  let current = obj;
+  let current: unknown = obj;
 
   for (const key of keys) {
     if (current == null || typeof current !== 'object') {
       return null;
     }
-    current = current[key];
+    current = (current as Record<string, unknown>)[key];
   }
 
-  if (typeof current === 'string') {
-    return current;
-  }
-
-  // If it's an object, try to find a common 'text' or 'value' field
-  if (typeof current === 'object' && current !== null) {
-    return current.text || current.value || current.label || JSON.stringify(current);
-  }
-
-  return null;
+  return current ?? null;
 }
 
 /**
@@ -58,14 +50,14 @@ export function createTranslator(
 
   /**
    * Translation function
-   * Usage: t('form.name.label') or t('form.name.label', { variables: { name: 'John' } })
-   * 
-   * @returns Always returns a string. Never throws errors.
-   * - Returns the translation value if found
-   * - Returns `defaultValue` if provided and translation not found
-   * - Returns the `path` itself if translation not found and no defaultValue
+   * Usage: t('form.name.label') or t<{b: string}>('a')
+   *
+   * When T is string (default): returns the translation string, or defaultValue/path on miss.
+   * When T is an object type: returns the nested object at that path.
+   *
+   * Template variable substitution only applies when the resolved value is a string.
    */
-  async function t(path: string, options?: TranslateOptions): Promise<string> {
+  async function t<T = string>(path: string, options?: TranslateOptions): Promise<T> {
     try {
       const locale = options?.locale || defaultLocale || client['config'].defaultLocale;
       const stage = options?.stage || defaultStage || client['config'].defaultStage;
@@ -77,32 +69,29 @@ export function createTranslator(
           cachedLocale = locale;
           cachedStage = stage;
         } catch (error) {
-          // If translation fetch fails, return defaultValue or path
-          return options?.defaultValue || path;
+          return (options?.defaultValue ?? path) as unknown as T;
         }
       }
 
-      // Get the translation value
-      let value = getNestedValue(cachedTranslation, path);
+      const value = getNestedValue(cachedTranslation, path);
 
-      if (value === null) {
-        // Try to return default value or the path itself
-        return options?.defaultValue || path;
+      if (value === null || value === undefined) {
+        return (options?.defaultValue ?? path) as unknown as T;
       }
 
-      // Replace template variables
-      if (options?.variables) {
+      // Template variable substitution only for string values
+      if (typeof value === 'string' && options?.variables) {
+        let result = value;
         for (const [key, val] of Object.entries(options.variables)) {
-          // Support both {key} and [key] syntax
-          value = value.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val));
-          value = value.replace(new RegExp(`\\[${key}\\]`, 'g'), String(val));
+          result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val));
+          result = result.replace(new RegExp(`\\[${key}\\]`, 'g'), String(val));
         }
+        return result as unknown as T;
       }
 
-      return value;
+      return value as unknown as T;
     } catch (error) {
-      // Safety net: always return a string, never throw
-      return options?.defaultValue || path;
+      return (options?.defaultValue ?? path) as unknown as T;
     }
   }
 
@@ -142,26 +131,26 @@ export function createTranslator(
  * - Returns the `path` itself if translation not found and no defaultValue
  */
 export function createSyncTranslator(translationData: TranslationData) {
-  return function t(path: string, options?: { defaultValue?: string; variables?: Record<string, string | number> }): string {
+  return function t<T = string>(path: string, options?: { defaultValue?: string; variables?: Record<string, string | number> }): T {
     try {
-      let value = getNestedValue(translationData, path);
+      const value = getNestedValue(translationData, path);
 
-      if (value === null) {
-        return options?.defaultValue || path;
+      if (value === null || value === undefined) {
+        return (options?.defaultValue ?? path) as unknown as T;
       }
 
-      // Replace template variables
-      if (options?.variables) {
+      if (typeof value === 'string' && options?.variables) {
+        let result = value;
         for (const [key, val] of Object.entries(options.variables)) {
-          value = value.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val));
-          value = value.replace(new RegExp(`\\[${key}\\]`, 'g'), String(val));
+          result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val));
+          result = result.replace(new RegExp(`\\[${key}\\]`, 'g'), String(val));
         }
+        return result as unknown as T;
       }
 
-      return value;
+      return value as unknown as T;
     } catch (error) {
-      // Safety net: always return a string, never throw
-      return options?.defaultValue || path;
+      return (options?.defaultValue ?? path) as unknown as T;
     }
   };
 }

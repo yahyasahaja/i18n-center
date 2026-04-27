@@ -71,6 +71,17 @@ func (t *Translator) Tf(path string, variables map[string]interface{}, defaultVa
 	return text, nil
 }
 
+// GetValue returns the raw value at path without string coercion.
+// Use this when the translation value at path may be an object rather than a string.
+// Path uses dot notation: "form.fields" may return map[string]interface{}.
+func (t *Translator) GetValue(path string) (interface{}, error) {
+	data, err := t.getData()
+	if err != nil {
+		return nil, err
+	}
+	return getRawValue(data, path), nil
+}
+
 // GetRaw returns the raw translation data for the component
 func (t *Translator) GetRaw() (TranslationData, error) {
 	return t.getData()
@@ -99,6 +110,24 @@ func (t *Translator) getData() (TranslationData, error) {
 
 	t.cachedData = data
 	return data, nil
+}
+
+// getRawValue traverses dot-notation path and returns the value without coercion.
+func getRawValue(data map[string]interface{}, path string) interface{} {
+	keys := strings.Split(path, ".")
+	current := interface{}(data)
+	for _, key := range keys {
+		m, ok := current.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		val, exists := m[key]
+		if !exists {
+			return nil
+		}
+		current = val
+	}
+	return current
 }
 
 // getNestedValue gets a nested value from a map using dot notation

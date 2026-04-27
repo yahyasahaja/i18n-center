@@ -46,7 +46,18 @@
       "Bash(go fmt *)",
       "Bash(./node_modules/.bin/tsc --noEmit)",
       "Bash(kill 82019 82198)",
-      "Bash(grep -n \"Add Component\\\\|Components\" /Users/yahyasahaja/projects/lapakgaming/i18n-center/frontend/app/applications/[id]/page.tsx)"
+      "Bash(grep -n \"Add Component\\\\|Components\" /Users/yahyasahaja/projects/lapakgaming/i18n-center/frontend/app/applications/[id]/page.tsx)",
+      "Bash(npx playwright *)",
+      "Bash(npm install *)",
+      "Bash(node -e \"require\\('@playwright/test'\\)\")",
+      "Bash(pkill -f \"i18n-center/backend\")",
+      "Bash(echo \"backend pid: $!\")",
+      "Bash(kill 43667 48762)",
+      "Bash(echo \"pid=$!\")",
+      "Bash(npm run *)",
+      "Bash(node_modules/.bin/tsc --noEmit)",
+      "Bash(lsof -ti:8080)",
+      "Bash(lsof -ti:3000)"
     ]
   }
 }

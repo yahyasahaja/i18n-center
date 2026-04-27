@@ -45,9 +45,9 @@ export type {
   DeploymentStage,
   TranslationData,
   CacheStorage,
-  TranslateOptions,
   NextJsI18nConfig,
 } from './types';
+export type { TranslateOptions } from './translator';
 export type { TranslationProviderProps } from './react';
 
 // Re-export Next.js types

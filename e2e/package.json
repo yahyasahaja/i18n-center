@@ -1,0 +1,15 @@
+{
+  "name": "i18n-center-e2e",
+  "version": "1.0.0",
+  "description": "End-to-end tests for i18n-center (API + UI)",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:api": "playwright test tests/0{1,2,3,4,5}-*.spec.ts",
+    "test:ui": "playwright test tests/06-ui.spec.ts",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0"
+  }
+}

@@ -107,13 +107,22 @@ func (h *ApplicationHandler) GetApplication(c *gin.Context) {
 	c.JSON(http.StatusOK, application)
 }
 
-// ApplicationRequest represents the request payload for creating/updating applications
+// ApplicationRequest represents the request payload for creating applications
 type ApplicationRequest struct {
 	Name             string   `json:"name" binding:"required"`
 	Code             string   `json:"code" binding:"required"` // Unique identifier
 	Description      string   `json:"description"`
 	EnabledLanguages []string `json:"enabled_languages"`
 	OpenAIKey        string   `json:"openai_key"` // Accept from frontend
+}
+
+// UpdateApplicationRequest represents the request payload for updating applications
+type UpdateApplicationRequest struct {
+	Name             string   `json:"name" binding:"required"`
+	Code             string   `json:"code"` // Optional on update; keeps existing if omitted
+	Description      string   `json:"description"`
+	EnabledLanguages []string `json:"enabled_languages"`
+	OpenAIKey        string   `json:"openai_key"`
 }
 
 // CreateApplication creates a new application
@@ -185,7 +194,7 @@ func (h *ApplicationHandler) UpdateApplication(c *gin.Context) {
 		return
 	}
 
-	var req ApplicationRequest
+	var req UpdateApplicationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -203,9 +212,11 @@ func (h *ApplicationHandler) UpdateApplication(c *gin.Context) {
 		// Don't log OpenAIKey for security
 	}
 
-	// Update fields
+	// Update fields; keep existing code if not provided
 	application.Name = req.Name
-	application.Code = req.Code
+	if req.Code != "" {
+		application.Code = req.Code
+	}
 	application.Description = req.Description
 	application.EnabledLanguages = models.StringArray(req.EnabledLanguages)
 	application.UpdatedBy = userID
