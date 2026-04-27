@@ -11,12 +11,11 @@ import (
 var Logger *zap.Logger
 var Sugar *zap.SugaredLogger
 
-// InitLogger initializes structured logger
+// InitLogger initializes structured logging.
+// Development: human-readable colored output.
+// Production (ENV=production): JSON lines — streamed and picked up by the Datadog agent.
 func InitLogger() error {
 	env := os.Getenv("ENV")
-	if env == "" {
-		env = "development"
-	}
 
 	var config zap.Config
 	if env == "production" {
@@ -27,7 +26,6 @@ func InitLogger() error {
 		config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
 	}
 
-	// Custom encoder config for better readability
 	config.EncoderConfig.TimeKey = "timestamp"
 	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 	config.EncoderConfig.MessageKey = "message"
@@ -35,7 +33,6 @@ func InitLogger() error {
 	config.EncoderConfig.CallerKey = "caller"
 	config.EncoderConfig.StacktraceKey = "stacktrace"
 
-	// Add service metadata
 	config.InitialFields = map[string]interface{}{
 		"service":     "i18n-center",
 		"environment": env,
@@ -55,18 +52,38 @@ func InitLogger() error {
 	return nil
 }
 
-// LogError logs an error with context
-func LogError(err error, msg string, fields ...zap.Field) {
-	if err != nil {
-		Logger.Error(msg,
-			append([]zap.Field{
-				zap.Error(err),
-			}, fields...)...,
-		)
+// LogRequest logs an HTTP request at the appropriate level:
+//   - 5xx → Error  (stack trace attached, logged for alerting)
+//   - 4xx → Warn
+//   - 2xx/3xx → Info
+func LogRequest(method, path string, statusCode int, latency time.Duration, fields ...zap.Field) {
+	level := zapcore.InfoLevel
+	if statusCode >= 500 {
+		level = zapcore.ErrorLevel
+	} else if statusCode >= 400 {
+		level = zapcore.WarnLevel
 	}
+
+	base := []zap.Field{
+		zap.String("method", method),
+		zap.String("path", path),
+		zap.Int("status_code", statusCode),
+		zap.Int64("latency_ms", latency.Milliseconds()),
+	}
+
+	Logger.Check(level, "HTTP request").Write(append(base, fields...)...)
 }
 
-// LogErrorWithContext logs an error with additional context
+// LogError logs an error with an optional message and extra fields.
+func LogError(err error, msg string, fields ...zap.Field) {
+	if err == nil {
+		return
+	}
+	Logger.Error(msg, append([]zap.Field{zap.Error(err)}, fields...)...)
+}
+
+// LogErrorWithContext logs an error together with a free-form context map.
+// Useful when you want to attach request metadata without constructing zap.Field slices.
 func LogErrorWithContext(err error, msg string, context map[string]interface{}) {
 	if err == nil {
 		return
@@ -78,26 +95,7 @@ func LogErrorWithContext(err error, msg string, context map[string]interface{}) 
 	Logger.Error(msg, fields...)
 }
 
-// LogPanic logs a panic with stack trace
+// LogPanic logs at Panic level (writes log then panics). Use inside recovery handlers.
 func LogPanic(msg string, fields ...zap.Field) {
 	Logger.Panic(msg, fields...)
-}
-
-// LogRequest logs HTTP request details
-func LogRequest(method, path string, statusCode int, latency time.Duration, fields ...zap.Field) {
-	level := zapcore.InfoLevel
-	if statusCode >= 500 {
-		level = zapcore.ErrorLevel
-	} else if statusCode >= 400 {
-		level = zapcore.WarnLevel
-	}
-
-	allFields := append([]zap.Field{
-		zap.String("method", method),
-		zap.String("path", path),
-		zap.Int("status_code", statusCode),
-		zap.Duration("latency_ms", latency),
-	}, fields...)
-
-	Logger.Check(level, "HTTP Request").Write(allFields...)
 }

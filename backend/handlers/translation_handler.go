@@ -17,7 +17,7 @@ import (
 
 type TranslationHandler struct {
 	translationService *services.TranslationService
-	auditService       *services.AuditService
+	auditService       services.AuditServicer
 }
 
 func NewTranslationHandler() *TranslationHandler {

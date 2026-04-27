@@ -13,7 +13,7 @@ import (
 )
 
 type ComponentHandler struct {
-	auditService *services.AuditService
+	auditService services.AuditServicer
 }
 
 func NewComponentHandler() *ComponentHandler {

@@ -10,7 +10,7 @@ import (
 )
 
 type AuditHandler struct {
-	auditService *services.AuditService
+	auditService services.AuditServicer
 }
 
 func NewAuditHandler() *AuditHandler {

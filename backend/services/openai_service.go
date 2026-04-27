@@ -94,12 +94,13 @@ func (s *OpenAIService) TranslateJSONBatch(ctx context.Context, data map[string]
 	)
 
 	var lastErr error
+	activePrompt := prompt
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		// Bail immediately if context was cancelled between retries
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("cancelled before attempt %d: %w", attempt, err)
 		}
-		result, err := s.callOpenAIJSON(ctx, prompt)
+		result, err := s.callOpenAIJSON(ctx, activePrompt)
 		if err != nil {
 			delay, shouldRetry := openAIRetryDelay(err, attempt)
 			if !shouldRetry {
@@ -107,6 +108,8 @@ func (s *OpenAIService) TranslateJSONBatch(ctx context.Context, data map[string]
 				return nil, fmt.Errorf("permanent OpenAI error, aborting: %w", err)
 			}
 			lastErr = fmt.Errorf("attempt %d: OpenAI call failed: %w", attempt, err)
+			// Network/API errors: reset to original prompt (error not useful to the model)
+			activePrompt = prompt
 			if delay > 0 && attempt < maxRetries {
 				select {
 				case <-ctx.Done():
@@ -119,7 +122,12 @@ func (s *OpenAIService) TranslateJSONBatch(ctx context.Context, data map[string]
 
 		if err := validateTranslatedJSON(data, result); err != nil {
 			lastErr = fmt.Errorf("attempt %d: validation failed: %w", attempt, err)
-			// Short pause before re-prompting — model may give better output
+			// Inject the specific validation error so the model can self-correct on retry
+			activePrompt = fmt.Sprintf(
+				"PREVIOUS ATTEMPT FAILED VALIDATION:\n  %s\nDo NOT repeat this mistake. "+
+					"Follow all rules strictly and retry with corrected output.\n\n%s",
+				err.Error(), prompt,
+			)
 			if attempt < maxRetries {
 				select {
 				case <-ctx.Done():

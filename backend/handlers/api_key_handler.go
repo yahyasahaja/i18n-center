@@ -22,7 +22,7 @@ func hashKey(key string) string {
 }
 
 type APIKeyHandler struct {
-	auditService *services.AuditService
+	auditService services.AuditServicer
 }
 
 func NewAPIKeyHandler() *APIKeyHandler {

@@ -13,6 +13,7 @@ export interface TestState {
   pageId:          string
   apiKey:          string
   apiKeyId:        string
+  secondLocale:    string  // language enabled in addition to EN, used by translate/backfill tests
 }
 
 export function saveState(state: TestState): void {

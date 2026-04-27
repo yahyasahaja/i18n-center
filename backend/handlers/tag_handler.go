@@ -12,7 +12,7 @@ import (
 )
 
 type TagHandler struct {
-	auditService *services.AuditService
+	auditService services.AuditServicer
 }
 
 func NewTagHandler() *TagHandler {

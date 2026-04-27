@@ -14,7 +14,7 @@ import (
 // BootstrapHandler handles application-level bulk seeding from a locale JSON file.
 type BootstrapHandler struct {
 	translationService *services.TranslationService
-	auditService       *services.AuditService
+	auditService       services.AuditServicer
 }
 
 func NewBootstrapHandler() *BootstrapHandler {

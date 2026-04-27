@@ -12,7 +12,7 @@ import (
 )
 
 type PageHandler struct {
-	auditService *services.AuditService
+	auditService services.AuditServicer
 }
 
 func NewPageHandler() *PageHandler {

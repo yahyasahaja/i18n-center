@@ -282,19 +282,21 @@ const (
 
 // TranslationVersion represents a version of translations
 type TranslationVersion struct {
-	ID          uuid.UUID       `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	ComponentID uuid.UUID       `gorm:"type:uuid;not null;index" json:"component_id"`
-	Component   Component       `gorm:"foreignKey:ComponentID" json:"component,omitempty"`
-	Locale      string          `gorm:"not null;index" json:"locale"`
-	Stage       DeploymentStage `gorm:"type:varchar(50);not null;index" json:"stage"`
-	Version     int             `gorm:"not null;default:1" json:"version"` // 1, 2, 3, ... current = latest
-	Data        JSONB           `gorm:"type:jsonb;not null" json:"data"`   // The translation data
-	IsActive    bool            `gorm:"default:true" json:"is_active"`
-	CreatedBy   uuid.UUID       `gorm:"type:uuid;index" json:"created_by"`
-	UpdatedBy   uuid.UUID       `gorm:"type:uuid;index" json:"updated_by"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-	DeletedAt   gorm.DeletedAt  `gorm:"index" json:"-"`
+	ID           uuid.UUID       `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	ComponentID  uuid.UUID       `gorm:"type:uuid;not null;index" json:"component_id"`
+	Component    Component       `gorm:"foreignKey:ComponentID" json:"component,omitempty"`
+	Locale       string          `gorm:"not null;index" json:"locale"`
+	Stage        DeploymentStage `gorm:"type:varchar(50);not null;index" json:"stage"`
+	Version      int             `gorm:"not null;default:1" json:"version"` // 1, 2, 3, ... current = latest
+	Data         JSONB           `gorm:"type:jsonb;not null" json:"data"`   // The translation data
+	SourceLocale string          `gorm:"type:varchar(10)" json:"source_locale,omitempty"` // locale translated FROM (empty for manual edits)
+	SourceData   JSONB           `gorm:"type:jsonb" json:"source_data,omitempty"`          // snapshot of source at translate time
+	IsActive     bool            `gorm:"default:true" json:"is_active"`
+	CreatedBy    uuid.UUID       `gorm:"type:uuid;index" json:"created_by"`
+	UpdatedBy    uuid.UUID       `gorm:"type:uuid;index" json:"updated_by"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+	DeletedAt    gorm.DeletedAt  `gorm:"index" json:"-"`
 }
 
 // BeforeCreate hooks

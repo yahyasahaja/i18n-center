@@ -1,0 +1,8 @@
+with-expecter: true
+packages:
+  github.com/your-org/i18n-center/services:
+    interfaces:
+      AuditServicer:
+        config:
+          dir: "mocks"
+          outpkg: "mocks"

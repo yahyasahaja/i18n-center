@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -367,6 +368,14 @@ func claimTranslateJob(instanceID string) (*models.TranslateJob, error) {
 
 // processTranslateJob handles both auto_translate and backfill job types.
 // Each TranslateJob carries exactly one target locale (backfill is fanned out by the handler).
+//
+// Incremental translation strategy:
+//   - If the existing target translation has a source snapshot (SourceData), we diff
+//     currentSource vs snapshot to find only the changed/new keys, send those to AI,
+//     then merge back into the existing target and prune removed keys — no AI call at all
+//     if nothing changed.
+//   - If there is no snapshot (first translate, or target was manually edited), the full
+//     source is translated as before.
 func processTranslateJob(ctx context.Context, job *models.TranslateJob, translationService *services.TranslationService) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -393,7 +402,6 @@ func processTranslateJob(ctx context.Context, job *models.TranslateJob, translat
 	}
 	targetLocale := job.TargetLocales[0]
 
-	// Check context before starting the potentially slow OpenAI call
 	select {
 	case <-ctx.Done():
 		_ = markTranslateJobFailed(job.ID, "Worker cancelled", "Context cancelled")
@@ -408,54 +416,80 @@ func processTranslateJob(ctx context.Context, job *models.TranslateJob, translat
 		return
 	}
 
-	// For backfill jobs: only translate keys that are absent from the existing target
-	// translation. This avoids clobbering already-translated strings when the operator
-	// adds a single new key to the source locale.
-	// For auto_translate jobs: translate everything (full replacement).
-	dataToTranslate := sourceTranslation.Data
-	var existingTargetData map[string]interface{}
-	if job.JobType == "backfill" {
-		existingTarget, err := translationService.GetTranslation(job.ComponentID, targetLocale, models.StageDraft)
-		if err == nil && existingTarget != nil && len(existingTarget.Data) > 0 {
-			existingTargetData = existingTarget.Data
-			missing := missingKeys(sourceTranslation.Data, existingTarget.Data)
-			if len(missing) == 0 {
-				// Nothing missing — mark job completed without an OpenAI call
-				_ = database.DB.Model(&models.TranslateJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
-					"status":     models.JobStatusCompleted,
-					"updated_at": time.Now(),
-				}).Error
-				observability.Logger.Info("TranslateJob skipped (no missing keys)",
-					zap.String("job_id", job.ID.String()),
-					zap.String("target_locale", targetLocale),
-				)
+	currentSource := map[string]interface{}(sourceTranslation.Data)
+	var finalData map[string]interface{}
+
+	// Try to load the existing target translation and its stored source snapshot.
+	existingTarget, _ := translationService.GetTranslation(job.ComponentID, targetLocale, models.StageDraft)
+
+	if existingTarget != nil && len(existingTarget.SourceData) > 0 {
+		// ── Incremental path ────────────────────────────────────────────────────
+		prevSource := map[string]interface{}(existingTarget.SourceData)
+
+		changed := changedOrNewKeys(currentSource, prevSource)
+		hasRemovals := hasRemovedKeys(prevSource, currentSource)
+
+		if len(changed) == 0 && !hasRemovals {
+			// Source identical to snapshot — nothing to do.
+			observability.Logger.Info("TranslateJob skipped (source unchanged)",
+				zap.String("job_id", job.ID.String()),
+				zap.String("target_locale", targetLocale),
+			)
+			_ = markTranslateJobCompleted(job.ID)
+			return
+		}
+
+		existingTargetData := map[string]interface{}(existingTarget.Data)
+
+		if len(changed) > 0 {
+			// Send only the changed/new keys to AI.
+			translatedPartial, err := openAIService.TranslateJSON(ctx, changed, job.SourceLocale, targetLocale)
+			if err != nil {
+				_ = markTranslateJobFailed(job.ID, "Translation failed", err.Error())
 				return
 			}
-			dataToTranslate = missing
+			// Overlay newly translated keys onto the existing target.
+			finalData = mergeTranslations(existingTargetData, translatedPartial)
+		} else {
+			// Only key removals — no AI needed.
+			finalData = existingTargetData
 		}
+
+		// Drop keys removed from source so all locales stay structurally in sync.
+		finalData = pruneToShape(finalData, currentSource)
+
+		observability.Logger.Info("TranslateJob incremental",
+			zap.String("job_id", job.ID.String()),
+			zap.String("target_locale", targetLocale),
+			zap.Int("changed_keys", countLeaves(changed)),
+			zap.Bool("had_removals", hasRemovals),
+		)
+	} else {
+		// ── Full-translate path (first run or no snapshot) ───────────────────
+		finalData, err = openAIService.TranslateJSON(ctx, currentSource, job.SourceLocale, targetLocale)
+		if err != nil {
+			_ = markTranslateJobFailed(job.ID, "Translation failed", err.Error())
+			return
+		}
+		observability.Logger.Info("TranslateJob full",
+			zap.String("job_id", job.ID.String()),
+			zap.String("target_locale", targetLocale),
+		)
 	}
 
-	translatedData, err := openAIService.TranslateJSON(ctx, dataToTranslate, job.SourceLocale, targetLocale)
-	if err != nil {
-		_ = markTranslateJobFailed(job.ID, "Translation failed", err.Error())
-		return
-	}
-
-	// For backfill: merge translated missing keys into existing target data
-	if job.JobType == "backfill" && existingTargetData != nil {
-		translatedData = mergeTranslations(existingTargetData, translatedData)
-	}
-
-	if _, err := translationService.SaveTranslation(job.ComponentID, targetLocale, models.StageDraft, translatedData, job.CreatedBy); err != nil {
+	// Save with source snapshot so future runs can diff against it.
+	if _, err := translationService.SaveTranslationWithSource(
+		job.ComponentID, targetLocale, models.StageDraft,
+		models.JSONB(finalData),
+		job.SourceLocale, models.JSONB(currentSource),
+		job.CreatedBy,
+	); err != nil {
 		_ = markTranslateJobFailed(job.ID, "Failed to save translation", err.Error())
 		return
 	}
 
 	cache.Delete(cache.ApplicationKey(job.ApplicationID.String()))
-	_ = database.DB.Model(&models.TranslateJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
-		"status":     models.JobStatusCompleted,
-		"updated_at": time.Now(),
-	}).Error
+	_ = markTranslateJobCompleted(job.ID)
 	observability.Logger.Info("TranslateJob completed",
 		zap.String("job_id", job.ID.String()),
 		zap.String("component_id", job.ComponentID.String()),
@@ -473,30 +507,84 @@ func markTranslateJobFailed(jobID uuid.UUID, msg, detail string) error {
 	}).Error
 }
 
+func markTranslateJobCompleted(jobID uuid.UUID) error {
+	return database.DB.Model(&models.TranslateJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
+		"status":     models.JobStatusCompleted,
+		"updated_at": time.Now(),
+	}).Error
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// missingKeys returns a subset of source containing only keys (recursively) that are
-// absent from target. Used by backfill jobs so we never re-translate existing strings.
-func missingKeys(source, target map[string]interface{}) map[string]interface{} {
-	missing := make(map[string]interface{})
-	for k, sv := range source {
-		tv, exists := target[k]
+// changedOrNewKeys returns a subset of current containing only keys whose value
+// changed (recursively for nested objects) or that are absent from prev.
+// Keys present in prev but absent from current are NOT included here — see hasRemovedKeys.
+func changedOrNewKeys(current, prev map[string]interface{}) map[string]interface{} {
+	changed := make(map[string]interface{})
+	for k, cv := range current {
+		pv, exists := prev[k]
 		if !exists {
-			missing[k] = sv
+			// New key — include the full subtree.
+			changed[k] = cv
 			continue
 		}
-		// Both sides are nested objects — recurse
-		if svMap, ok := sv.(map[string]interface{}); ok {
-			if tvMap, ok := tv.(map[string]interface{}); ok {
-				nested := missingKeys(svMap, tvMap)
-				if len(nested) > 0 {
-					missing[k] = nested
-				}
+		cvMap, cvIsMap := cv.(map[string]interface{})
+		pvMap, pvIsMap := pv.(map[string]interface{})
+		if cvIsMap && pvIsMap {
+			// Both nested objects — recurse and bubble up only the changed leaves.
+			nested := changedOrNewKeys(cvMap, pvMap)
+			if len(nested) > 0 {
+				changed[k] = nested
+			}
+			continue
+		}
+		// Type mismatch or scalar — compare by JSON representation to avoid
+		// float64/int ambiguity introduced by json.Unmarshal.
+		if !jsonEqual(cv, pv) {
+			changed[k] = cv
+		}
+	}
+	return changed
+}
+
+// hasRemovedKeys returns true if any key present in prev is absent from current (recursively).
+func hasRemovedKeys(prev, current map[string]interface{}) bool {
+	for k, pv := range prev {
+		cv, exists := current[k]
+		if !exists {
+			return true
+		}
+		pvMap, pvIsMap := pv.(map[string]interface{})
+		cvMap, cvIsMap := cv.(map[string]interface{})
+		if pvIsMap && cvIsMap {
+			if hasRemovedKeys(pvMap, cvMap) {
+				return true
 			}
 		}
-		// Key exists in target as a scalar — not missing
 	}
-	return missing
+	return false
+}
+
+// pruneToShape rebuilds target keeping only keys that exist in source (recursively).
+// Keys present in target but absent from source are silently dropped — this keeps
+// all locale translations structurally identical to the source.
+func pruneToShape(target, source map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{}, len(source))
+	for k := range source {
+		tv, exists := target[k]
+		if !exists {
+			continue
+		}
+		sv := source[k]
+		svMap, svIsMap := sv.(map[string]interface{})
+		tvMap, tvIsMap := tv.(map[string]interface{})
+		if svIsMap && tvIsMap {
+			result[k] = pruneToShape(tvMap, svMap)
+		} else {
+			result[k] = tv
+		}
+	}
+	return result
 }
 
 // mergeTranslations overlays additions onto base (recursively for nested objects).
@@ -516,6 +604,31 @@ func mergeTranslations(base, additions map[string]interface{}) map[string]interf
 		result[k] = v
 	}
 	return result
+}
+
+// jsonEqual compares two values by their JSON representation to avoid type-mismatch
+// false positives (e.g. float64(5) vs int(5) after json.Unmarshal).
+func jsonEqual(a, b interface{}) bool {
+	ab, errA := json.Marshal(a)
+	bb, errB := json.Marshal(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return string(ab) == string(bb)
+}
+
+// countLeaves counts the number of leaf (non-object) values in a nested map.
+// Used for logging how many keys were sent to AI.
+func countLeaves(m map[string]interface{}) int {
+	n := 0
+	for _, v := range m {
+		if nested, ok := v.(map[string]interface{}); ok {
+			n += countLeaves(nested)
+		} else {
+			n++
+		}
+	}
+	return n
 }
 
 // silentDB returns a gorm session with logging suppressed (idle poll queries shouldn't flood logs).

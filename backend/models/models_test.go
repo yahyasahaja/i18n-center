@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestJSONB_Value(t *testing.T) {
@@ -109,4 +110,56 @@ func TestTranslationVersion_BeforeCreate(t *testing.T) {
 	err := tv.BeforeCreate(nil)
 	assert.NoError(t, err)
 	assert.NotEqual(t, uuid.Nil, tv.ID)
+}
+
+func TestStringArray_ValueAndScan(t *testing.T) {
+	arr := StringArray{"en", "id"}
+	v, err := arr.Value()
+	require.NoError(t, err)
+	assert.Equal(t, `{"en","id"}`, v)
+
+	var scanned StringArray
+	require.NoError(t, scanned.Scan([]byte(`{"en","id"}`)))
+	assert.Equal(t, StringArray{"en", "id"}, scanned)
+
+	var nilScan StringArray
+	require.NoError(t, nilScan.Scan(nil))
+	assert.Nil(t, nilScan)
+
+	err = scanned.Scan(42)
+	assert.Error(t, err)
+}
+
+func TestMoreBeforeCreateHooks(t *testing.T) {
+	tag := &Tag{}
+	require.NoError(t, tag.BeforeCreate(nil))
+	assert.NotEqual(t, uuid.Nil, tag.ID)
+
+	page := &Page{}
+	require.NoError(t, page.BeforeCreate(nil))
+	assert.NotEqual(t, uuid.Nil, page.ID)
+
+	deploy := &ApplicationLocaleDeploy{}
+	require.NoError(t, deploy.BeforeCreate(nil))
+	assert.NotEqual(t, uuid.Nil, deploy.ID)
+
+	addJob := &AddLanguageJob{}
+	require.NoError(t, addJob.BeforeCreate(nil))
+	assert.NotEqual(t, uuid.Nil, addJob.ID)
+
+	translateJob := &TranslateJob{}
+	require.NoError(t, translateJob.BeforeCreate(nil))
+	assert.NotEqual(t, uuid.Nil, translateJob.ID)
+}
+
+func TestTableNames(t *testing.T) {
+	assert.Equal(t, "add_language_jobs", AddLanguageJob{}.TableName())
+	assert.Equal(t, "translate_jobs", TranslateJob{}.TableName())
+	assert.Equal(t, "audit_logs", AuditLog{}.TableName())
+}
+
+func TestAuditLogBeforeCreate(t *testing.T) {
+	a := &AuditLog{}
+	require.NoError(t, a.BeforeCreate(nil))
+	assert.NotEqual(t, uuid.Nil, a.ID)
 }

@@ -133,8 +133,21 @@ func (s *TranslationService) GetMultipleTranslations(componentIDs []uuid.UUID, l
 	return results, nil
 }
 
-// SaveTranslation adds a new version (always insert, never overwrite)
+// SaveTranslation adds a new version (always insert, never overwrite).
+// Used for manual edits — no source snapshot is recorded.
 func (s *TranslationService) SaveTranslation(componentID uuid.UUID, locale string, stage models.DeploymentStage, data models.JSONB, userID uuid.UUID) (*models.TranslationVersion, error) {
+	return s.saveVersion(componentID, locale, stage, data, "", nil, userID)
+}
+
+// SaveTranslationWithSource adds a new version and records the source locale + source data
+// snapshot that was used to produce this translation. The snapshot enables incremental
+// re-translation: next time only changed/new keys are sent to the AI.
+func (s *TranslationService) SaveTranslationWithSource(componentID uuid.UUID, locale string, stage models.DeploymentStage, data models.JSONB, sourceLocale string, sourceData models.JSONB, userID uuid.UUID) (*models.TranslationVersion, error) {
+	return s.saveVersion(componentID, locale, stage, data, sourceLocale, sourceData, userID)
+}
+
+// saveVersion is the shared insert implementation for both Save* methods.
+func (s *TranslationService) saveVersion(componentID uuid.UUID, locale string, stage models.DeploymentStage, data models.JSONB, sourceLocale string, sourceData models.JSONB, userID uuid.UUID) (*models.TranslationVersion, error) {
 	nextVersion := 1
 	var current models.TranslationVersion
 	err := database.DB.Where("component_id = ? AND locale = ? AND stage = ?",
@@ -144,14 +157,16 @@ func (s *TranslationService) SaveTranslation(componentID uuid.UUID, locale strin
 	}
 
 	newVersion := models.TranslationVersion{
-		ComponentID: componentID,
-		Locale:      locale,
-		Stage:       stage,
-		Version:     nextVersion,
-		Data:        data,
-		IsActive:    true,
-		CreatedBy:   userID,
-		UpdatedBy:   userID,
+		ComponentID:  componentID,
+		Locale:       locale,
+		Stage:        stage,
+		Version:      nextVersion,
+		Data:         data,
+		SourceLocale: sourceLocale,
+		SourceData:   sourceData,
+		IsActive:     true,
+		CreatedBy:    userID,
+		UpdatedBy:    userID,
 	}
 	if err := database.DB.Create(&newVersion).Error; err != nil {
 		return nil, err

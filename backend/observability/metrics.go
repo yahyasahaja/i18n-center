@@ -1,8 +1,8 @@
 package observability
 
 import (
-	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/DataDog/datadog-go/v5/statsd"
@@ -10,37 +10,33 @@ import (
 
 var StatsdClient *statsd.Client
 
-// InitMetrics initializes Datadog statsd client
-// Returns nil if Datadog is disabled or if initialization fails (non-fatal)
+// InitMetrics initializes the Datadog StatsD client.
+// No-op (StatsdClient stays nil) when DD_ENABLED is not "true"/"1" — service works without metrics.
 func InitMetrics() error {
-	// Check if Datadog is enabled
 	ddEnabled := os.Getenv("DD_ENABLED")
-	if ddEnabled == "false" || ddEnabled == "0" || ddEnabled == "" {
-		// Datadog disabled - service will work without metrics
+	if ddEnabled != "true" && ddEnabled != "1" {
 		return nil
 	}
 
-	ddAgentHost := os.Getenv("DD_AGENT_HOST")
-	if ddAgentHost == "" {
-		ddAgentHost = "localhost"
+	host := os.Getenv("DD_AGENT_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+	port := os.Getenv("DD_DOGSTATSD_PORT")
+	if port == "" {
+		port = "8125"
 	}
 
-	ddAgentPort := os.Getenv("DD_DOGSTATSD_PORT")
-	if ddAgentPort == "" {
-		ddAgentPort = "8125"
-	}
-
-	client, err := statsd.New(ddAgentHost+":"+ddAgentPort,
-		statsd.WithNamespace("i18n_center"),
+	client, err := statsd.New(host+":"+port,
+		// No namespace — metric names are fully qualified (e.g. i18n_center_latency_seconds).
 		statsd.WithTags([]string{
 			"service:i18n-center",
 			"env:" + getEnv(),
 			"version:" + getVersion(),
 		}),
-		statsd.WithoutTelemetry(), // Disable telemetry to reduce cost
+		statsd.WithoutTelemetry(), // Reduce unnecessary DD agent traffic.
 	)
 	if err != nil {
-		// Non-fatal: service can work without metrics
 		return err
 	}
 
@@ -48,7 +44,51 @@ func InitMetrics() error {
 	return nil
 }
 
-// IncrementCounter increments a counter metric
+// RecordLatency emits the i18n_center_latency_seconds histogram to Datadog.
+//
+// Tags:
+//   - path:   Gin route template with params already masked (e.g. /api/applications/:id).
+//             Pass c.FullPath() from the middleware — Gin fills this in after routing.
+//   - status: HTTP status code as a string (e.g. "200", "404", "500").
+//
+// Guarded by two toggles (both must be satisfied to emit):
+//  1. DD_ENABLED=true    → StatsdClient is non-nil after InitMetrics.
+//  2. DD_METRIC_LATENCY_ENABLED != "false"/"0"  (default: enabled when DD is on).
+func RecordLatency(path string, statusCode int, latency time.Duration) {
+	if StatsdClient == nil || !isLatencyMetricEnabled() {
+		return
+	}
+	StatsdClient.Histogram(
+		"i18n_center_latency_seconds",
+		latency.Seconds(),
+		[]string{
+			"path:" + path,
+			"status:" + strconv.Itoa(statusCode),
+		},
+		1.0,
+	)
+}
+
+// isLatencyMetricEnabled returns false only when DD_METRIC_LATENCY_ENABLED is explicitly
+// "false" or "0". Omitting the var means enabled — so enabling DD is enough to get latency.
+func isLatencyMetricEnabled() bool {
+	v := os.Getenv("DD_METRIC_LATENCY_ENABLED")
+	return v != "false" && v != "0"
+}
+
+// RecordServiceHealth emits a gauge (1 = up, 0 = down) for liveness monitoring.
+func RecordServiceHealth(healthy bool) {
+	if StatsdClient == nil {
+		return
+	}
+	value := 0.0
+	if healthy {
+		value = 1.0
+	}
+	StatsdClient.Gauge("i18n_center_service_health", value, nil, 1.0)
+}
+
+// IncrementCounter increments a named counter. Used internally for panic tracking.
 func IncrementCounter(name string, tags []string, rate float64) {
 	if StatsdClient == nil {
 		return
@@ -56,158 +96,23 @@ func IncrementCounter(name string, tags []string, rate float64) {
 	StatsdClient.Incr(name, tags, rate)
 }
 
-// RecordHistogram records a histogram metric (for latency, sizes, etc.)
-func RecordHistogram(name string, value float64, tags []string, rate float64) {
-	if StatsdClient == nil {
-		return
-	}
-	StatsdClient.Histogram(name, value, tags, rate)
-}
+// RecordDatabaseMetrics is a no-op stub kept for call-site compatibility.
+// Database-level metrics are not emitted — latency at the HTTP layer covers the overall picture.
+func RecordDatabaseMetrics(_ string, _ time.Duration, _ error) {}
 
-// RecordGauge records a gauge metric (for current values)
-func RecordGauge(name string, value float64, tags []string, rate float64) {
-	if StatsdClient == nil {
-		return
-	}
-	StatsdClient.Gauge(name, value, tags, rate)
-}
+// RecordCacheMetrics is a no-op stub kept for call-site compatibility.
+func RecordCacheMetrics(_ string, _ bool, _ time.Duration) {}
 
-// RecordTiming records a timing metric
-func RecordTiming(name string, duration time.Duration, tags []string, rate float64) {
-	if StatsdClient == nil {
-		return
-	}
-	StatsdClient.Timing(name, duration, tags, rate)
-}
-
-// RecordRequestMetrics records HTTP request metrics
-func RecordRequestMetrics(method, path string, statusCode int, latency time.Duration) {
-	if StatsdClient == nil {
-		return
-	}
-
-	// Sample rate: 100% for errors, 10% for success (cost optimization)
-	rate := 1.0
-	if statusCode < 400 {
-		rate = 0.1 // 10% sampling for successful requests
-	}
-
-	tags := []string{
-		"method:" + method,
-		"path:" + normalizePath(path),
-		"status:" + statusCodeToString(statusCode),
-		"status_class:" + getStatusClass(statusCode),
-	}
-
-	// Request count
-	IncrementCounter("http.requests", tags, rate)
-
-	// Request latency
-	RecordTiming("http.request.duration", latency, tags, rate)
-
-	// Status code specific metrics
-	if statusCode >= 500 {
-		IncrementCounter("http.errors.server", tags, 1.0) // Always track errors
-	} else if statusCode >= 400 {
-		IncrementCounter("http.errors.client", tags, 1.0) // Always track client errors
-	}
-}
-
-// RecordDatabaseMetrics records database operation metrics
-func RecordDatabaseMetrics(operation string, duration time.Duration, err error) {
-	if StatsdClient == nil {
-		return
-	}
-
-	tags := []string{"operation:" + operation}
-	if err != nil {
-		tags = append(tags, "error:true")
-		IncrementCounter("db.errors", tags, 1.0)
-	} else {
-		tags = append(tags, "error:false")
-	}
-
-	// Always track DB operations (important for monitoring)
-	IncrementCounter("db.operations", tags, 1.0)
-	RecordTiming("db.duration", duration, tags, 1.0)
-}
-
-// RecordCacheMetrics records cache operation metrics
-func RecordCacheMetrics(operation string, hit bool, duration time.Duration) {
-	if StatsdClient == nil {
-		return
-	}
-
-	tags := []string{
-		"operation:" + operation,
-		"hit:" + boolToString(hit),
-	}
-
-	IncrementCounter("cache.operations", tags, 0.1) // 10% sampling for cache ops
-	RecordTiming("cache.duration", duration, tags, 0.1)
-}
-
-// RecordServiceHealth records service health metrics
-func RecordServiceHealth(healthy bool) {
-	if StatsdClient == nil {
-		return
-	}
-
-	value := 0.0
-	if healthy {
-		value = 1.0
-	}
-
-	RecordGauge("service.health", value, []string{}, 1.0)
-}
-
-// Helper functions
 func getEnv() string {
-	env := os.Getenv("ENV")
-	if env == "" {
-		return "development"
+	if v := os.Getenv("ENV"); v != "" {
+		return v
 	}
-	return env
+	return "development"
 }
 
 func getVersion() string {
-	version := os.Getenv("VERSION")
-	if version == "" {
-		return "unknown"
+	if v := os.Getenv("VERSION"); v != "" {
+		return v
 	}
-	return version
-}
-
-func normalizePath(path string) string {
-	// Normalize paths to reduce cardinality (e.g., /api/applications/:id -> /api/applications/:id)
-	// This prevents high cardinality from UUIDs in paths
-	// For now, return as-is, but could implement path normalization
-	return path
-}
-
-func statusCodeToString(code int) string {
-	// Return as string for better grouping in Datadog
-	return fmt.Sprintf("%d", code)
-}
-
-func getStatusClass(code int) string {
-	switch {
-	case code >= 500:
-		return "5xx"
-	case code >= 400:
-		return "4xx"
-	case code >= 300:
-		return "3xx"
-	case code >= 200:
-		return "2xx"
-	default:
-		return "1xx"
-	}
-}
-
-func boolToString(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
+	return "unknown"
 }

@@ -66,11 +66,16 @@ export default async function globalSetup() {
   const applicationId: string = app.id
   console.log(`[setup] application: ${applicationId} (${APP})`)
 
-  // ── 3. Enable EN language ───────────────────────────────────────────────────
+  // ── 3. Enable EN + ID languages ────────────────────────────────────────────
   await post(auth, `/api/applications/${applicationId}/languages`, {
     locale: 'en',
     auto_translate: false,
   })
+  await post(auth, `/api/applications/${applicationId}/languages`, {
+    locale: 'id',
+    auto_translate: false,
+  })
+  const secondLocale = 'id'
 
   // ── 4. Tag ─────────────────────────────────────────────────────────────────
   const tag = await post(auth, `/api/applications/${applicationId}/tags`, { code: TAG })
@@ -125,21 +130,32 @@ export default async function globalSetup() {
   console.log(`[setup] api-key: ${apiKeyId}`)
 
   // ── 11. Persist test state ─────────────────────────────────────────────────
-  saveState({ token, applicationId, applicationCode: APP, componentId, componentCode: COMP, tagId, pageId, apiKey, apiKeyId })
+  saveState({ token, applicationId, applicationCode: APP, componentId, componentCode: COMP, tagId, pageId, apiKey, apiKeyId, secondLocale })
 
   // ── 12. Browser auth state (for UI tests) ─────────────────────────────────
+  // Optional: skipped gracefully when the frontend (localhost:3000) is not running.
+  // UI tests require the frontend; API tests do not.
   const authDir = path.join(__dirname, 'e2e')
   fs.mkdirSync(authDir, { recursive: true })
 
-  const browser = await chromium.launch()
-  const browserCtx = await browser.newContext()
-  const bPage = await browserCtx.newPage()
+  const authFile = path.join(authDir, '.auth.json')
+  try {
+    const browser    = await chromium.launch()
+    const browserCtx = await browser.newContext()
+    const bPage      = await browserCtx.newPage()
 
-  // Set token in localStorage so the frontend's AuthInitializer picks it up
-  await bPage.goto(UI_URL)
-  await bPage.evaluate((t: string) => localStorage.setItem('token', t), token)
-  await browserCtx.storageState({ path: path.join(authDir, '.auth.json') })
-  await browser.close()
+    // Set token in localStorage so the frontend's AuthInitializer picks it up
+    await bPage.goto(UI_URL, { timeout: 5_000 })
+    await bPage.evaluate((t: string) => localStorage.setItem('token', t), token)
+    await browserCtx.storageState({ path: authFile })
+    await browser.close()
+    console.log('[setup] Browser auth state saved ✓')
+  } catch {
+    // Frontend not running — write an empty auth state so Playwright's storageState
+    // reference resolves without error. UI tests will fail gracefully on navigation.
+    fs.writeFileSync(authFile, JSON.stringify({ cookies: [], origins: [] }))
+    console.warn('[setup] Frontend not reachable — empty auth state written (UI tests will be skipped)')
+  }
 
   console.log('[setup] Done ✓')
 }

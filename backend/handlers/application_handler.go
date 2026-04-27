@@ -16,7 +16,7 @@ import (
 )
 
 type ApplicationHandler struct {
-	auditService *services.AuditService
+	auditService services.AuditServicer
 }
 
 func NewApplicationHandler() *ApplicationHandler {
