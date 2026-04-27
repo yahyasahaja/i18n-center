@@ -28,9 +28,15 @@ func InitDatabase() error {
 		os.Getenv("DB_SSLMODE"),
 	)
 
+	// GORM SQL logging: silent by default; set LOG_SQL=true to enable.
+	gormLogLevel := logger.Silent
+	if os.Getenv("LOG_SQL") == "true" {
+		gormLogLevel = logger.Info
+	}
+
 	var err error
 	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+		Logger: logger.Default.LogMode(gormLogLevel),
 	})
 
 	if err != nil {

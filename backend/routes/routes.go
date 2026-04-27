@@ -11,7 +11,9 @@ import (
 )
 
 func SetupRoutes() *gin.Engine {
-	r := gin.Default()
+	// gin.New() instead of gin.Default() — omits Gin's built-in request logger
+	// (we use ObservabilityMiddleware for structured logging; PanicRecoveryMiddleware for recovery).
+	r := gin.New()
 
 	// Observability middleware (must be first)
 	r.Use(middleware.PanicRecoveryMiddleware())
