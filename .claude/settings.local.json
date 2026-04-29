@@ -58,7 +58,14 @@
       "Bash(node_modules/.bin/tsc --noEmit)",
       "Bash(lsof -ti:8080)",
       "Bash(lsof -ti:3000)",
-      "Bash(lsof *)"
+      "Bash(lsof *)",
+      "Bash(git stash *)",
+      "Bash(git checkout *)",
+      "Bash(go test *)",
+      "Bash(npm test *)",
+      "Bash(npx jest *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

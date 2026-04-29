@@ -1,0 +1,16 @@
+HTTP/2 404 
+date: Tue, 28 Apr 2026 11:54:15 GMT
+content-type: text/html; charset=utf-8
+x-is-slug-page: true
+cache-control: private, max-age=5, must-revalidate
+x-powered-by: Next.js
+vary: Accept-Encoding
+x-varnish: 38094305 8940122
+age: 97
+via: 1.1 varnish (Varnish/6.2)
+x-cache: HIT
+x-cache-hits: 1
+cf-cache-status: EXPIRED
+server: cloudflare
+cf-ray: 9f35df066cef696d-SIN
+
