@@ -52,6 +52,9 @@ func SetupRoutes() *gin.Engine {
 	importHandler := handlers.NewImportHandler()
 	bootstrapHandler := handlers.NewBootstrapHandler()
 	auditHandler := handlers.NewAuditHandler()
+	cmsTemplateHandler := handlers.NewCmsTemplateHandler()
+	cmsItemHandler := handlers.NewCmsItemHandler()
+	cmsUploadHandler, _ := handlers.NewCmsUploadHandler() // nil if GCS not configured
 
 	// Swagger documentation
 	// Accessible at: http://localhost:8080/api/docs/index.html
@@ -149,6 +152,41 @@ func SetupRoutes() *gin.Engine {
 	// Audit routes
 	api.GET("/audit/logs", auditHandler.GetAuditLogs, middleware.RequireRole("super_admin", "operator"))
 	api.GET("/audit/history/:resource_type/:resource_id", auditHandler.GetResourceHistory, middleware.RequireRole("super_admin", "operator"))
+
+	// CMS Template routes
+	api.GET("/applications/:id/cms/templates", cmsTemplateHandler.ListTemplates, middleware.RequireRole("super_admin", "operator"))
+	api.POST("/applications/:id/cms/templates", cmsTemplateHandler.CreateTemplate, middleware.RequireRole("super_admin", "operator"))
+	api.GET("/cms/templates/:id", cmsTemplateHandler.GetTemplate, middleware.RequireRole("super_admin", "operator"))
+	api.PUT("/cms/templates/:id", cmsTemplateHandler.UpdateTemplate, middleware.RequireRole("super_admin", "operator"))
+	api.DELETE("/cms/templates/:id", cmsTemplateHandler.DeleteTemplate, middleware.RequireRole("super_admin", "operator"))
+
+	// CMS Item routes
+	api.GET("/applications/:id/cms/items", cmsItemHandler.ListItems, middleware.RequireRole("super_admin", "operator"))
+	api.POST("/applications/:id/cms/items", cmsItemHandler.CreateItem, middleware.RequireRole("super_admin", "operator"))
+	api.GET("/cms/items/:id", cmsItemHandler.GetItem, middleware.RequireRole("super_admin", "operator"))
+	api.PUT("/cms/items/:id", cmsItemHandler.UpdateItem, middleware.RequireRole("super_admin", "operator"))
+	api.DELETE("/cms/items/:id", cmsItemHandler.DeleteItem, middleware.RequireRole("super_admin", "operator"))
+
+	// CMS Localization routes
+	cmsLoc := api.Group("/cms/items/:id")
+	cmsLoc.GET("/localizations", cmsItemHandler.ListLocalizations, middleware.RequireRole("super_admin", "operator"))
+	cmsLoc.GET("/localizations/detail", cmsItemHandler.GetLocalization, middleware.RequireRole("super_admin", "operator"))
+	cmsLoc.POST("/localizations", cmsItemHandler.SaveLocalization, middleware.RequireRole("super_admin", "operator"))
+	cmsLoc.POST("/localizations/translate", cmsItemHandler.TranslateLocalization, middleware.RequireRole("super_admin", "operator"))
+	cmsLoc.POST("/localizations/deploy", cmsItemHandler.DeployLocalization, middleware.RequireRole("super_admin", "operator"))
+	cmsLoc.POST("/localizations/revert", cmsItemHandler.RevertLocalization, middleware.RequireRole("super_admin", "operator"))
+	cmsLoc.GET("/localizations/versions", cmsItemHandler.ListVersions, middleware.RequireRole("super_admin", "operator"))
+
+	// CMS translate job status
+	api.GET("/cms/translate-jobs/:job_id", cmsItemHandler.GetCmsTranslateJobStatus, middleware.RequireRole("super_admin", "operator"))
+
+	// CMS image upload (only registered if GCS is configured)
+	if cmsUploadHandler != nil {
+		api.POST("/cms/upload-image", cmsUploadHandler.UploadImage, middleware.RequireRole("super_admin", "operator"))
+	}
+
+	// Public CMS content access (JWT or API key)
+	apiTranslations.GET("/applications/:id/cms/:identifier", handlers.GetCmsItemByIdentifier)
 
 	return r
 }

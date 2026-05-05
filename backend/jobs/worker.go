@@ -65,6 +65,15 @@ func Run(ctx context.Context) {
 			}
 		}
 
+		if !processed {
+			if cmsJob, err := claimCmsTranslateJob(instanceID); err != nil {
+				observability.Logger.Warn("Worker claim error (CmsTranslateJob)", zap.Error(err))
+			} else if cmsJob != nil {
+				processCmsTranslateJob(ctx, cmsJob)
+				processed = true
+			}
+		}
+
 		// Poll interval
 		select {
 		case <-ctx.Done():
@@ -629,6 +638,144 @@ func countLeaves(m map[string]interface{}) int {
 		}
 	}
 	return n
+}
+
+// ─── CmsTranslateJob ─────────────────────────────────────────────────────────
+
+func claimCmsTranslateJob(instanceID string) (*models.CmsTranslateJob, error) {
+	db := silentDB()
+
+	_ = db.Exec(`
+		UPDATE cms_translate_jobs
+		SET status = $1, claimed_by = '', updated_at = NOW()
+		WHERE status = $2 AND updated_at < NOW() - INTERVAL '15 minutes'
+	`, models.JobStatusPending, models.JobStatusRunning)
+
+	var idRow struct{ ID uuid.UUID }
+	err := db.Raw(`
+		UPDATE cms_translate_jobs
+		SET status = $1, claimed_by = $2, updated_at = NOW()
+		WHERE id = (
+			SELECT id FROM cms_translate_jobs
+			WHERE status = $3
+			ORDER BY created_at ASC
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING id
+	`, models.JobStatusRunning, instanceID, models.JobStatusPending).Scan(&idRow).Error
+	if err != nil {
+		return nil, err
+	}
+	if idRow.ID == uuid.Nil {
+		return nil, nil
+	}
+	var job models.CmsTranslateJob
+	if err := db.First(&job, "id = ?", idRow.ID).Error; err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+func processCmsTranslateJob(ctx context.Context, job *models.CmsTranslateJob) {
+	defer func() {
+		if r := recover(); r != nil {
+			observability.Logger.Error("Worker panic (CmsTranslateJob)", zap.Any("panic", r), zap.String("job_id", job.ID.String()))
+			_ = markCmsTranslateJobFailed(job.ID, "Worker panic", fmt.Sprintf("%v", r))
+		}
+	}()
+
+	var application models.Application
+	if err := database.DB.First(&application, "id = ?", job.ApplicationID).Error; err != nil {
+		_ = markCmsTranslateJobFailed(job.ID, "Application not found", err.Error())
+		return
+	}
+
+	openAIService := resolveOpenAIService(application.OpenAIKey)
+	if openAIService == nil {
+		_ = markCmsTranslateJobFailed(job.ID, "OpenAI API key not configured", "Configure in Application settings")
+		return
+	}
+
+	// Load CMS item with template fields to know value types
+	var item models.CmsItem
+	if err := database.DB.Preload("Template.Fields").First(&item, "id = ?", job.CmsItemID).Error; err != nil {
+		_ = markCmsTranslateJobFailed(job.ID, "CMS item not found", err.Error())
+		return
+	}
+
+	// Load source localization
+	var sourceLoc models.CmsLocalization
+	if err := database.DB.
+		Where("cms_item_id = ? AND locale = ? AND stage = ?", job.CmsItemID, job.SourceLocale, job.Stage).
+		Order("version DESC").
+		First(&sourceLoc).Error; err != nil {
+		_ = markCmsTranslateJobFailed(job.ID, "Source localization not found",
+			fmt.Sprintf("locale %s stage %s: %v", job.SourceLocale, job.Stage, err))
+		return
+	}
+
+	// Build field type map for the translator
+	fieldTypes := make(map[string]string, len(item.Template.Fields))
+	for _, f := range item.Template.Fields {
+		fieldTypes[f.Key] = f.ValueType
+	}
+
+	translatedData, err := openAIService.TranslateCMSFields(
+		ctx,
+		map[string]interface{}(sourceLoc.Data),
+		fieldTypes,
+		job.SourceLocale,
+		job.TargetLocale,
+	)
+	if err != nil {
+		_ = markCmsTranslateJobFailed(job.ID, "Translation failed", err.Error())
+		return
+	}
+
+	// Determine next version for target localization
+	var latestVersion int
+	database.DB.Model(&models.CmsLocalization{}).
+		Where("cms_item_id = ? AND locale = ? AND stage = ?", job.CmsItemID, job.TargetLocale, job.Stage).
+		Select("COALESCE(MAX(version), 0)").
+		Scan(&latestVersion)
+
+	loc := models.CmsLocalization{
+		CmsItemID:    job.CmsItemID,
+		Locale:       job.TargetLocale,
+		Stage:        job.Stage,
+		Version:      latestVersion + 1,
+		Data:         models.JSONB(translatedData),
+		SourceLocale: job.SourceLocale,
+		IsActive:     true,
+		CreatedBy:    job.CreatedBy,
+		UpdatedBy:    job.CreatedBy,
+	}
+
+	if err := database.DB.Create(&loc).Error; err != nil {
+		_ = markCmsTranslateJobFailed(job.ID, "Failed to save localization", err.Error())
+		return
+	}
+
+	_ = database.DB.Model(&models.CmsTranslateJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
+		"status":     models.JobStatusCompleted,
+		"updated_at": time.Now(),
+	}).Error
+
+	observability.Logger.Info("CmsTranslateJob completed",
+		zap.String("job_id", job.ID.String()),
+		zap.String("cms_item_id", job.CmsItemID.String()),
+		zap.String("target_locale", job.TargetLocale),
+	)
+}
+
+func markCmsTranslateJobFailed(jobID uuid.UUID, msg, detail string) error {
+	return database.DB.Model(&models.CmsTranslateJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
+		"status":        models.JobStatusFailed,
+		"error_message": msg,
+		"error_detail":  detail,
+		"updated_at":    time.Now(),
+	}).Error
 }
 
 // silentDB returns a gorm session with logging suppressed (idle poll queries shouldn't flood logs).

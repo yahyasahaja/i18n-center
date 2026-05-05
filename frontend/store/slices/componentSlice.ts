@@ -1,7 +1,7 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit'
-import { componentApi } from '@/services/api'
+import { componentApi, type ComponentListParams } from '@/services/api'
 
-interface Component {
+export interface Component {
   id: string
   application_id: string
   name: string
@@ -9,10 +9,16 @@ interface Component {
   description: string
   structure: Record<string, any>
   default_locale: string
+  tags?: { id: string; application_id: string; code: string }[]
+  pages?: { id: string; application_id: string; code: string }[]
 }
 
 interface ComponentState {
   components: Component[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
   currentComponent: Component | null
   loading: boolean
   error: string | null
@@ -20,6 +26,10 @@ interface ComponentState {
 
 const initialState: ComponentState = {
   components: [],
+  total: 0,
+  page: 1,
+  pageSize: 20,
+  totalPages: 0,
   currentComponent: null,
   loading: false,
   error: null,
@@ -27,8 +37,8 @@ const initialState: ComponentState = {
 
 export const fetchComponents = createAsyncThunk(
   'components/fetchAll',
-  async (applicationId?: string) => {
-    return await componentApi.getAll(applicationId)
+  async (params?: ComponentListParams) => {
+    return await componentApi.getAll(params)
   }
 )
 
@@ -65,10 +75,19 @@ const componentSlice = createSlice({
     builder
       .addCase(fetchComponents.pending, (state) => {
         state.loading = true
+        state.error = null
       })
       .addCase(fetchComponents.fulfilled, (state, action) => {
         state.loading = false
-        state.components = action.payload
+        state.components = action.payload.data
+        state.total = action.payload.total
+        state.page = action.payload.page
+        state.pageSize = action.payload.page_size
+        state.totalPages = action.payload.total_pages
+      })
+      .addCase(fetchComponents.rejected, (state, action) => {
+        state.loading = false
+        state.error = action.error.message || 'Failed to load components'
       })
       .addCase(fetchComponent.fulfilled, (state, action) => {
         state.currentComponent = action.payload

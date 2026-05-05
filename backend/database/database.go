@@ -66,10 +66,21 @@ func InitDatabase() error {
 		&models.ApplicationLocaleDeploy{},
 		&models.AddLanguageJob{},
 		&models.TranslateJob{},
+		// CMS models
+		&models.CmsTemplate{},
+		&models.CmsTemplateField{},
+		&models.CmsItem{},
+		&models.CmsLocalization{},
+		&models.CmsTranslateJob{},
 	)
 
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)
+	}
+
+	// Enable pg_trgm for efficient ILIKE text search on components
+	if err := ensureSearchIndexes(); err != nil {
+		log.Printf("Note: search indexes setup error (non-fatal): %v", err)
 	}
 
 	// Add observability callbacks
@@ -312,6 +323,29 @@ func dropTagPageNameColumns() error {
 			}
 			log.Printf("Dropped column name from table %s", table)
 		}
+	}
+	return nil
+}
+
+// ensureSearchIndexes creates GIN trigram indexes on components for fast ILIKE search.
+func ensureSearchIndexes() error {
+	// Enable pg_trgm extension (needed for GIN trigram index)
+	if err := DB.Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm").Error; err != nil {
+		return fmt.Errorf("pg_trgm extension: %w", err)
+	}
+	// GIN index on components.name for trigram ILIKE
+	if err := DB.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_components_name_trgm
+		ON components USING GIN (name gin_trgm_ops)
+	`).Error; err != nil {
+		return fmt.Errorf("name trigram index: %w", err)
+	}
+	// GIN index on components.code for trigram ILIKE
+	if err := DB.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_components_code_trgm
+		ON components USING GIN (code gin_trgm_ops)
+	`).Error; err != nil {
+		return fmt.Errorf("code trigram index: %w", err)
 	}
 	return nil
 }

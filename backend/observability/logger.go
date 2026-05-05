@@ -8,8 +8,8 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-var Logger *zap.Logger
-var Sugar *zap.SugaredLogger
+var Logger *zap.Logger = zap.NewNop()
+var Sugar *zap.SugaredLogger = zap.NewNop().Sugar()
 
 // InitLogger initializes structured logging.
 // Development: human-readable colored output.

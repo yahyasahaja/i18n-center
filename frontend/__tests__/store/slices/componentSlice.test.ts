@@ -5,6 +5,7 @@ import componentReducer, {
   createComponent,
   updateComponent,
 } from '@/store/slices/componentSlice'
+import type { ComponentListResponse } from '@/services/api'
 
 jest.mock('@/services/api', () => ({
   componentApi: {
@@ -43,6 +44,14 @@ const mockComponent2 = {
   default_locale: 'en',
 }
 
+const makePagedResponse = (items: any[]): ComponentListResponse => ({
+  data: items,
+  total: items.length,
+  page: 1,
+  page_size: 20,
+  total_pages: 1,
+})
+
 describe('componentSlice', () => {
   beforeEach(() => {
     jest.clearAllMocks()
@@ -68,19 +77,20 @@ describe('componentSlice', () => {
     })
 
     it('on success populates components list', async () => {
-      mockComponentApi.getAll.mockResolvedValue([mockComponent, mockComponent2])
+      mockComponentApi.getAll.mockResolvedValue(makePagedResponse([mockComponent, mockComponent2]))
       const store = makeStore()
       await store.dispatch(fetchComponents())
       const state = store.getState().components
       expect(state.loading).toBe(false)
       expect(state.components).toHaveLength(2)
+      expect(state.total).toBe(2)
     })
 
-    it('passes applicationId to api when provided', async () => {
-      mockComponentApi.getAll.mockResolvedValue([mockComponent])
+    it('passes params to api when provided', async () => {
+      mockComponentApi.getAll.mockResolvedValue(makePagedResponse([mockComponent]))
       const store = makeStore()
-      await store.dispatch(fetchComponents('app-1'))
-      expect(mockComponentApi.getAll).toHaveBeenCalledWith('app-1')
+      await store.dispatch(fetchComponents({ applicationId: 'app-1' }))
+      expect(mockComponentApi.getAll).toHaveBeenCalledWith({ applicationId: 'app-1' })
     })
   })
 
@@ -106,7 +116,7 @@ describe('componentSlice', () => {
 
   describe('updateComponent thunk', () => {
     it('replaces existing component in list', async () => {
-      mockComponentApi.getAll.mockResolvedValue([mockComponent, mockComponent2])
+      mockComponentApi.getAll.mockResolvedValue(makePagedResponse([mockComponent, mockComponent2]))
       const updated = { ...mockComponent, name: 'Updated Header' }
       mockComponentApi.update.mockResolvedValue(updated)
       const store = makeStore()

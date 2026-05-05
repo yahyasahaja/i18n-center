@@ -206,10 +206,29 @@ export const pageApi = {
   },
 }
 
+export interface ComponentListParams {
+  applicationId?: string
+  search?: string
+  page?: number
+  pageSize?: number
+}
+
+export interface ComponentListResponse {
+  data: any[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
 export const componentApi = {
-  getAll: async (applicationId?: string) => {
-    const params = applicationId ? { application_id: applicationId } : {}
-    const response = await api.get('/components', { params })
+  getAll: async (params?: ComponentListParams): Promise<ComponentListResponse> => {
+    const query: Record<string, any> = {}
+    if (params?.applicationId) query.application_id = params.applicationId
+    if (params?.search) query.search = params.search
+    if (params?.page) query.page = params.page
+    if (params?.pageSize) query.page_size = params.pageSize
+    const response = await api.get('/components', { params: query })
     return response.data
   },
   getById: async (id: string) => {
@@ -362,6 +381,153 @@ export const importApi = {
       { data }
     )
     return response.data
+  },
+}
+
+// ─── CMS Types ────────────────────────────────────────────────────────────────
+
+export interface CmsTemplateField {
+  id?: string
+  template_id?: string
+  key: string
+  label: string
+  value_type: 'text' | 'textarea' | 'rich_text' | 'json'
+  required?: boolean
+  sort_order?: number
+}
+
+export interface CmsTemplate {
+  id: string
+  application_id: string
+  name: string
+  code: string
+  description?: string
+  fields: CmsTemplateField[]
+  created_at: string
+  updated_at: string
+}
+
+export interface CmsItem {
+  id: string
+  application_id: string
+  template_id: string
+  template?: CmsTemplate
+  identifier: string
+  name: string
+  description?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface CmsLocalization {
+  id: string
+  cms_item_id: string
+  locale: string
+  stage: string
+  version: number
+  data: Record<string, any>
+  source_locale?: string
+  is_active: boolean
+  created_at: string
+}
+
+// ─── CMS API ──────────────────────────────────────────────────────────────────
+
+export const cmsApi = {
+  // Templates
+  listTemplates: async (applicationId: string): Promise<CmsTemplate[]> => {
+    const response = await api.get(`/applications/${applicationId}/cms/templates`)
+    return response.data
+  },
+  getTemplate: async (id: string): Promise<CmsTemplate> => {
+    const response = await api.get(`/cms/templates/${id}`)
+    return response.data
+  },
+  createTemplate: async (applicationId: string, data: Partial<CmsTemplate>): Promise<CmsTemplate> => {
+    const response = await api.post(`/applications/${applicationId}/cms/templates`, data)
+    return response.data
+  },
+  updateTemplate: async (id: string, data: Partial<CmsTemplate>): Promise<CmsTemplate> => {
+    const response = await api.put(`/cms/templates/${id}`, data)
+    return response.data
+  },
+  deleteTemplate: async (id: string): Promise<void> => {
+    await api.delete(`/cms/templates/${id}`)
+  },
+
+  // Items
+  listItems: async (applicationId: string): Promise<CmsItem[]> => {
+    const response = await api.get(`/applications/${applicationId}/cms/items`)
+    return response.data
+  },
+  getItem: async (id: string): Promise<CmsItem> => {
+    const response = await api.get(`/cms/items/${id}`)
+    return response.data
+  },
+  createItem: async (applicationId: string, data: Partial<CmsItem>): Promise<CmsItem> => {
+    const response = await api.post(`/applications/${applicationId}/cms/items`, data)
+    return response.data
+  },
+  updateItem: async (id: string, data: Partial<CmsItem>): Promise<CmsItem> => {
+    const response = await api.put(`/cms/items/${id}`, data)
+    return response.data
+  },
+  deleteItem: async (id: string): Promise<void> => {
+    await api.delete(`/cms/items/${id}`)
+  },
+
+  // Localizations
+  listLocalizations: async (itemId: string): Promise<CmsLocalization[]> => {
+    const response = await api.get(`/cms/items/${itemId}/localizations`)
+    return response.data
+  },
+  getLocalization: async (itemId: string, locale: string, stage: string): Promise<CmsLocalization> => {
+    const response = await api.get(`/cms/items/${itemId}/localizations/detail`, { params: { locale, stage } })
+    return response.data
+  },
+  saveLocalization: async (itemId: string, locale: string, stage: string, data: Record<string, any>): Promise<CmsLocalization> => {
+    const response = await api.post(`/cms/items/${itemId}/localizations`, { locale, stage, data })
+    return response.data
+  },
+  translateLocalization: async (itemId: string, sourceLocale: string, targetLocale: string, stage: string) => {
+    const response = await api.post(`/cms/items/${itemId}/localizations/translate`, {
+      source_locale: sourceLocale,
+      target_locale: targetLocale,
+      stage,
+    })
+    return response.data
+  },
+  deployLocalization: async (itemId: string, locale: string, fromStage: string, toStage: string): Promise<CmsLocalization> => {
+    const response = await api.post(`/cms/items/${itemId}/localizations/deploy`, {
+      locale,
+      from_stage: fromStage,
+      to_stage: toStage,
+    })
+    return response.data
+  },
+  revertLocalization: async (itemId: string, locale: string, stage: string, version: number): Promise<CmsLocalization> => {
+    const response = await api.post(`/cms/items/${itemId}/localizations/revert`, { locale, stage, version })
+    return response.data
+  },
+  listVersions: async (itemId: string, locale: string, stage: string): Promise<CmsLocalization[]> => {
+    const response = await api.get(`/cms/items/${itemId}/localizations/versions`, { params: { locale, stage } })
+    return response.data
+  },
+
+  // Translate job
+  getCmsTranslateJobStatus: async (jobId: string) => {
+    const response = await api.get(`/cms/translate-jobs/${jobId}`)
+    return response.data
+  },
+
+  // Image upload
+  uploadImage: async (file: File): Promise<string> => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await api.post('/cms/upload-image', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data.url
   },
 }
 

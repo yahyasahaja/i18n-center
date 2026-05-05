@@ -408,6 +408,111 @@ func mockTranslateText(text, targetLang string) string {
 	return fmt.Sprintf("%s [%s-mock]", text, strings.ToLower(targetLang))
 }
 
+// TranslateCMSFields translates a map of CMS field values based on their value types.
+// text, textarea, rich_text fields are translated; json fields are copied as-is.
+// fieldTypes maps field_key → value_type (text|textarea|rich_text|json).
+func (s *OpenAIService) TranslateCMSFields(ctx context.Context, data map[string]interface{}, fieldTypes map[string]string, sourceLang, targetLang string) (map[string]interface{}, error) {
+	result := make(map[string]interface{}, len(data))
+	for key, val := range data {
+		vtype, ok := fieldTypes[key]
+		if !ok {
+			result[key] = val
+			continue
+		}
+		switch vtype {
+		case "json":
+			result[key] = val
+		case "rich_text":
+			strVal, _ := val.(string)
+			if strVal == "" {
+				result[key] = val
+				continue
+			}
+			translated, err := s.TranslateHTML(ctx, strVal, sourceLang, targetLang)
+			if err != nil {
+				return nil, fmt.Errorf("field %q (rich_text): %w", key, err)
+			}
+			result[key] = translated
+		default: // text, textarea
+			strVal, _ := val.(string)
+			if strVal == "" {
+				result[key] = val
+				continue
+			}
+			translated, err := s.Translate(ctx, strVal, sourceLang, targetLang)
+			if err != nil {
+				return nil, fmt.Errorf("field %q (text): %w", key, err)
+			}
+			result[key] = translated
+		}
+	}
+	return result, nil
+}
+
+// TranslateHTML translates HTML content preserving tags and attributes.
+// The model is instructed to preserve HTML structure while translating text nodes.
+func (s *OpenAIService) TranslateHTML(ctx context.Context, html, sourceLang, targetLang string) (string, error) {
+	if s.isMockMode() {
+		return fmt.Sprintf("%s [%s-mock]", html, strings.ToLower(targetLang)), nil
+	}
+	if s.APIKey == "" {
+		return "", fmt.Errorf("OpenAI API key not configured")
+	}
+
+	prompt := fmt.Sprintf(
+		"Translate the HTML content below from %s to %s.\n\n"+
+			"STRICT RULES:\n"+
+			"1. Preserve ALL HTML tags, attributes, and structure exactly.\n"+
+			"2. Only translate visible text content between tags.\n"+
+			"3. Do NOT translate tag names, attribute names, attribute values (including src, href, alt), or CSS.\n"+
+			"4. Preserve [bracketed] placeholder tokens verbatim.\n"+
+			"5. Return ONLY the translated HTML — no explanation, no markdown fences.\n\n"+
+			"HTML:\n%s",
+		sourceLang, targetLang, html,
+	)
+
+	requestBody := OpenAIRequest{
+		Model: "gpt-3.5-turbo-0125",
+		Messages: []Message{
+			{Role: "system", Content: "You are a professional HTML content translator. Translate only text nodes; preserve all markup exactly."},
+			{Role: "user", Content: prompt},
+		},
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+s.APIKey)
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("OpenAI API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var openAIResp OpenAIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&openAIResp); err != nil {
+		return "", err
+	}
+	if len(openAIResp.Choices) == 0 {
+		return "", fmt.Errorf("no translation returned")
+	}
+	return strings.TrimSpace(openAIResp.Choices[0].Message.Content), nil
+}
+
 // openAIRetryDelay decides whether to retry an OpenAI error, and how long to wait.
 //
 // Strategy:

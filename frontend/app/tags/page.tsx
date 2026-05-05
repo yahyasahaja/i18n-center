@@ -103,7 +103,8 @@ export default function TagsPage() {
   const openAddComponentToTag = async () => {
     if (!componentsModal || !applicationId) return
     try {
-      const all = await componentApi.getAll(applicationId)
+      const allRes = await componentApi.getAll({ applicationId })
+      const all = allRes.data
       const currentIds = new Set(componentsModal.components.map((c) => c.id))
       const available = (all || []).filter((c: { id: string }) => !currentIds.has(c.id))
       setAddToTagModal({ tag: componentsModal.tag, available })

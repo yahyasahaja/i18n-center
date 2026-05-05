@@ -6,7 +6,7 @@ import { useAppDispatch, useAppSelector } from '@/hooks/redux'
 import { logout } from '@/store/slices/authSlice'
 import { fetchApplications } from '@/store/slices/applicationSlice'
 import Link from 'next/link'
-import { LogOut, Home, Globe, Layers, FileText, Tag, Users } from 'lucide-react'
+import { LogOut, Home, Globe, Layers, FileText, Tag, Users, LayoutTemplate, BookOpen } from 'lucide-react'
 import { Button } from './ui/Button'
 import { Badge } from './ui/Badge'
 import { clsx } from 'clsx'
@@ -42,7 +42,7 @@ function LayoutInner({ children }: { children: React.ReactNode }) {
     router.push('/login')
   }
 
-  const APPLICATION_CONTEXT_ROUTES = ['/components', '/tags', '/pages']
+  const APPLICATION_CONTEXT_ROUTES = ['/components', '/tags', '/pages', '/cms']
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: Home },
@@ -50,6 +50,8 @@ function LayoutInner({ children }: { children: React.ReactNode }) {
     { name: 'Components', href: '/components', icon: Layers },
     { name: 'Tags', href: '/tags', icon: Tag },
     { name: 'Pages', href: '/pages', icon: FileText },
+    { name: 'CMS Templates', href: '/cms/templates', icon: LayoutTemplate },
+    { name: 'CMS Content', href: '/cms/items', icon: BookOpen },
     { name: 'Users', href: '/users', icon: Users, roles: ['super_admin', 'user_manager'] as const },
   ]
 

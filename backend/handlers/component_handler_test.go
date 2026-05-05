@@ -83,6 +83,9 @@ func TestGetComponents_Success(t *testing.T) {
 	appID := uuid.New()
 	compID := uuid.New()
 
+	// COUNT query added by pagination
+	mock.ExpectQuery(`SELECT`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	// Main SELECT for components
 	mock.ExpectQuery(`SELECT`).
 		WillReturnRows(componentRow(compID, appID, "Header", "header"))

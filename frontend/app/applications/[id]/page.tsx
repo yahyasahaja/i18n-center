@@ -120,7 +120,7 @@ export default function ApplicationDetailPage() {
       try {
         await Promise.all([
           dispatch(fetchApplication(applicationId)),
-          dispatch(fetchComponents(applicationId)),
+          dispatch(fetchComponents({ applicationId })),
         ])
         await loadPendingDeploys()
         const [tagsRes, pagesRes, keysRes] = await Promise.all([
@@ -294,7 +294,7 @@ export default function ApplicationDetailPage() {
     try {
       await componentApi.delete(id)
       toast.success('Component deleted')
-      dispatch(fetchComponents(applicationId))
+      dispatch(fetchComponents({ applicationId }))
     } catch (error: any) {
       toast.error('Failed to delete component')
     }
@@ -450,7 +450,7 @@ export default function ApplicationDetailPage() {
       toast.success(`Bootstrap complete: ${result.components_created} created, ${result.components_updated} updated`)
       await Promise.all([
         dispatch(fetchApplication(applicationId)),
-        dispatch(fetchComponents(applicationId)),
+        dispatch(fetchComponents({ applicationId })),
       ])
     } catch (err: any) {
       toast.error(err.response?.data?.error || 'Bootstrap failed')

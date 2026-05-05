@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -89,32 +90,87 @@ func replaceComponentTagsAndPages(component *models.Component, tagIDs, pageIDs [
 	return nil
 }
 
-// GetComponents lists all components for an application
+// GetComponents lists components with optional pagination, search, and application filter.
 // @Summary      List components
-// @Description  Get all components, optionally filtered by application
+// @Description  Get components with pagination and search
 // @Tags         components
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
 // @Param        application_id  query     string  false  "Filter by application ID"
-// @Success      200            {array}   models.Component
+// @Param        search          query     string  false  "Search by name or code (case-insensitive)"
+// @Param        page            query     int     false  "Page number (default: 1)"
+// @Param        page_size       query     int     false  "Page size (default: 20, max: 100)"
+// @Success      200            {object}  map[string]interface{}
 // @Failure      401            {object}  map[string]string
 // @Router       /components [get]
 func (h *ComponentHandler) GetComponents(c *gin.Context) {
 	applicationID := c.Query("application_id")
+	search := strings.TrimSpace(c.Query("search"))
 
-	var components []models.Component
-	query := database.DB.Preload("Tags").Preload("Pages")
+	page := 1
+	pageSize := 20
+	if p := c.Query("page"); p != "" {
+		if v, err := parsePositiveInt(p); err == nil {
+			page = v
+		}
+	}
+	if ps := c.Query("page_size"); ps != "" {
+		if v, err := parsePositiveInt(ps); err == nil && v <= 100 {
+			pageSize = v
+		}
+	}
+	offset := (page - 1) * pageSize
+
+	query := database.DB.Model(&models.Component{})
+	countQuery := database.DB.Model(&models.Component{})
+
 	if applicationID != "" {
 		query = query.Where("application_id = ?", applicationID)
+		countQuery = countQuery.Where("application_id = ?", applicationID)
+	}
+	if search != "" {
+		like := "%" + search + "%"
+		query = query.Where("name ILIKE ? OR code ILIKE ?", like, like)
+		countQuery = countQuery.Where("name ILIKE ? OR code ILIKE ?", like, like)
 	}
 
-	if err := query.Find(&components).Error; err != nil {
+	var total int64
+	if err := countQuery.Count(&total).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, components)
+	var components []models.Component
+	if err := query.Preload("Tags").Preload("Pages").
+		Order("created_at DESC").
+		Limit(pageSize).Offset(offset).
+		Find(&components).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	totalPages := int(total) / pageSize
+	if int(total)%pageSize != 0 {
+		totalPages++
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":        components,
+		"total":       total,
+		"page":        page,
+		"page_size":   pageSize,
+		"total_pages": totalPages,
+	})
+}
+
+func parsePositiveInt(s string) (int, error) {
+	var v int
+	_, err := fmt.Sscanf(s, "%d", &v)
+	if err != nil || v < 1 {
+		return 0, fmt.Errorf("invalid positive int")
+	}
+	return v, nil
 }
 
 // GetComponent gets a single component (by ID or code)

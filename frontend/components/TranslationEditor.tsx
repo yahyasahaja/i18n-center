@@ -405,6 +405,43 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
     }
   }
 
+  // Translate INTO the currently selected locale FROM a given source locale
+  const handleTranslateFrom = async (sourceLocale: string) => {
+    if (hasUnsavedChanges()) {
+      toast.error('Save changes first before translating')
+      return
+    }
+    if (!confirm(`Translate current locale (${selectedLocale.toUpperCase()}) from ${sourceLocale.toUpperCase()}? This will overwrite the current content.`)) return
+
+    setTranslating(true)
+    const toastId = `translate-from-${sourceLocale}`
+    try {
+      const data = await translationApi.autoTranslate(
+        componentId,
+        sourceLocale,
+        selectedLocale,
+        selectedStage
+      )
+      const jobId: string = data.job_id
+      toast.loading(`Translating from ${sourceLocale.toUpperCase()}…`, { id: toastId })
+
+      const result = await pollTranslateJob(jobId)
+      toast.dismiss(toastId)
+
+      if (result.status === 'failed') {
+        toast.error(`Translation failed: ${result.error}`)
+      } else {
+        toast.success(`Translated from ${sourceLocale.toUpperCase()}`)
+        loadTranslation(true)
+      }
+    } catch (error: any) {
+      toast.dismiss(toastId)
+      toast.error(error.response?.data?.error || 'Failed to start translation')
+    } finally {
+      setTranslating(false)
+    }
+  }
+
   const handleBackfill = async () => {
     if (hasUnsavedChanges()) {
       toast.error('Save changes first before translating')
@@ -738,7 +775,7 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
 
           {/* Auto-translate Actions */}
           <div className="flex flex-wrap items-center gap-2 pt-2 border-t">
-            <span className="text-sm text-gray-600">Translate:</span>
+            <span className="text-sm text-gray-600 shrink-0">Translate to:</span>
             {enabledLanguages
               .filter((lang) => lang !== selectedLocale)
               .map((lang) => (
@@ -770,6 +807,29 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
               </span>
             )}
           </div>
+
+          {/* Translate-from Actions */}
+          {enabledLanguages.filter((lang) => lang !== selectedLocale).length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t">
+              <span className="text-sm text-gray-600 shrink-0">Translate from:</span>
+              {enabledLanguages
+                .filter((lang) => lang !== selectedLocale)
+                .map((lang) => (
+                  <Button
+                    key={lang}
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleTranslateFrom(lang)}
+                    disabled={translating}
+                    isLoading={translating}
+                    title={`Translate current locale (${selectedLocale.toUpperCase()}) using ${lang.toUpperCase()} as source`}
+                  >
+                    <Languages className="w-4 h-4 mr-1" />
+                    {lang.toUpperCase()}
+                  </Button>
+                ))}
+            </div>
+          )}
 
           {/* Deployment Actions */}
           <div className="flex flex-wrap items-center gap-2 pt-2 border-t">
