@@ -129,8 +129,60 @@ export default async function globalSetup() {
 
   console.log(`[setup] api-key: ${apiKeyId}`)
 
-  // ── 11. Persist test state ─────────────────────────────────────────────────
-  saveState({ token, applicationId, applicationCode: APP, componentId, componentCode: COMP, tagId, pageId, apiKey, apiKeyId, secondLocale })
+  // ── 11. CMS Template ────────────────────────────────────────────────────────
+  const cmsTemplate = await post(auth, `/api/applications/${applicationId}/cms/templates`, {
+    name:        'E2E Banner Template',
+    code:        `e2e-banner-${TS}`,
+    description: 'Automated e2e CMS template — safe to delete',
+    fields: [
+      { key: 'title',    label: 'Title',    value_type: 'text',     required: true,  sort_order: 0 },
+      { key: 'subtitle', label: 'Subtitle', value_type: 'textarea', required: false, sort_order: 1 },
+    ],
+  })
+  const cmsTemplateId: string = cmsTemplate.id
+  console.log(`[setup] cms-template: ${cmsTemplateId}`)
+
+  // ── 12. CMS Item ─────────────────────────────────────────────────────────────
+  const CMS_IDENTIFIER = `e2e-flash-banner-${TS}`
+  const cmsItem = await post(auth, `/api/applications/${applicationId}/cms/items`, {
+    template_id: cmsTemplateId,
+    identifier:  CMS_IDENTIFIER,
+    name:        'E2E Flash Banner',
+    description: 'Automated e2e CMS item — safe to delete',
+  })
+  const cmsItemId: string = cmsItem.id
+  console.log(`[setup] cms-item: ${cmsItemId} (${CMS_IDENTIFIER})`)
+
+  // ── 13. Save EN Draft CMS localization ──────────────────────────────────────
+  await post(auth, `/api/cms/items/${cmsItemId}/localizations`, {
+    locale: 'en',
+    stage:  'draft',
+    data:   { title: 'Flash Sale!', subtitle: 'Up to 50% off' },
+  })
+
+  // ── 14. Deploy CMS draft → staging → production ─────────────────────────────
+  await post(auth, `/api/cms/items/${cmsItemId}/localizations/deploy`, {
+    locale:     'en',
+    from_stage: 'draft',
+    to_stage:   'staging',
+  })
+  await post(auth, `/api/cms/items/${cmsItemId}/localizations/deploy`, {
+    locale:     'en',
+    from_stage: 'staging',
+    to_stage:   'production',
+  })
+
+  console.log(`[setup] cms localization deployed to production ✓`)
+
+  // ── 15. Persist test state ─────────────────────────────────────────────────
+  saveState({
+    token, applicationId, applicationCode: APP,
+    componentId, componentCode: COMP,
+    tagId, pageId,
+    apiKey, apiKeyId,
+    secondLocale,
+    cmsTemplateId, cmsItemId, cmsItemIdentifier: CMS_IDENTIFIER,
+  })
 
   // ── 12. Browser auth state (for UI tests) ─────────────────────────────────
   // Optional: skipped gracefully when the frontend (localhost:3000) is not running.

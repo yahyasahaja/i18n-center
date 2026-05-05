@@ -4,16 +4,19 @@ import * as path from 'path'
 const STATE_FILE = path.join(__dirname, '../.test-state.json')
 
 export interface TestState {
-  token:           string
-  applicationId:   string
-  applicationCode: string
-  componentId:     string
-  componentCode:   string
-  tagId:           string
-  pageId:          string
-  apiKey:          string
-  apiKeyId:        string
-  secondLocale:    string  // language enabled in addition to EN, used by translate/backfill tests
+  token:              string
+  applicationId:      string
+  applicationCode:    string
+  componentId:        string
+  componentCode:      string
+  tagId:              string
+  pageId:             string
+  apiKey:             string
+  apiKeyId:           string
+  secondLocale:       string  // language enabled in addition to EN, used by translate/backfill tests
+  cmsTemplateId:      string
+  cmsItemId:          string
+  cmsItemIdentifier:  string
 }
 
 export function saveState(state: TestState): void {

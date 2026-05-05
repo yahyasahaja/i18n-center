@@ -35,6 +35,15 @@ func (h *CmsItemHandler) currentUser(c *gin.Context) (uuid.UUID, string) {
 // ─── CMS Items ───────────────────────────────────────────────────────────────
 
 // ListItems returns all CMS items for an application.
+// @Summary      List CMS items
+// @Description  Get all CMS items for an application
+// @Tags         cms
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id  path      string  true  "Application ID (UUID)"
+// @Success      200  {array}   models.CmsItem
+// @Failure      401  {object}  map[string]string
+// @Router       /applications/{id}/cms/items [get]
 func (h *CmsItemHandler) ListItems(c *gin.Context) {
 	appID := c.Param("id")
 	var items []models.CmsItem
@@ -46,6 +55,15 @@ func (h *CmsItemHandler) ListItems(c *gin.Context) {
 }
 
 // GetItem returns a single CMS item with its template and fields.
+// @Summary      Get CMS item
+// @Description  Get a single CMS item with its template and fields
+// @Tags         cms
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id  path      string  true  "CMS item ID (UUID)"
+// @Success      200  {object}  models.CmsItem
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/items/{id} [get]
 func (h *CmsItemHandler) GetItem(c *gin.Context) {
 	id := c.Param("id")
 	var item models.CmsItem
@@ -64,6 +82,18 @@ type createCmsItemBody struct {
 }
 
 // CreateItem creates a new CMS item in an application.
+// @Summary      Create CMS item
+// @Description  Create a new CMS item in an application
+// @Tags         cms
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id    path      string             true  "Application ID (UUID)"
+// @Param        body  body      createCmsItemBody  true  "CMS item data"
+// @Success      201  {object}  models.CmsItem
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Router       /applications/{id}/cms/items [post]
 func (h *CmsItemHandler) CreateItem(c *gin.Context) {
 	appID := c.Param("id")
 	appUUID, err := uuid.Parse(appID)
@@ -124,6 +154,18 @@ type updateCmsItemBody struct {
 }
 
 // UpdateItem updates a CMS item's metadata.
+// @Summary      Update CMS item
+// @Description  Update a CMS item's metadata
+// @Tags         cms
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id    path      string             true  "CMS item ID (UUID)"
+// @Param        body  body      updateCmsItemBody  true  "CMS item update data"
+// @Success      200  {object}  models.CmsItem
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/items/{id} [put]
 func (h *CmsItemHandler) UpdateItem(c *gin.Context) {
 	id := c.Param("id")
 	var item models.CmsItem
@@ -172,6 +214,15 @@ func (h *CmsItemHandler) UpdateItem(c *gin.Context) {
 }
 
 // DeleteItem deletes a CMS item and all its localizations.
+// @Summary      Delete CMS item
+// @Description  Delete a CMS item and all its localizations
+// @Tags         cms
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id  path      string  true  "CMS item ID (UUID)"
+// @Success      200  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/items/{id} [delete]
 func (h *CmsItemHandler) DeleteItem(c *gin.Context) {
 	id := c.Param("id")
 	var item models.CmsItem
@@ -195,6 +246,15 @@ func (h *CmsItemHandler) DeleteItem(c *gin.Context) {
 // ─── CMS Localizations ───────────────────────────────────────────────────────
 
 // ListLocalizations returns all localizations for a CMS item.
+// @Summary      List localizations
+// @Description  Get all localizations for a CMS item
+// @Tags         cms
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id  path      string  true  "CMS item ID (UUID)"
+// @Success      200  {array}   models.CmsLocalization
+// @Failure      401  {object}  map[string]string
+// @Router       /cms/items/{id}/localizations [get]
 func (h *CmsItemHandler) ListLocalizations(c *gin.Context) {
 	itemID := c.Param("id")
 	var localizations []models.CmsLocalization
@@ -206,6 +266,17 @@ func (h *CmsItemHandler) ListLocalizations(c *gin.Context) {
 }
 
 // GetLocalization returns the latest localization for a CMS item + locale + stage.
+// @Summary      Get localization
+// @Description  Get the latest localization for a CMS item by locale and stage
+// @Tags         cms
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id      path      string  true   "CMS item ID (UUID)"
+// @Param        locale  query     string  false  "Locale code (default: en)"
+// @Param        stage   query     string  false  "Stage: draft | staging | production (default: draft)"
+// @Success      200  {object}  models.CmsLocalization
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/items/{id}/localizations/detail [get]
 func (h *CmsItemHandler) GetLocalization(c *gin.Context) {
 	itemID := c.Param("id")
 	locale := c.Query("locale")
@@ -235,6 +306,18 @@ type saveCmsLocalizationBody struct {
 }
 
 // SaveLocalization creates a new version of a localization (always appends).
+// @Summary      Save localization
+// @Description  Creates a new version of a CMS localization (non-destructive — always appends)
+// @Tags         cms
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id    path      string                   true  "CMS item ID (UUID)"
+// @Param        body  body      saveCmsLocalizationBody  true  "Localization data"
+// @Success      201  {object}  models.CmsLocalization
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/items/{id}/localizations [post]
 func (h *CmsItemHandler) SaveLocalization(c *gin.Context) {
 	itemID := c.Param("id")
 	itemUUID, err := uuid.Parse(itemID)
@@ -295,6 +378,18 @@ type translateCmsLocalizationBody struct {
 }
 
 // TranslateLocalization enqueues an async AI translation job for a CMS localization.
+// @Summary      Translate localization
+// @Description  Enqueues an async AI translation job. Poll /cms/translate-jobs/{job_id} for status
+// @Tags         cms
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id    path      string                        true  "CMS item ID (UUID)"
+// @Param        body  body      translateCmsLocalizationBody  true  "Translation request"
+// @Success      202  {object}  map[string]string
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/items/{id}/localizations/translate [post]
 func (h *CmsItemHandler) TranslateLocalization(c *gin.Context) {
 	itemID := c.Param("id")
 	itemUUID, err := uuid.Parse(itemID)
@@ -358,6 +453,18 @@ type deployCmsLocalizationBody struct {
 }
 
 // DeployLocalization promotes a CMS localization from one stage to the next.
+// @Summary      Deploy localization
+// @Description  Promotes a localization from one stage to the next (draft→staging or staging→production)
+// @Tags         cms
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id    path      string                      true  "CMS item ID (UUID)"
+// @Param        body  body      deployCmsLocalizationBody   true  "Deploy request"
+// @Success      200  {object}  models.CmsLocalization
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/items/{id}/localizations/deploy [post]
 func (h *CmsItemHandler) DeployLocalization(c *gin.Context) {
 	itemID := c.Param("id")
 	itemUUID, err := uuid.Parse(itemID)
@@ -419,6 +526,17 @@ type revertCmsLocalizationBody struct {
 }
 
 // RevertLocalization creates a new version from a previous version's data.
+// @Summary      Revert localization
+// @Description  Creates a new version from an older version's data (non-destructive)
+// @Tags         cms
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id    path      string                      true  "CMS item ID (UUID)"
+// @Param        body  body      revertCmsLocalizationBody   true  "Revert request"
+// @Success      200  {object}  models.CmsLocalization
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/items/{id}/localizations/revert [post]
 func (h *CmsItemHandler) RevertLocalization(c *gin.Context) {
 	itemID := c.Param("id")
 	itemUUID, err := uuid.Parse(itemID)
@@ -468,6 +586,17 @@ func (h *CmsItemHandler) RevertLocalization(c *gin.Context) {
 }
 
 // ListVersions lists all versions of a CMS localization for a given locale + stage.
+// @Summary      List localization versions
+// @Description  List all versions of a CMS localization for a given locale and stage
+// @Tags         cms
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id      path      string  true   "CMS item ID (UUID)"
+// @Param        locale  query     string  true   "Locale code"
+// @Param        stage   query     string  false  "Stage: draft | staging | production (default: draft)"
+// @Success      200  {array}   models.CmsLocalization
+// @Failure      400  {object}  map[string]string
+// @Router       /cms/items/{id}/localizations/versions [get]
 func (h *CmsItemHandler) ListVersions(c *gin.Context) {
 	itemID := c.Param("id")
 	locale := c.Query("locale")
@@ -492,6 +621,15 @@ func (h *CmsItemHandler) ListVersions(c *gin.Context) {
 }
 
 // GetCmsTranslateJobStatus returns the status of a CmsTranslateJob by ID.
+// @Summary      Get translate job status
+// @Description  Get the status of a CMS translate job by ID
+// @Tags         cms
+// @Produce      json
+// @Security     BearerAuth
+// @Param        job_id  path      string  true  "Job ID (UUID)"
+// @Success      200  {object}  models.CmsTranslateJob
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/translate-jobs/{job_id} [get]
 func (h *CmsItemHandler) GetCmsTranslateJobStatus(c *gin.Context) {
 	jobID := c.Param("job_id")
 	var job models.CmsTranslateJob
@@ -504,6 +642,17 @@ func (h *CmsItemHandler) GetCmsTranslateJobStatus(c *gin.Context) {
 
 // GetCmsItemByIdentifier returns the latest production localization for a CMS item by identifier.
 // Used by the public-facing translation API.
+// @Summary      Get CMS item by identifier
+// @Description  Returns localized CMS content by identifier. Accessible via API key. Intended for client applications (FE, mobile)
+// @Tags         cms-public
+// @Produce      json
+// @Param        id          path      string  true   "Application ID (UUID)"
+// @Param        identifier  path      string  true   "CMS item identifier (e.g. flash_banner)"
+// @Param        locale      query     string  false  "Locale code (default: en)"
+// @Param        stage       query     string  false  "Stage: draft | staging | production (default: production)"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      404  {object}  map[string]string
+// @Router       /applications/{id}/cms/{identifier} [get]
 func GetCmsItemByIdentifier(c *gin.Context) {
 	appID := c.Param("id")
 	identifier := c.Param("identifier")

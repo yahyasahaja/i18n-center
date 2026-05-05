@@ -36,6 +36,17 @@ var allowedImageTypes = map[string]string{
 // POST /cms/upload-image
 // Form field: "file" (required)
 // Returns: { "url": "https://img.lapakgaming.com/s/cms/..." }
+// @Summary      Upload CMS image
+// @Description  Uploads an image to GCS and returns the PixelShift CDN URL. Max 10 MB. Allowed types: JPEG, PNG, GIF, WebP
+// @Tags         cms
+// @Accept       multipart/form-data
+// @Produce      json
+// @Security     BearerAuth
+// @Param        file  formData  file    true  "Image file (JPEG, PNG, GIF, WebP — max 10 MB)"
+// @Success      200  {object}  map[string]string
+// @Failure      400  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /cms/upload-image [post]
 func (h *CmsUploadHandler) UploadImage(c *gin.Context) {
 	fileHeader, err := c.FormFile("file")
 	if err != nil {

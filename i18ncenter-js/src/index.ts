@@ -46,6 +46,7 @@ export type {
   TranslationData,
   CacheStorage,
   NextJsI18nConfig,
+  CmsContent,
 } from './types';
 export type { TranslateOptions } from './translator';
 export type { TranslationProviderProps } from './react';

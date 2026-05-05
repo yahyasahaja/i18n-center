@@ -1,830 +1,6 @@
-swagger: '2.0'
-info:
-  description: Centralized i18n management service API
-  title: i18n Center API
-  termsOfService: http://swagger.io/terms/
-  contact:
-    name: API Support
-    url: http://www.swagger.io/support
-    email: support@swagger.io
-  license:
-    name: Apache 2.0
-    url: http://www.apache.org/licenses/LICENSE-2.0.html
-  version: '1.0'
-host: localhost:8080
 basePath: /api
-paths:
-  /applications:
-    get:
-      security:
-      - BearerAuth: []
-      description: Get all applications
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - applications
-      summary: List applications
-      responses:
-        '200':
-          description: OK
-          schema:
-            type: array
-            items:
-              $ref: '#/definitions/models.Application'
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-    post:
-      security:
-      - BearerAuth: []
-      description: Create a new application
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - applications
-      summary: Create application
-      parameters:
-      - description: Application data
-        name: application
-        in: body
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.ApplicationRequest'
-      responses:
-        '201':
-          description: Created
-          schema:
-            $ref: '#/definitions/models.Application'
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /applications/{id}/translations/by-page/{pageCode}:
-    get:
-      security:
-      - BearerAuth: []
-      description: Returns translations for all components that have the given page.
-        Response is a map of component code -> translation data.
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - translations
-      summary: Get translations by page
-      parameters:
-      - type: string
-        description: Application ID (UUID)
-        name: id
-        in: path
-        required: true
-      - type: string
-        description: Page code (e.g. home, cart)
-        name: pageCode
-        in: path
-        required: true
-      - type: string
-        description: 'Locale (default: en)'
-        name: locale
-        in: query
-      - type: string
-        description: 'Stage (default: production)'
-        name: stage
-        in: query
-      responses:
-        '200':
-          description: Map of component_code -> translation data
-          schema:
-            type: object
-            additionalProperties: true
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '404':
-          description: Not Found
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /applications/{id}/translations/by-tag/{tagCode}:
-    get:
-      security:
-      - BearerAuth: []
-      description: Returns translations for all components that have the given tag.
-        Response is a map of component code -> translation data.
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - translations
-      summary: Get translations by tag
-      parameters:
-      - type: string
-        description: Application ID (UUID)
-        name: id
-        in: path
-        required: true
-      - type: string
-        description: Tag code (e.g. checkout, pdp)
-        name: tagCode
-        in: path
-        required: true
-      - type: string
-        description: 'Locale (default: en)'
-        name: locale
-        in: query
-      - type: string
-        description: 'Stage (default: production)'
-        name: stage
-        in: query
-      responses:
-        '200':
-          description: Map of component_code -> translation data
-          schema:
-            type: object
-            additionalProperties: true
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '404':
-          description: Not Found
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /audit/history/{resource_type}/{resource_id}:
-    get:
-      security:
-      - BearerAuth: []
-      description: Get all changes for a specific resource
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - audit
-      summary: Get resource history
-      parameters:
-      - type: string
-        description: Resource type (application, component, translation, user)
-        name: resource_type
-        in: path
-        required: true
-      - type: string
-        description: Resource ID
-        name: resource_id
-        in: path
-        required: true
-      responses:
-        '200':
-          description: OK
-          schema:
-            type: array
-            items:
-              $ref: '#/definitions/models.AuditLog'
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /audit/logs:
-    get:
-      security:
-      - BearerAuth: []
-      description: Get audit logs with optional filters
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - audit
-      summary: Get audit logs
-      parameters:
-      - type: string
-        description: Filter by resource type (application, component, translation,
-          user)
-        name: resource_type
-        in: query
-      - type: string
-        description: Filter by resource ID
-        name: resource_id
-        in: query
-      - type: string
-        description: Filter by user ID
-        name: user_id
-        in: query
-      - type: integer
-        description: 'Limit results (default: 100, max: 1000)'
-        name: limit
-        in: query
-      responses:
-        '200':
-          description: OK
-          schema:
-            type: array
-            items:
-              $ref: '#/definitions/models.AuditLog'
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /auth/login:
-    post:
-      description: Authenticate user and get JWT token
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - auth
-      summary: Login
-      parameters:
-      - description: Login credentials
-        name: credentials
-        in: body
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.LoginRequest'
-      responses:
-        '200':
-          description: OK
-          schema:
-            $ref: '#/definitions/handlers.LoginResponse'
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /auth/me:
-    get:
-      security:
-      - BearerAuth: []
-      description: Get information about the currently authenticated user
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - auth
-      summary: Get current user
-      responses:
-        '200':
-          description: OK
-          schema:
-            $ref: '#/definitions/models.User'
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /components:
-    get:
-      security:
-      - BearerAuth: []
-      description: Get all components, optionally filtered by application
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - components
-      summary: List components
-      parameters:
-      - type: string
-        description: Filter by application ID
-        name: application_id
-        in: query
-      responses:
-        '200':
-          description: OK
-          schema:
-            type: array
-            items:
-              $ref: '#/definitions/models.Component'
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /components/{id}/export:
-    get:
-      security:
-      - BearerAuth: []
-      description: Export translation data for a component as JSON file
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - export
-      summary: Export component
-      parameters:
-      - type: string
-        description: Component ID
-        name: id
-        in: path
-        required: true
-      - type: string
-        description: Locale (optional, exports all if not specified)
-        name: locale
-        in: query
-      - type: string
-        description: 'Stage (default: production)'
-        name: stage
-        in: query
-      responses:
-        '200':
-          description: OK
-          schema:
-            type: file
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '404':
-          description: Not Found
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /components/{id}/import:
-    post:
-      security:
-      - BearerAuth: []
-      description: Import translation data from JSON for a component
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - import
-      summary: Import component
-      parameters:
-      - type: string
-        description: Component ID
-        name: id
-        in: path
-        required: true
-      - type: string
-        description: Locale
-        name: locale
-        in: query
-        required: true
-      - type: string
-        description: 'Stage (default: draft)'
-        name: stage
-        in: query
-      - description: Import data
-        name: request
-        in: body
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.ImportRequest'
-      responses:
-        '200':
-          description: OK
-          schema:
-            $ref: '#/definitions/models.TranslationVersion'
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /components/{id}/translations:
-    get:
-      security:
-      - BearerAuth: []
-      description: Get translation data for a component by locale and stage
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - translations
-      summary: Get translation
-      parameters:
-      - type: string
-        description: Component ID
-        name: id
-        in: path
-        required: true
-      - type: string
-        description: 'Locale (default: en)'
-        name: locale
-        in: query
-      - type: string
-        description: 'Stage (default: production)'
-        name: stage
-        in: query
-      responses:
-        '200':
-          description: OK
-          schema:
-            type: object
-            additionalProperties: true
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '404':
-          description: Not Found
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-    post:
-      security:
-      - BearerAuth: []
-      description: Save translation data for a component
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - translations
-      summary: Save translation
-      parameters:
-      - type: string
-        description: Component ID
-        name: id
-        in: path
-        required: true
-      - description: Translation data
-        name: request
-        in: body
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.SaveTranslationRequest'
-      responses:
-        '200':
-          description: OK
-          schema:
-            $ref: '#/definitions/models.TranslationVersion'
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /components/{id}/translations/backfill:
-    post:
-      security:
-      - BearerAuth: []
-      description: Automatically translate and fill missing locales for a component
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - translations
-      summary: Backfill translations
-      parameters:
-      - type: string
-        description: Component ID
-        name: id
-        in: path
-        required: true
-      - description: Backfill request
-        name: request
-        in: body
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.BackfillRequest'
-      responses:
-        '200':
-          description: OK
-          schema:
-            type: array
-            items:
-              $ref: '#/definitions/models.TranslationVersion'
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /components/{id}/translations/compare:
-    get:
-      description: 'Get two versions for comparison (default: current vs previous
-        for revert diff)'
-      tags:
-      - translations
-      summary: Compare versions
-      parameters:
-      - type: string
-        description: Component ID
-        name: id
-        in: path
-        required: true
-      - type: string
-        description: Locale
-        name: locale
-        in: query
-        required: true
-      - type: string
-        description: 'Stage (default: draft)'
-        name: stage
-        in: query
-      - type: integer
-        description: 'First version number (default: latest)'
-        name: version_a
-        in: query
-      - type: integer
-        description: 'Second version number (default: previous)'
-        name: version_b
-        in: query
-      responses: {}
-  /components/{id}/translations/versions:
-    get:
-      tags:
-      - translations
-      summary: List translation versions
-      parameters:
-      - type: string
-        description: Component ID
-        name: id
-        in: path
-        required: true
-      - type: string
-        description: Locale
-        name: locale
-        in: query
-        required: true
-      - type: string
-        description: 'Stage (default: draft)'
-        name: stage
-        in: query
-      responses: {}
-  /health:
-    get:
-      description: Check service health and dependencies
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - health
-      summary: Health check
-      responses:
-        '200':
-          description: OK
-          schema:
-            type: object
-            additionalProperties: true
-  /live:
-    get:
-      description: Check if service is alive
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - health
-      summary: Liveness check
-      responses:
-        '200':
-          description: OK
-          schema:
-            type: object
-            additionalProperties: true
-  /ready:
-    get:
-      description: Check if service is ready to accept traffic
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - health
-      summary: Readiness check
-      responses:
-        '200':
-          description: OK
-          schema:
-            type: object
-            additionalProperties: true
-  /translations/bulk:
-    get:
-      security:
-      - BearerAuth: []
-      description: Get translations for multiple components at once. Uses Redis cache
-        efficiently - checks cache first, then database for missing ones. Can use
-        either component_ids or component_codes. When using component_codes, application_code
-        is required to differentiate components with the same code in different applications.
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - translations
-      summary: Get multiple translations
-      parameters:
-      - type: string
-        description: Comma-separated component IDs (UUIDs)
-        name: component_ids
-        in: query
-      - type: string
-        description: Application code (required when using component_codes)
-        name: application_code
-        in: query
-      - type: string
-        description: Comma-separated component codes
-        name: component_codes
-        in: query
-      - type: string
-        description: 'Locale (default: en)'
-        name: locale
-        in: query
-      - type: string
-        description: 'Stage (default: production)'
-        name: stage
-        in: query
-      responses:
-        '200':
-          description: Map of component_id/code -> translation data
-          schema:
-            type: object
-            additionalProperties: true
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-  /applications/{id}/bootstrap:
-    post:
-      security:
-      - BearerAuth: []
-      description: 'Bulk-creates components and seeds draft translations from a locale
-        JSON.
-
-        Object values at the top level become one component each.
-
-        Primitive (string/number/bool) values are grouped under a ''common'' component.
-
-        Existing components are upserted (translation version added, component metadata
-        preserved).'
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      tags:
-      - bootstrap
-      summary: Bootstrap application translations
-      parameters:
-      - type: string
-        description: Application ID (UUID)
-        name: id
-        in: path
-        required: true
-      - type: string
-        description: 'Locale to seed (default: en)'
-        name: locale
-        in: query
-      - type: string
-        description: 'Target stage (default: draft)'
-        name: stage
-        in: query
-      - description: Full locale JSON keyed by component code
-        name: request
-        in: body
-        required: true
-        schema:
-          $ref: '#/definitions/handlers.BootstrapRequest'
-      responses:
-        '200':
-          description: OK
-          schema:
-            $ref: '#/definitions/handlers.BootstrapResult'
-        '400':
-          description: Bad Request
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '401':
-          description: Unauthorized
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '404':
-          description: Not Found
-          schema:
-            type: object
-            additionalProperties:
-              type: string
-        '500':
-          description: Internal Server Error
-          schema:
-            type: object
-            additionalProperties:
-              type: string
 definitions:
   handlers.ApplicationRequest:
-    type: object
-    required:
-    - code
-    - name
     properties:
       code:
         description: Unique identifier
@@ -832,60 +8,95 @@ definitions:
       description:
         type: string
       enabled_languages:
-        type: array
         items:
           type: string
+        type: array
       name:
         type: string
       openai_key:
         description: Accept from frontend
         type: string
-  handlers.BackfillRequest:
+    required:
+    - code
+    - name
     type: object
+  handlers.AutoTranslateRequest:
+    properties:
+      source_locale:
+        type: string
+      stage:
+        type: string
+      target_locale:
+        type: string
     required:
     - source_locale
     - stage
-    - target_locales
+    - target_locale
+    type: object
+  handlers.BackfillRequest:
     properties:
       source_locale:
         type: string
       stage:
         type: string
       target_locales:
-        type: array
         items:
           type: string
-  handlers.ImportRequest:
-    type: object
+        type: array
     required:
-    - data
+    - source_locale
+    - stage
+    - target_locales
+    type: object
+  handlers.BootstrapRequest:
     properties:
       data:
-        type: object
         additionalProperties: true
-  handlers.LoginRequest:
-    type: object
+        type: object
     required:
-    - password
-    - username
+    - data
+    type: object
+  handlers.BootstrapResult:
+    properties:
+      components:
+        items:
+          type: string
+        type: array
+      components_created:
+        type: integer
+      components_updated:
+        type: integer
+      flat_keys_in_common:
+        type: integer
+      keys_imported:
+        type: integer
+    type: object
+  handlers.ImportRequest:
+    properties:
+      data:
+        additionalProperties: true
+        type: object
+    required:
+    - data
+    type: object
+  handlers.LoginRequest:
     properties:
       password:
         type: string
       username:
         type: string
-  handlers.LoginResponse:
+    required:
+    - password
+    - username
     type: object
+  handlers.LoginResponse:
     properties:
       token:
         type: string
       user:
         $ref: '#/definitions/models.User'
-  handlers.SaveTranslationRequest:
     type: object
-    required:
-    - data
-    - locale
-    - stage
+  handlers.SaveTranslationRequest:
     properties:
       data:
         $ref: '#/definitions/models.JSONB'
@@ -893,8 +104,132 @@ definitions:
         type: string
       stage:
         type: string
-  models.Application:
+    required:
+    - data
+    - locale
+    - stage
     type: object
+  handlers.cmsTemplateFieldInput:
+    properties:
+      key:
+        type: string
+      label:
+        type: string
+      required:
+        type: boolean
+      sort_order:
+        type: integer
+      value_type:
+        type: string
+    required:
+    - key
+    - label
+    - value_type
+    type: object
+  handlers.createCmsItemBody:
+    properties:
+      description:
+        type: string
+      identifier:
+        type: string
+      name:
+        type: string
+      template_id:
+        type: string
+    required:
+    - identifier
+    - name
+    - template_id
+    type: object
+  handlers.createCmsTemplateBody:
+    properties:
+      code:
+        type: string
+      description:
+        type: string
+      fields:
+        items:
+          $ref: '#/definitions/handlers.cmsTemplateFieldInput'
+        type: array
+      name:
+        type: string
+    required:
+    - code
+    - name
+    type: object
+  handlers.deployCmsLocalizationBody:
+    properties:
+      from_stage:
+        type: string
+      locale:
+        type: string
+      to_stage:
+        type: string
+    required:
+    - from_stage
+    - locale
+    - to_stage
+    type: object
+  handlers.revertCmsLocalizationBody:
+    properties:
+      locale:
+        type: string
+      stage:
+        type: string
+      version:
+        type: integer
+    required:
+    - locale
+    - stage
+    - version
+    type: object
+  handlers.saveCmsLocalizationBody:
+    properties:
+      data:
+        $ref: '#/definitions/models.JSONB'
+      locale:
+        type: string
+      stage:
+        type: string
+    required:
+    - data
+    - locale
+    - stage
+    type: object
+  handlers.translateCmsLocalizationBody:
+    properties:
+      source_locale:
+        type: string
+      stage:
+        type: string
+      target_locale:
+        type: string
+    required:
+    - source_locale
+    - stage
+    - target_locale
+    type: object
+  handlers.updateCmsItemBody:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+      template_id:
+        type: string
+    type: object
+  handlers.updateCmsTemplateBody:
+    properties:
+      description:
+        type: string
+      fields:
+        items:
+          $ref: '#/definitions/handlers.cmsTemplateFieldInput'
+        type: array
+      name:
+        type: string
+    type: object
+  models.Application:
     properties:
       code:
         description: Unique identifier for API access
@@ -906,9 +241,9 @@ definitions:
       description:
         type: string
       enabled_languages:
-        type: array
         items:
           type: string
+        type: array
       has_openai_key:
         description: Computed field
         type: boolean
@@ -920,16 +255,16 @@ definitions:
         type: string
       updated_by:
         type: string
-  models.AuditLog:
     type: object
+  models.AuditLog:
     properties:
       action:
         description: CREATE, UPDATE, DELETE
         type: string
       changes:
-        description: Before/after values
         allOf:
         - $ref: '#/definitions/models.JSONB'
+        description: Before/after values
       created_at:
         type: string
       id:
@@ -951,8 +286,142 @@ definitions:
         type: string
       username:
         type: string
-  models.Component:
     type: object
+  models.CmsItem:
+    properties:
+      application:
+        $ref: '#/definitions/models.Application'
+      application_id:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: string
+      description:
+        type: string
+      id:
+        type: string
+      identifier:
+        type: string
+      name:
+        type: string
+      template:
+        $ref: '#/definitions/models.CmsTemplate'
+      template_id:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  models.CmsLocalization:
+    properties:
+      cms_item:
+        $ref: '#/definitions/models.CmsItem'
+      cms_item_id:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: string
+      data:
+        $ref: '#/definitions/models.JSONB'
+      id:
+        type: string
+      is_active:
+        type: boolean
+      locale:
+        type: string
+      source_locale:
+        type: string
+      stage:
+        $ref: '#/definitions/models.DeploymentStage'
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+      version:
+        type: integer
+    type: object
+  models.CmsTemplate:
+    properties:
+      application:
+        $ref: '#/definitions/models.Application'
+      application_id:
+        type: string
+      code:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: string
+      description:
+        type: string
+      fields:
+        items:
+          $ref: '#/definitions/models.CmsTemplateField'
+        type: array
+      id:
+        type: string
+      name:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  models.CmsTemplateField:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: string
+      key:
+        type: string
+      label:
+        type: string
+      required:
+        type: boolean
+      sort_order:
+        type: integer
+      template_id:
+        type: string
+      updated_at:
+        type: string
+      value_type:
+        description: text | textarea | rich_text | json
+        type: string
+    type: object
+  models.CmsTranslateJob:
+    properties:
+      application_id:
+        type: string
+      claimed_by:
+        type: string
+      cms_item_id:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: string
+      error_detail:
+        type: string
+      error_message:
+        type: string
+      id:
+        type: string
+      source_locale:
+        type: string
+      stage:
+        $ref: '#/definitions/models.DeploymentStage'
+      status:
+        type: string
+      target_locale:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  models.Component:
     properties:
       application:
         $ref: '#/definitions/models.Application'
@@ -974,36 +443,36 @@ definitions:
       name:
         type: string
       pages:
-        type: array
         items:
           $ref: '#/definitions/models.Page'
+        type: array
       structure:
-        description: The JSON structure template
         allOf:
         - $ref: '#/definitions/models.JSONB'
+        description: The JSON structure template
       tags:
-        type: array
         items:
           $ref: '#/definitions/models.Tag'
+        type: array
       updated_at:
         type: string
       updated_by:
         type: string
+    type: object
   models.DeploymentStage:
-    type: string
     enum:
     - draft
     - staging
     - production
+    type: string
     x-enum-varnames:
     - StageDraft
     - StageStaging
     - StageProduction
   models.JSONB:
-    type: object
     additionalProperties: true
+    type: object
   models.Page:
-    type: object
     properties:
       application:
         $ref: '#/definitions/models.Application'
@@ -1018,8 +487,8 @@ definitions:
         type: string
       updated_at:
         type: string
+    type: object
   models.Tag:
-    type: object
     properties:
       application:
         $ref: '#/definitions/models.Application'
@@ -1034,8 +503,42 @@ definitions:
         type: string
       updated_at:
         type: string
-  models.TranslationVersion:
     type: object
+  models.TranslateJob:
+    properties:
+      application_id:
+        type: string
+      claimed_by:
+        type: string
+      component_id:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: string
+      error_detail:
+        type: string
+      error_message:
+        type: string
+      id:
+        type: string
+      job_type:
+        description: auto_translate | backfill
+        type: string
+      source_locale:
+        type: string
+      status:
+        description: pending, running, completed, failed
+        type: string
+      target_locales:
+        description: one or more locales
+        items:
+          type: string
+        type: array
+      updated_at:
+        type: string
+    type: object
+  models.TranslationVersion:
     properties:
       component:
         $ref: '#/definitions/models.Component'
@@ -1046,14 +549,21 @@ definitions:
       created_by:
         type: string
       data:
-        description: The translation data
         allOf:
         - $ref: '#/definitions/models.JSONB'
+        description: The translation data
       id:
         type: string
       is_active:
         type: boolean
       locale:
+        type: string
+      source_data:
+        allOf:
+        - $ref: '#/definitions/models.JSONB'
+        description: snapshot of source at translate time
+      source_locale:
+        description: locale translated FROM (empty for manual edits)
         type: string
       stage:
         $ref: '#/definitions/models.DeploymentStage'
@@ -1064,8 +574,8 @@ definitions:
       version:
         description: 1, 2, 3, ... current = latest
         type: integer
-  models.User:
     type: object
+  models.User:
     properties:
       created_at:
         type: string
@@ -1079,50 +589,1750 @@ definitions:
         type: string
       username:
         type: string
+    type: object
   models.UserRole:
-    type: string
     enum:
     - super_admin
     - operator
     - user_manager
+    type: string
     x-enum-varnames:
     - RoleSuperAdmin
     - RoleOperator
     - RoleUserManager
-  handlers.BootstrapRequest:
-    type: object
-    required:
-    - data
-    properties:
-      data:
-        description: Full locale JSON. Object values → one component per key. Primitive
-          values → grouped under 'common'.
-        type: object
-        additionalProperties: {}
-  handlers.BootstrapResult:
-    type: object
-    properties:
-      components:
-        description: List of component codes that were created or updated
-        type: array
-        items:
-          type: string
-      components_created:
-        description: Number of new components created
+host: localhost:8080
+info:
+  contact:
+    email: support@swagger.io
+    name: API Support
+    url: http://www.swagger.io/support
+  description: Centralized i18n management service API
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: i18n Center API
+  version: "1.0"
+paths:
+  /applications:
+    get:
+      consumes:
+      - application/json
+      description: Get all applications
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.Application'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List applications
+      tags:
+      - applications
+    post:
+      consumes:
+      - application/json
+      description: Create a new application
+      parameters:
+      - description: Application data
+        in: body
+        name: application
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.ApplicationRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.Application'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create application
+      tags:
+      - applications
+  /applications/{id}/api-keys:
+    get:
+      parameters:
+      - description: Application ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: id, key_prefix, name, created_at
+          schema:
+            items:
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List application API keys
+      tags:
+      - api-keys
+    post:
+      consumes:
+      - application/json
+      description: Generate a new API key for the application. Only super_admin can
+        create. The full key is returned once; store it securely.
+      parameters:
+      - description: Application ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Optional: { \'
+        in: body
+        name: body
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: id, key (only here), key_prefix, name
+          schema:
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create application API key
+      tags:
+      - api-keys
+  /applications/{id}/api-keys/{key_id}:
+    delete:
+      parameters:
+      - description: Application ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: API Key ID
+        in: path
+        name: key_id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete application API key
+      tags:
+      - api-keys
+  /applications/{id}/bootstrap:
+    post:
+      consumes:
+      - application/json
+      description: Bulk-creates components and seeds draft translations from a locale
+        JSON.
+      parameters:
+      - description: Application ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Locale to seed (default: en)'
+        in: query
+        name: locale
+        type: string
+      - description: 'Target stage (default: draft)'
+        in: query
+        name: stage
+        type: string
+      - description: Full locale JSON keyed by component code
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.BootstrapRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.BootstrapResult'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Bootstrap application translations
+      tags:
+      - bootstrap
+  /applications/{id}/cms/{identifier}:
+    get:
+      description: Returns localized CMS content by identifier. Accessible via API
+        key. Intended for client applications (FE, mobile)
+      parameters:
+      - description: Application ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: CMS item identifier (e.g. flash_banner)
+        in: path
+        name: identifier
+        required: true
+        type: string
+      - description: 'Locale code (default: en)'
+        in: query
+        name: locale
+        type: string
+      - description: 'Stage: draft | staging | production (default: production)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get CMS item by identifier
+      tags:
+      - cms-public
+  /applications/{id}/cms/items:
+    get:
+      description: Get all CMS items for an application
+      parameters:
+      - description: Application ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.CmsItem'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List CMS items
+      tags:
+      - cms
+    post:
+      consumes:
+      - application/json
+      description: Create a new CMS item in an application
+      parameters:
+      - description: Application ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: CMS item data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.createCmsItemBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.CmsItem'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create CMS item
+      tags:
+      - cms
+  /applications/{id}/cms/templates:
+    get:
+      description: Get all CMS templates for an application
+      parameters:
+      - description: Application ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.CmsTemplate'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List templates
+      tags:
+      - cms
+    post:
+      consumes:
+      - application/json
+      description: Create a new CMS template with its fields
+      parameters:
+      - description: Application ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Template data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.createCmsTemplateBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.CmsTemplate'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create template
+      tags:
+      - cms
+  /applications/{id}/translations/by-page/{pageCode}:
+    get:
+      consumes:
+      - application/json
+      description: Returns translations for all components that have the given page.
+        Response is a map of component code -> translation data.
+      parameters:
+      - description: Application ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Page code (e.g. home, cart)
+        in: path
+        name: pageCode
+        required: true
+        type: string
+      - description: 'Locale (default: en)'
+        in: query
+        name: locale
+        type: string
+      - description: 'Stage (default: production)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Map of component_code -> translation data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get translations by page
+      tags:
+      - translations
+  /applications/{id}/translations/by-tag/{tagCode}:
+    get:
+      consumes:
+      - application/json
+      description: Returns translations for all components that have the given tag.
+        Response is a map of component code -> translation data.
+      parameters:
+      - description: Application ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Tag code (e.g. checkout, pdp)
+        in: path
+        name: tagCode
+        required: true
+        type: string
+      - description: 'Locale (default: en)'
+        in: query
+        name: locale
+        type: string
+      - description: 'Stage (default: production)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Map of component_code -> translation data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get translations by tag
+      tags:
+      - translations
+  /audit/history/{resource_type}/{resource_id}:
+    get:
+      consumes:
+      - application/json
+      description: Get all changes for a specific resource
+      parameters:
+      - description: Resource type (application, component, translation, user)
+        in: path
+        name: resource_type
+        required: true
+        type: string
+      - description: Resource ID
+        in: path
+        name: resource_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.AuditLog'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get resource history
+      tags:
+      - audit
+  /audit/logs:
+    get:
+      consumes:
+      - application/json
+      description: Get audit logs with optional filters
+      parameters:
+      - description: Filter by resource type (application, component, translation,
+          user)
+        in: query
+        name: resource_type
+        type: string
+      - description: Filter by resource ID
+        in: query
+        name: resource_id
+        type: string
+      - description: Filter by user ID
+        in: query
+        name: user_id
+        type: string
+      - description: 'Limit results (default: 100, max: 1000)'
+        in: query
+        name: limit
         type: integer
-      components_updated:
-        description: Number of existing components whose translation was updated
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.AuditLog'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get audit logs
+      tags:
+      - audit
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate user and get JWT token
+      parameters:
+      - description: Login credentials
+        in: body
+        name: credentials
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.LoginResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Login
+      tags:
+      - auth
+  /auth/me:
+    get:
+      consumes:
+      - application/json
+      description: Get information about the currently authenticated user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.User'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get current user
+      tags:
+      - auth
+  /cms/items/{id}:
+    delete:
+      description: Delete a CMS item and all its localizations
+      parameters:
+      - description: CMS item ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete CMS item
+      tags:
+      - cms
+    get:
+      description: Get a single CMS item with its template and fields
+      parameters:
+      - description: CMS item ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CmsItem'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get CMS item
+      tags:
+      - cms
+    put:
+      consumes:
+      - application/json
+      description: Update a CMS item's metadata
+      parameters:
+      - description: CMS item ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: CMS item update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.updateCmsItemBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CmsItem'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update CMS item
+      tags:
+      - cms
+  /cms/items/{id}/localizations:
+    get:
+      description: Get all localizations for a CMS item
+      parameters:
+      - description: CMS item ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.CmsLocalization'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List localizations
+      tags:
+      - cms
+    post:
+      consumes:
+      - application/json
+      description: Creates a new version of a CMS localization (non-destructive —
+        always appends)
+      parameters:
+      - description: CMS item ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Localization data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.saveCmsLocalizationBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.CmsLocalization'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Save localization
+      tags:
+      - cms
+  /cms/items/{id}/localizations/deploy:
+    post:
+      consumes:
+      - application/json
+      description: Promotes a localization from one stage to the next (draft→staging
+        or staging→production)
+      parameters:
+      - description: CMS item ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Deploy request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.deployCmsLocalizationBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CmsLocalization'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Deploy localization
+      tags:
+      - cms
+  /cms/items/{id}/localizations/detail:
+    get:
+      description: Get the latest localization for a CMS item by locale and stage
+      parameters:
+      - description: CMS item ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Locale code (default: en)'
+        in: query
+        name: locale
+        type: string
+      - description: 'Stage: draft | staging | production (default: draft)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CmsLocalization'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get localization
+      tags:
+      - cms
+  /cms/items/{id}/localizations/revert:
+    post:
+      consumes:
+      - application/json
+      description: Creates a new version from an older version's data (non-destructive)
+      parameters:
+      - description: CMS item ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Revert request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.revertCmsLocalizationBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CmsLocalization'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Revert localization
+      tags:
+      - cms
+  /cms/items/{id}/localizations/translate:
+    post:
+      consumes:
+      - application/json
+      description: Enqueues an async AI translation job. Poll /cms/translate-jobs/{job_id}
+        for status
+      parameters:
+      - description: CMS item ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Translation request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.translateCmsLocalizationBody'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Translate localization
+      tags:
+      - cms
+  /cms/items/{id}/localizations/versions:
+    get:
+      description: List all versions of a CMS localization for a given locale and
+        stage
+      parameters:
+      - description: CMS item ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Locale code
+        in: query
+        name: locale
+        required: true
+        type: string
+      - description: 'Stage: draft | staging | production (default: draft)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.CmsLocalization'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List localization versions
+      tags:
+      - cms
+  /cms/templates/{id}:
+    delete:
+      description: Delete a CMS template and its fields
+      parameters:
+      - description: Template ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete template
+      tags:
+      - cms
+    get:
+      description: Get a single CMS template by ID
+      parameters:
+      - description: Template ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CmsTemplate'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get template
+      tags:
+      - cms
+    put:
+      consumes:
+      - application/json
+      description: Replace a CMS template's metadata and fields
+      parameters:
+      - description: Template ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Template update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.updateCmsTemplateBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CmsTemplate'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update template
+      tags:
+      - cms
+  /cms/translate-jobs/{job_id}:
+    get:
+      description: Get the status of a CMS translate job by ID
+      parameters:
+      - description: Job ID (UUID)
+        in: path
+        name: job_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CmsTranslateJob'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get translate job status
+      tags:
+      - cms
+  /cms/upload-image:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 'Uploads an image to GCS and returns the PixelShift CDN URL. Max
+        10 MB. Allowed types: JPEG, PNG, GIF, WebP'
+      parameters:
+      - description: Image file (JPEG, PNG, GIF, WebP — max 10 MB)
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Upload CMS image
+      tags:
+      - cms
+  /components:
+    get:
+      consumes:
+      - application/json
+      description: Get components with pagination and search
+      parameters:
+      - description: Filter by application ID
+        in: query
+        name: application_id
+        type: string
+      - description: Search by name or code (case-insensitive)
+        in: query
+        name: search
+        type: string
+      - description: 'Page number (default: 1)'
+        in: query
+        name: page
         type: integer
-      flat_keys_in_common:
-        description: Number of primitive root-level keys grouped into the 'common'
-          component
+      - description: 'Page size (default: 20, max: 100)'
+        in: query
+        name: page_size
         type: integer
-      keys_imported:
-        description: Total number of translation keys imported across all components
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List components
+      tags:
+      - components
+  /components/{id}/export:
+    get:
+      consumes:
+      - application/json
+      description: Export translation data for a component as JSON file
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Locale (optional, exports all if not specified)
+        in: query
+        name: locale
+        type: string
+      - description: 'Stage (default: production)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export component
+      tags:
+      - export
+  /components/{id}/import:
+    post:
+      consumes:
+      - application/json
+      description: Import translation data from JSON for a component
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Locale
+        in: query
+        name: locale
+        required: true
+        type: string
+      - description: 'Stage (default: draft)'
+        in: query
+        name: stage
+        type: string
+      - description: Import data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.ImportRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.TranslationVersion'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Import component
+      tags:
+      - import
+  /components/{id}/translate-jobs:
+    get:
+      description: Returns all async translation jobs for a component (all statuses).
+        Filter by ?status=pending,running to get active jobs only.
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Comma-separated status filter: pending,running,completed,failed'
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.TranslateJob'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List translate jobs for a component
+      tags:
+      - translations
+  /components/{id}/translations:
+    get:
+      consumes:
+      - application/json
+      description: Get translation data for a component by locale and stage
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Locale (default: en)'
+        in: query
+        name: locale
+        type: string
+      - description: 'Stage (default: production)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get translation
+      tags:
+      - translations
+    post:
+      consumes:
+      - application/json
+      description: Save translation data for a component
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Translation data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.SaveTranslationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.TranslationVersion'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Save translation
+      tags:
+      - translations
+  /components/{id}/translations/auto-translate:
+    post:
+      consumes:
+      - application/json
+      description: Enqueue an OpenAI translation job for a single component + target
+        locale. Poll the returned job_id for status.
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Auto-translate request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.AutoTranslateRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: job_id
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Auto-translate component (async)
+      tags:
+      - translations
+  /components/{id}/translations/backfill:
+    post:
+      consumes:
+      - application/json
+      description: Enqueue OpenAI translation jobs for multiple target locales. Poll
+        each job_id for individual status.
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Backfill request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.BackfillRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: job_ids array
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Backfill translations (async)
+      tags:
+      - translations
+  /components/{id}/translations/compare:
+    get:
+      description: 'Get two versions for comparison (default: current vs previous
+        for revert diff)'
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Locale
+        in: query
+        name: locale
+        required: true
+        type: string
+      - description: 'Stage (default: draft)'
+        in: query
+        name: stage
+        type: string
+      - description: 'First version number (default: latest)'
+        in: query
+        name: version_a
         type: integer
+      - description: 'Second version number (default: previous)'
+        in: query
+        name: version_b
+        type: integer
+      responses: {}
+      summary: Compare versions
+      tags:
+      - translations
+  /components/{id}/translations/versions:
+    get:
+      parameters:
+      - description: Component ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Locale
+        in: query
+        name: locale
+        required: true
+        type: string
+      - description: 'Stage (default: draft)'
+        in: query
+        name: stage
+        type: string
+      responses: {}
+      summary: List translation versions
+      tags:
+      - translations
+  /health:
+    get:
+      consumes:
+      - application/json
+      description: Check service health and dependencies
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Health check
+      tags:
+      - health
+  /live:
+    get:
+      consumes:
+      - application/json
+      description: Check if service is alive
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Liveness check
+      tags:
+      - health
+  /ready:
+    get:
+      consumes:
+      - application/json
+      description: Check if service is ready to accept traffic
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Readiness check
+      tags:
+      - health
+  /translate-jobs/{job_id}:
+    get:
+      description: Poll for the status of a single async translation job
+      parameters:
+      - description: Job ID
+        in: path
+        name: job_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.TranslateJob'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get translate job status
+      tags:
+      - translations
+  /translations/bulk:
+    get:
+      consumes:
+      - application/json
+      description: Get translations for multiple components at once. Uses Redis cache
+        efficiently - checks cache first, then database for missing ones. Can use
+        either component_ids or component_codes. When using component_codes, application_code
+        is required to differentiate components with the same code in different applications.
+      parameters:
+      - description: Comma-separated component IDs (UUIDs)
+        in: query
+        name: component_ids
+        type: string
+      - description: Application code (required when using component_codes)
+        in: query
+        name: application_code
+        type: string
+      - description: Comma-separated component codes
+        in: query
+        name: component_codes
+        type: string
+      - description: 'Locale (default: en)'
+        in: query
+        name: locale
+        type: string
+      - description: 'Stage (default: production)'
+        in: query
+        name: stage
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Map of component_id/code -> translation data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get multiple translations
+      tags:
+      - translations
 securityDefinitions:
   BearerAuth:
     description: Type "Bearer" followed by a space and JWT token.
-    type: apiKey
-    name: Authorization
     in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

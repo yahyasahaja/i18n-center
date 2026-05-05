@@ -33,6 +33,15 @@ func (h *CmsTemplateHandler) currentUser(c *gin.Context) (uuid.UUID, string) {
 }
 
 // ListTemplates lists all CMS templates for an application.
+// @Summary      List templates
+// @Description  Get all CMS templates for an application
+// @Tags         cms
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id  path      string  true  "Application ID (UUID)"
+// @Success      200  {array}   models.CmsTemplate
+// @Failure      401  {object}  map[string]string
+// @Router       /applications/{id}/cms/templates [get]
 func (h *CmsTemplateHandler) ListTemplates(c *gin.Context) {
 	appID := c.Param("id")
 	var templates []models.CmsTemplate
@@ -49,6 +58,15 @@ func (h *CmsTemplateHandler) ListTemplates(c *gin.Context) {
 }
 
 // GetTemplate returns a single CMS template by ID.
+// @Summary      Get template
+// @Description  Get a single CMS template by ID
+// @Tags         cms
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id  path      string  true  "Template ID (UUID)"
+// @Success      200  {object}  models.CmsTemplate
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/templates/{id} [get]
 func (h *CmsTemplateHandler) GetTemplate(c *gin.Context) {
 	id := c.Param("id")
 	var tmpl models.CmsTemplate
@@ -78,6 +96,18 @@ type createCmsTemplateBody struct {
 }
 
 // CreateTemplate creates a new CMS template with its fields.
+// @Summary      Create template
+// @Description  Create a new CMS template with its fields
+// @Tags         cms
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id    path      string                 true  "Application ID (UUID)"
+// @Param        body  body      createCmsTemplateBody  true  "Template data"
+// @Success      201  {object}  models.CmsTemplate
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Router       /applications/{id}/cms/templates [post]
 func (h *CmsTemplateHandler) CreateTemplate(c *gin.Context) {
 	appID := c.Param("id")
 	appUUID, err := uuid.Parse(appID)
@@ -156,6 +186,18 @@ type updateCmsTemplateBody struct {
 }
 
 // UpdateTemplate replaces a CMS template's metadata and fields.
+// @Summary      Update template
+// @Description  Replace a CMS template's metadata and fields
+// @Tags         cms
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id    path      string                 true  "Template ID (UUID)"
+// @Param        body  body      updateCmsTemplateBody  true  "Template update data"
+// @Success      200  {object}  models.CmsTemplate
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/templates/{id} [put]
 func (h *CmsTemplateHandler) UpdateTemplate(c *gin.Context) {
 	id := c.Param("id")
 	var tmpl models.CmsTemplate
@@ -231,6 +273,16 @@ func (h *CmsTemplateHandler) UpdateTemplate(c *gin.Context) {
 }
 
 // DeleteTemplate deletes a CMS template and its fields.
+// @Summary      Delete template
+// @Description  Delete a CMS template and its fields
+// @Tags         cms
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id  path      string  true  "Template ID (UUID)"
+// @Success      200  {object}  map[string]string
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/templates/{id} [delete]
 func (h *CmsTemplateHandler) DeleteTemplate(c *gin.Context) {
 	id := c.Param("id")
 	var tmpl models.CmsTemplate

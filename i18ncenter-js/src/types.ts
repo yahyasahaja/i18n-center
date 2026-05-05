@@ -27,6 +27,16 @@ export interface I18nCenterConfig {
 export type TranslationData = Record<string, any>;
 
 /**
+ * CMS content response from the public CMS API
+ */
+export interface CmsContent {
+  identifier: string;
+  locale: string;
+  stage: DeploymentStage;
+  data: Record<string, any>;
+}
+
+/**
  * Cache entry for translations
  */
 interface CacheEntry {

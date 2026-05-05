@@ -37,7 +37,7 @@ export default defineConfig({
   projects: [
     {
       name: 'api-tests',
-      testMatch: /0[1-5]-.*\.spec\.ts/,
+      testMatch: /0[1-6]-.*\.spec\.ts/,
       use: {
         // API tests don't need a browser — use request context only
         storageState: undefined,
@@ -45,7 +45,7 @@ export default defineConfig({
     },
     {
       name: 'ui-tests',
-      testMatch: /06-.*\.spec\.ts/,
+      testMatch: /07-.*\.spec\.ts/,
       use: {
         ...devices['Desktop Chrome'],
         storageState: './e2e/.auth.json',

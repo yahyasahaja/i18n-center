@@ -8,7 +8,7 @@ if (typeof fetch !== 'undefined') {
   // Fallback for Node < 18
   fetchFn = require('node-fetch') as typeof fetch;
 }
-import { I18nCenterConfig, DeploymentStage, TranslationData, CacheStorage } from './types';
+import { I18nCenterConfig, DeploymentStage, TranslationData, CacheStorage, CmsContent } from './types';
 import { createCacheKey, defaultCache } from './cache';
 
 /**
@@ -245,6 +245,54 @@ export class I18nCenterClient {
     const data = (await response.json()) as Record<string, TranslationData>;
     if (this.config.enableCache) {
       this.cache.set(cacheKey, data, this.config.cacheTTL);
+    }
+    return data;
+  }
+
+  /**
+   * Get CMS content by item identifier (public API)
+   * @param applicationId - Application UUID
+   * @param identifier - CMS item identifier (e.g. 'flash_banner')
+   * @param locale - Optional locale (default from config)
+   * @param stage - Optional stage (default from config)
+   * @returns CMS content with identifier, locale, stage, and data
+   */
+  async getCmsContent(
+    applicationId: string,
+    identifier: string,
+    locale?: string,
+    stage?: DeploymentStage
+  ): Promise<CmsContent> {
+    const loc = locale || this.config.defaultLocale;
+    const stg = stage || this.config.defaultStage;
+    const id = identifier.trim().toLowerCase();
+    if (!id) {
+      throw new Error('CMS item identifier is required');
+    }
+
+    const cacheKey = `cms:${applicationId}:${id}:${loc}:${stg}`;
+    if (this.config.enableCache) {
+      const cached = this.cache.get(cacheKey);
+      if (cached) {
+        return cached as unknown as CmsContent;
+      }
+    }
+
+    const url = `${this.config.apiUrl}/applications/${encodeURIComponent(applicationId)}/cms/${encodeURIComponent(id)}?locale=${loc}&stage=${stg}`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.config.apiToken) {
+      headers['Authorization'] = `Bearer ${this.config.apiToken}`;
+    }
+    const response = await fetchFn(url, { headers });
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error(`CMS content not found: ${id}, locale: ${loc}, stage: ${stg}`);
+      }
+      throw new Error(`Failed to fetch CMS content: ${response.statusText}`);
+    }
+    const data = (await response.json()) as CmsContent;
+    if (this.config.enableCache) {
+      this.cache.set(cacheKey, data as unknown as TranslationData, this.config.cacheTTL);
     }
     return data;
   }
