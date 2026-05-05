@@ -143,6 +143,115 @@ type User struct {
 - `operator`: Manage i18n data
 - `user_manager`: Manage users
 
+## CMS Models
+
+### CmsTemplate
+
+Defines the field structure for a category of CMS content (`cms_templates` table).
+
+```go
+type CmsTemplate struct {
+    ID            uuid.UUID          `gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+    ApplicationID uuid.UUID          `gorm:"type:uuid;not null;index"`
+    Name          string             `gorm:"not null"`
+    Code          string             `gorm:"not null"`            // Unique per application
+    Description   string
+    Fields        []CmsTemplateField `gorm:"foreignKey:CmsTemplateID"`
+    CreatedAt     time.Time
+    UpdatedAt     time.Time
+    DeletedAt     gorm.DeletedAt     `gorm:"index"`
+}
+```
+
+### CmsTemplateField
+
+Individual field definition within a CMS template (`cms_template_fields` table).
+
+```go
+type CmsTemplateField struct {
+    ID            uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+    CmsTemplateID uuid.UUID `gorm:"type:uuid;not null;index"`
+    Key           string    `gorm:"not null"`
+    Label         string    `gorm:"not null"`
+    ValueType     string    `gorm:"not null"` // text | textarea | rich_text | json
+    Required      bool      `gorm:"default:false"`
+    SortOrder     int       `gorm:"default:0"`
+}
+```
+
+### CmsItem
+
+A content item belonging to an application and template (`cms_items` table).
+
+```go
+type CmsItem struct {
+    ID            uuid.UUID   `gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+    ApplicationID uuid.UUID   `gorm:"type:uuid;not null;index"`
+    TemplateID    uuid.UUID   `gorm:"type:uuid;not null;index"`
+    Identifier    string      `gorm:"not null"`  // Used in public API URL
+    Name          string      `gorm:"not null"`
+    Description   string
+    CreatedAt     time.Time
+    UpdatedAt     time.Time
+    DeletedAt     gorm.DeletedAt `gorm:"index"`
+}
+```
+
+### CmsLocalization
+
+Versioned content for a CMS item per locale and stage (`cms_localizations` table).
+
+```go
+type CmsLocalization struct {
+    ID           uuid.UUID       `gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+    CmsItemID    uuid.UUID       `gorm:"type:uuid;not null;index"`
+    Locale       string          `gorm:"not null;index"`
+    Stage        DeploymentStage `gorm:"type:varchar(50);not null;index"`
+    Version      int             `gorm:"not null;default:1"`
+    Data         JSONB           `gorm:"type:jsonb;not null"`  // { field_key: value }
+    SourceLocale string                                         // Locale used as translation source
+    IsActive     bool            `gorm:"default:true"`
+    CreatedAt    time.Time
+    UpdatedAt    time.Time
+}
+```
+
+**Indexes:**
+- `(cms_item_id, locale, stage, version)` — composite for fast lookups
+
+### CmsTranslateJob
+
+Async AI translation job for CMS content (`cms_translate_jobs` table).
+
+```go
+type CmsTranslateJob struct {
+    ID            uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+    ApplicationID uuid.UUID `gorm:"type:uuid;not null;index"`
+    CmsItemID     uuid.UUID `gorm:"type:uuid;not null;index"`
+    SourceLocale  string    `gorm:"not null"`
+    TargetLocale  string    `gorm:"not null"`
+    Stage         string    `gorm:"not null"`
+    Status        string    `gorm:"not null;default:'pending'"` // pending | running | completed | failed
+    ErrorMessage  string
+    CreatedAt     time.Time
+    UpdatedAt     time.Time
+}
+```
+
+---
+
+## Search Indexes (pg_trgm)
+
+`components.name` and `components.code` have GIN indexes using `pg_trgm` to support the `search` parameter on `GET /api/components` (ILIKE search with index acceleration):
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX idx_components_name_trgm ON components USING GIN (name gin_trgm_ops);
+CREATE INDEX idx_components_code_trgm ON components USING GIN (code gin_trgm_ops);
+```
+
+---
+
 ## Custom Types
 
 ### StringArray

@@ -63,7 +63,7 @@ This will generate `i18n-center-api.postman_collection.json` that you can import
 - `DELETE /api/applications/:id` - Delete application
 
 ### Components
-- `GET /api/components` - List components (filter by application_id)
+- `GET /api/components` - List components (paginated; filter by `application_id`, `search`, `page`, `page_size`) — returns `{ data, total, page, page_size, total_pages }`
 - `GET /api/components/:id` - Get component details
 - `POST /api/components` - Create component
 - `PUT /api/components/:id` - Update component
@@ -82,6 +82,41 @@ This will generate `i18n-center-api.postman_collection.json` that you can import
 - `GET /api/applications/:id/export` - Export application translations
 - `GET /api/components/:id/export` - Export component translations
 - `POST /api/components/:id/import` - Import translations
+
+### CMS — Templates
+
+- `GET /api/applications/:id/cms/templates` - List CMS templates for an application
+- `POST /api/applications/:id/cms/templates` - Create a CMS template
+- `GET /api/cms/templates/:id` - Get a CMS template (with fields)
+- `PUT /api/cms/templates/:id` - Update a CMS template (replaces all fields)
+- `DELETE /api/cms/templates/:id` - Delete a CMS template (fails if any items reference it)
+
+### CMS — Items
+
+- `GET /api/applications/:id/cms/items` - List CMS items for an application
+- `POST /api/applications/:id/cms/items` - Create a CMS item
+- `GET /api/cms/items/:id` - Get a CMS item (with template and fields)
+- `PUT /api/cms/items/:id` - Update CMS item metadata
+- `DELETE /api/cms/items/:id` - Delete a CMS item and all its localizations
+
+### CMS — Localizations
+
+- `GET /api/cms/items/:id/localizations` - List all localizations (all locales and stages)
+- `GET /api/cms/items/:id/localizations/detail?locale=en&stage=draft` - Get latest localization for a specific locale and stage
+- `POST /api/cms/items/:id/localizations` - Save a new localization version (`{ locale, stage, data }`)
+- `POST /api/cms/items/:id/localizations/translate` - Enqueue async AI translate job (`{ source_locale, target_locale, stage }`) — returns 202 `{ job_id }`
+- `POST /api/cms/items/:id/localizations/deploy` - Promote a stage (`{ locale, from_stage, to_stage }`)
+- `POST /api/cms/items/:id/localizations/revert` - Revert to a specific version (`{ locale, stage, version }`)
+- `GET /api/cms/items/:id/localizations/versions?locale=en&stage=draft` - List all versions for a locale+stage
+
+### CMS — Jobs and Public Read
+
+- `GET /api/cms/translate-jobs/:job_id` - Poll async CMS translate job status
+- `GET /api/applications/:id/cms/:identifier?locale=en&stage=production` - **Public** (API key auth): fetch published CMS content by item identifier. Returns `{ identifier, locale, stage, data: { field_key: value, ... } }`
+
+### CMS — Image Upload (optional, requires GCS config)
+
+- `POST /api/cms/upload-image` - Upload image (multipart/form-data, field: `file`; JPEG/PNG/GIF/WebP, max 10 MB). Returns `{ url: "https://img.lapakgaming.com/s/cms/{uuid}.ext" }`
 
 ## Authentication
 

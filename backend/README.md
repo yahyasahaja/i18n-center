@@ -308,6 +308,67 @@ Stores user accounts.
 **Indexes:**
 - `username` (unique)
 
+#### 5. CMS Tables
+
+**`cms_templates`** — Defines content structure for CMS items.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | uuid | Primary key |
+| application_id | uuid | Foreign key to applications |
+| name | varchar | Template name |
+| code | varchar | Unique code per application |
+| description | text | Template description |
+
+**`cms_template_fields`** — Field definitions for a CMS template.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | uuid | Primary key |
+| cms_template_id | uuid | Foreign key to cms_templates |
+| key | varchar | Field key |
+| label | varchar | Display label |
+| value_type | varchar | Field type: `text`, `textarea`, `rich_text`, `json` |
+| required | boolean | Whether field is required |
+| sort_order | int | Display order |
+
+**`cms_items`** — Content items per application.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | uuid | Primary key |
+| application_id | uuid | Foreign key to applications |
+| template_id | uuid | Foreign key to cms_templates |
+| identifier | varchar | Human-readable identifier for public API |
+| name | varchar | Item name |
+| description | text | Item description |
+
+**`cms_localizations`** — Versioned content per item + locale + stage.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | uuid | Primary key |
+| cms_item_id | uuid | Foreign key to cms_items |
+| locale | varchar | Language code |
+| stage | varchar | `draft`, `staging`, or `production` |
+| version | int | Version number |
+| data | jsonb | Field key → value map |
+| source_locale | varchar | Locale used as translation source |
+| is_active | boolean | Active flag |
+
+**`cms_translate_jobs`** — Async AI translation jobs for CMS content.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | uuid | Primary key (job_id) |
+| application_id | uuid | Foreign key to applications |
+| cms_item_id | uuid | Foreign key to cms_items |
+| source_locale | varchar | Source language |
+| target_locale | varchar | Target language |
+| stage | varchar | Target stage |
+| status | varchar | `pending`, `running`, `completed`, `failed` |
+| error_message | text | Error summary on failure |
+
 ### Database Migrations
 
 **Automatic Migrations:** Database schema is automatically created/updated on application startup using GORM's `AutoMigrate()`.
@@ -472,7 +533,7 @@ cache.Set(cacheKey, translation, 3600*1000000000) // 1 hour
 - `DELETE /api/applications/:id` - Delete application (Super Admin only)
 
 ### Components
-- `GET /api/components` - List components (filter: `?application_id=...`)
+- `GET /api/components` - List components (paginated; params: `application_id`, `search`, `page`, `page_size`) — returns `{ data, total, page, page_size, total_pages }`
 - `GET /api/components/:id` - Get component
 - `POST /api/components` - Create component
 - `PUT /api/components/:id` - Update component
@@ -492,6 +553,34 @@ cache.Set(cacheKey, translation, 3600*1000000000) // 1 hour
 - `GET /api/applications/:id/export` - Export application translations
 - `GET /api/components/:id/export` - Export component translations
 - `POST /api/components/:id/import` - Import translations
+
+### CMS — Templates
+- `GET /api/applications/:id/cms/templates` - List templates for application
+- `POST /api/applications/:id/cms/templates` - Create template
+- `GET /api/cms/templates/:id` - Get template (with fields)
+- `PUT /api/cms/templates/:id` - Update template (replaces all fields)
+- `DELETE /api/cms/templates/:id` - Delete template (fails if items reference it)
+
+### CMS — Items
+- `GET /api/applications/:id/cms/items` - List items for application
+- `POST /api/applications/:id/cms/items` - Create item
+- `GET /api/cms/items/:id` - Get item (with template and fields)
+- `PUT /api/cms/items/:id` - Update item metadata
+- `DELETE /api/cms/items/:id` - Delete item and all localizations
+
+### CMS — Localizations
+- `GET /api/cms/items/:id/localizations` - List all localizations
+- `GET /api/cms/items/:id/localizations/detail?locale=en&stage=draft` - Get latest for locale+stage
+- `POST /api/cms/items/:id/localizations` - Save new version
+- `POST /api/cms/items/:id/localizations/translate` - Enqueue async AI translate (202 `{ job_id }`)
+- `POST /api/cms/items/:id/localizations/deploy` - Promote stage
+- `POST /api/cms/items/:id/localizations/revert` - Revert to version
+- `GET /api/cms/items/:id/localizations/versions?locale=en&stage=draft` - List all versions
+
+### CMS — Jobs, Public Read, and Image Upload
+- `GET /api/cms/translate-jobs/:job_id` - Poll CMS translate job status
+- `GET /api/applications/:id/cms/:identifier?locale=en&stage=production` - **Public** (API key auth): fetch published CMS content
+- `POST /api/cms/upload-image` - Upload image to GCS (optional; multipart/form-data, field: `file`)
 
 ### API Documentation
 

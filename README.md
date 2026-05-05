@@ -20,6 +20,9 @@ Centralized i18n management service for managing translations across multiple ap
 - Role-based access control (Super Admin, Operator, User Manager)
 - Template value support (preserves values in brackets)
 - **SDKs**: JavaScript/TypeScript SDK for Next.js and Go SDK for backend services
+- **Headless CMS** with templates, versioned localizations, and draft→staging→production workflow
+- **AI translation for CMS content** (async jobs, field-type-aware)
+- **Image upload to GCS** served via PixelShift CDN (optional)
 
 ## Project Structure
 
@@ -27,8 +30,11 @@ Centralized i18n management service for managing translations across multiple ap
 .
 ├── backend/          # Go backend service
 ├── frontend/         # Next.js admin UI
+│   └── app/
+│       └── cms/      # CMS pages (templates, items, localization editor)
 ├── i18ncenter-js/    # JavaScript/TypeScript SDK for Next.js apps
 ├── i18ncenter-go/    # Go SDK for backend services
+├── e2e/              # End-to-end tests (Playwright)
 ├── docker-compose.yml
 └── README.md
 ```

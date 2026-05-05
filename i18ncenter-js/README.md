@@ -316,6 +316,7 @@ const client = new I18nCenterClient({
 
 - `getTranslation(componentCode, locale?, stage?)`: Get translation for a single component
 - `getMultipleTranslations(componentCodes, locale?, stage?)`: Get translations for multiple components
+- `getCmsContent(applicationId, identifier, locale?, stage?)`: Fetch CMS content by item identifier — see **CMS Content** section below
 - `clearCache()`: Clear the cache
 
 ### `createTranslator(client, applicationCode, componentCode, defaultLocale?, defaultStage?)`
@@ -405,9 +406,62 @@ class RedisCache implements CacheStorage {
 const client = new I18nCenterClient(config, new RedisCache());
 ```
 
+## CMS Content
+
+The SDK supports fetching headless CMS content published via i18n-center.
+
+### `getCmsContent`
+
+```typescript
+getCmsContent(
+  applicationId: string,
+  identifier: string,
+  locale?: string,           // Default: client.defaultLocale
+  stage?: DeploymentStage    // Default: client.defaultStage
+): Promise<CmsContent>
+```
+
+**`CmsContent` type:**
+
+```typescript
+type CmsContent = {
+  identifier: string;
+  locale: string;
+  stage: DeploymentStage;
+  data: Record<string, any>;  // field_key → value map
+}
+```
+
+**Example:**
+
+```typescript
+import { I18nCenterClient, CmsContent } from 'i18ncenter-js';
+
+const client = new I18nCenterClient({
+  apiUrl: process.env.I18N_CENTER_API_URL!,
+  apiToken: process.env.I18N_CENTER_API_TOKEN,
+});
+
+const content = await client.getCmsContent(applicationId, 'flash_banner', 'en', 'production');
+console.log(content.data.title);       // "Flash Sale!"
+console.log(content.data.body);        // "<p>Up to 50% off today only.</p>"
+console.log(content.data.cta_label);   // "Shop Now"
+```
+
+`getCmsContent` calls the public CMS endpoint `GET /api/applications/:id/cms/:identifier?locale=en&stage=production`, which requires only an application API key (no user login).
+
 ## TypeScript Support
 
 Full TypeScript support with type definitions included.
+
+**Exported types include:**
+- `CmsContent` — returned by `getCmsContent`
+- `DeploymentStage` — `'draft' | 'staging' | 'production'`
+- `I18nCenterClientConfig` — constructor config type
+
+```typescript
+import { CmsContent, DeploymentStage } from 'i18ncenter-js';
+```
 
 ## Examples
 

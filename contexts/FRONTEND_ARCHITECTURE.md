@@ -97,6 +97,8 @@ Each slice manages:
 - Actions (async thunks)
 - Reducers
 
+**Note on CMS pages:** The CMS pages (`/cms/templates`, `/cms/items`, `/cms/items/[id]`) use **local React state** (useState/useEffect) rather than Redux slices. This keeps CMS state self-contained within each page component. Only the auth state (token, user) is read from the Redux store in CMS pages.
+
 **Example:**
 ```typescript
 const applicationSlice = createSlice({
@@ -128,6 +130,9 @@ const applicationSlice = createSlice({
 - `/components` - Component list
 - `/components/[id]/translations` - Translation editor
 - `/users` - User management
+- `/cms/templates` - CMS template management (list + CRUD modal)
+- `/cms/items` - CMS item list + CRUD modal
+- `/cms/items/[id]` - CMS item localization editor (locale tabs, stage tabs, field editors by type, translate-from buttons, deploy buttons, version history modal)
 
 ### Route Protection
 
@@ -219,6 +224,18 @@ export const applicationApi = {
 - `Table`: Data table
 - `Card`: Container card
 - `Badge`: Status badge
+
+### RichTextEditor
+
+**Component:** `frontend/components/RichTextEditor.tsx`
+
+TipTap-based WYSIWYG rich text editor used in the CMS item localization editor for fields with `value_type: rich_text`.
+
+**Features:**
+- Full WYSIWYG editing (bold, italic, headings, lists, links)
+- Image upload via `POST /api/cms/upload-image` (GCS backend, optional)
+- Returns/accepts HTML strings
+- Renders inline within the CMS localization editor field list
 
 ### Styling
 

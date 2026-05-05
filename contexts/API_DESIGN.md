@@ -96,12 +96,25 @@ DELETE /api/applications/:id        # Delete (super_admin only)
 
 ### Components
 ```
-GET    /api/components              # List (filter: ?application_id=...)
+GET    /api/components              # List (paginated); params: application_id, search, page, page_size
 GET    /api/components/:id          # Get one
 POST   /api/components               # Create
 PUT    /api/components/:id          # Update
 DELETE /api/components/:id          # Delete
 ```
+
+**Paginated component list response shape:**
+```json
+{
+  "data": [...],
+  "total": 100,
+  "page": 1,
+  "page_size": 20,
+  "total_pages": 5
+}
+```
+
+The `search` parameter does a case-insensitive partial match (ILIKE) on both `name` and `code`, accelerated by pg_trgm GIN indexes.
 
 ### Translations
 ```
@@ -120,6 +133,45 @@ GET    /api/applications/:id/export  # Export application
 GET    /api/components/:id/export    # Export component
 POST   /api/components/:id/import     # Import component
 ```
+
+### CMS
+```
+# Templates (all BearerAuth)
+GET    /api/applications/:id/cms/templates
+POST   /api/applications/:id/cms/templates
+GET    /api/cms/templates/:id
+PUT    /api/cms/templates/:id
+DELETE /api/cms/templates/:id
+
+# Items (all BearerAuth)
+GET    /api/applications/:id/cms/items
+POST   /api/applications/:id/cms/items
+GET    /api/cms/items/:id
+PUT    /api/cms/items/:id
+DELETE /api/cms/items/:id
+
+# Localizations (all BearerAuth)
+GET    /api/cms/items/:id/localizations
+GET    /api/cms/items/:id/localizations/detail?locale=en&stage=draft
+POST   /api/cms/items/:id/localizations
+POST   /api/cms/items/:id/localizations/translate   # → 202 { job_id }
+POST   /api/cms/items/:id/localizations/deploy
+POST   /api/cms/items/:id/localizations/revert
+GET    /api/cms/items/:id/localizations/versions?locale=en&stage=draft
+
+# Jobs
+GET    /api/cms/translate-jobs/:job_id              # BearerAuth
+
+# Public read — API key auth (same mechanism as translation public endpoints)
+GET    /api/applications/:id/cms/:identifier?locale=en&stage=production
+
+# Image upload (optional — only registered when GCS is configured)
+POST   /api/cms/upload-image                        # BearerAuth; multipart/form-data
+```
+
+**Public CMS read** uses the same API key (`Authorization: Bearer sk_...`) as `GET /api/translations/bulk` and other public translation endpoints — it is scoped to the application and requires no user role.
+
+**CMS translate job** (`POST .../localizations/translate`) follows the same async pattern as component auto-translate: returns 202 immediately with `job_id`; worker processes in the background; client polls `GET /api/cms/translate-jobs/:job_id`.
 
 ## Query Parameters
 

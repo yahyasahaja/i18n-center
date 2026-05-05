@@ -241,3 +241,66 @@ Bootstrap is idempotent — safe to re-run. Splits top-level object keys into se
 4. AI translate runs on draft — review before promoting to staging
 5. Export regularly as backup
 6. `[bracketed]` placeholders in translation strings are **never translated** — treat them as opaque tokens
+
+---
+
+## CMS Content Translation
+
+### Overview
+
+CMS items have their own AI translation flow that mirrors the component translation async job pattern but is field-type-aware. The endpoint is:
+
+```
+POST /api/cms/items/:id/localizations/translate
+Authorization: Bearer <JWT>
+
+{
+  "source_locale": "en",
+  "target_locale": "id",
+  "stage": "draft"
+}
+
+→ 202 Accepted
+{
+  "job_id": "uuid",
+  "status": "pending",
+  "message": "CMS translation job enqueued. Poll /cms/translate-jobs/{job_id} for status."
+}
+```
+
+Poll for completion:
+
+```
+GET /api/cms/translate-jobs/:job_id
+→ 200 { id, status: "completed" | "failed", error_message, ... }
+```
+
+### Field-Type-Aware Translation
+
+Each field in a CMS template has a `value_type` that controls how the AI translate worker handles it:
+
+| `value_type` | Translation behaviour |
+|---|---|
+| `text` | Standard string translate via OpenAI (same as component key translation) |
+| `textarea` | Standard string translate via OpenAI |
+| `rich_text` | HTML-aware translate — preserves HTML tags, translates only text nodes |
+| `json` | Copied verbatim from source locale (not translated) |
+
+The worker reads the source `CmsLocalization.Data` (a JSONB map of field_key → value), processes each field according to its `value_type` from the template, then saves a new `CmsLocalization` row in the target locale.
+
+### Job Lifecycle
+
+`CmsTranslateJob` follows the same state machine as `TranslateJob`:
+
+```
+pending → running → completed
+                 ↘ failed (error_message set)
+```
+
+- DB-backed — safe across multiple K8s replicas (`FOR UPDATE SKIP LOCKED`)
+- Stuck jobs (running > 15 min) are automatically reset to `pending`
+- The frontend CMS editor polls every 2 seconds after triggering a translate, using the same pattern as the component translation editor
+
+### Translate-from-Other-Language (TranslationEditor)
+
+In the component translation editor, a **"Translate from:"** row shows all other enabled locales as buttons. Clicking one enqueues an async `auto-translate` job from the selected source locale into the currently viewed locale. The same polling pattern applies — a loading toast appears while the job runs, and the editor stays interactive throughout.

@@ -164,6 +164,13 @@ Or create a Kubernetes Job for this.
 - Preserves template values in brackets (e.g., `[last_name]`)
 - Backfill multiple languages at once
 
+### Headless CMS
+- Create content templates with typed fields (text, textarea, rich_text, json)
+- Manage CMS items and versioned localizations per locale and stage
+- Draft→staging→production workflow, same as translations
+- AI auto-translate CMS content (field-type-aware, async jobs)
+- Optional image upload to GCS served via PixelShift CDN
+
 ### Export/Import
 - Export translations per application, component, or locale
 - Import translations from JSON files
@@ -194,6 +201,26 @@ See `backend/README.md` for detailed API endpoint documentation.
 - Verify API key is set correctly
 - Check API quota and limits
 - Ensure template values are preserved (values in brackets)
+
+## GCS / Image Upload Configuration (Optional)
+
+CMS image upload requires Google Cloud Storage. If these variables are not set, the `/cms/upload-image` endpoint is simply not registered and the CMS works normally without image uploads.
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `GCS_BUCKET` | GCS bucket name | Yes (for image upload) |
+| `GCS_CREDENTIALS_BASE64` | Base64-encoded GCS service account JSON | Yes (for image upload) |
+| `GCS_CMS_IMAGE_PREFIX` | GCS path prefix for uploaded images (default: `public/cms`) | No |
+| `PIXELSHIFT_BASE_URL` | PixelShift CDN base URL (e.g. `https://img.lapakgaming.com/s`) | No |
+
+To add to your Kubernetes secret when deploying with image upload enabled:
+
+```bash
+kubectl create secret generic i18n-center-secrets \
+  --from-literal=gcs-bucket=YOUR_BUCKET \
+  --from-literal=gcs-credentials-base64=BASE64_SERVICE_ACCOUNT_JSON \
+  --from-literal=pixelshift-base-url=https://img.lapakgaming.com/s
+```
 
 ## Support
 
