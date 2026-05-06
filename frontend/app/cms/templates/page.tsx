@@ -82,7 +82,10 @@ export default function CmsTemplatesPage() {
       toast.error('Name and code are required')
       return
     }
-    const validFields = formFields.filter(f => f.key.trim() && f.label.trim())
+    // Reassign sort_order by current array position so the backend stores the displayed order.
+    const validFields = formFields
+      .filter(f => f.key.trim() && f.label.trim())
+      .map((f, idx) => ({ ...f, sort_order: idx }))
     setSaving(true)
     try {
       if (editingTemplate) {
@@ -116,6 +119,14 @@ export default function CmsTemplatesPage() {
   const removeField = (idx: number) => setFormFields(prev => prev.filter((_, i) => i !== idx))
   const updateField = (idx: number, key: keyof CmsTemplateField, value: any) =>
     setFormFields(prev => prev.map((f, i) => i === idx ? { ...f, [key]: value } : f))
+  const moveField = (idx: number, dir: -1 | 1) =>
+    setFormFields(prev => {
+      const next = [...prev]
+      const target = idx + dir
+      if (target < 0 || target >= next.length) return prev
+      ;[next[idx], next[target]] = [next[target], next[idx]]
+      return next
+    })
 
   const toggleExpand = (id: string) =>
     setExpandedIds(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s })
@@ -215,13 +226,38 @@ export default function CmsTemplatesPage() {
             </div>
 
             <div>
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-1">
                 <label className="block text-sm font-medium text-gray-700">Fields</label>
                 <Button variant="outline" size="sm" onClick={addField}><Plus className="w-3 h-3 mr-1" />Add</Button>
               </div>
+              <p className="text-xs text-gray-400 mb-2">
+                Order only affects the edit UI — item data is stored by key name, so reordering never changes existing content.
+              </p>
               <div className="space-y-2">
                 {formFields.map((f, idx) => (
                   <div key={idx} className="flex gap-2 items-start bg-gray-50 p-2 rounded-md">
+                    {/* Reorder arrows */}
+                    <div className="flex flex-col gap-0.5 pt-0.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => moveField(idx, -1)}
+                        disabled={idx === 0}
+                        className="p-0.5 rounded hover:bg-gray-200 disabled:opacity-20 disabled:cursor-not-allowed text-gray-500"
+                        title="Move up"
+                      >
+                        <ChevronUp className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => moveField(idx, 1)}
+                        disabled={idx === formFields.length - 1}
+                        className="p-0.5 rounded hover:bg-gray-200 disabled:opacity-20 disabled:cursor-not-allowed text-gray-500"
+                        title="Move down"
+                      >
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
                     <div className="flex-1 grid grid-cols-2 gap-2">
                       <input className="border border-gray-300 rounded px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary-500"
                         placeholder="field_key" value={f.key} onChange={e => updateField(idx, 'key', e.target.value.toLowerCase().replace(/\s+/g, '_'))} />
