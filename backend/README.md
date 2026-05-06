@@ -668,6 +668,23 @@ REDIS_PASSWORD=<secure-password>
 JWT_SECRET=<strong-random-secret>
 GIN_MODE=release
 PORT=8080
+
+# GCS image uploads (CMS rich-text editor)
+GCS_BUCKET=lapakgaming-frontend-production          # GCS bucket name
+GCS_CREDENTIALS_BASE64=<base64-encoded-sa-json>    # Service account JSON, base64-encoded
+GCS_CMS_IMAGE_PREFIX=static/cms                    # Object path prefix inside the bucket
+
+# Image serving — PixelShift CDN (see docs/IMAGE_SERVING.md for architecture detail)
+CMS_IMAGE_PUBLIC_BASE=https://www.lapakgaming.com  # HAProxy-fronted URL used as PixelShift ?src=
+PIXELSHIFT_BASE_URL=https://img.lapakgaming.com    # PixelShift service endpoint
+```
+
+**Dev/staging values:**
+
+```env
+GCS_BUCKET=lapakgaming-frontend-development
+CMS_IMAGE_PUBLIC_BASE=https://dev.lapakgaming.com   # or your staging domain
+PIXELSHIFT_BASE_URL=https://dev-img.lapakgaming.com # flat subdomain (CF Business plan limitation)
 ```
 
 ## Development Guidelines

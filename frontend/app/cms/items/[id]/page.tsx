@@ -43,6 +43,7 @@ export default function CmsItemPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [translating, setTranslating] = useState(false)
+  const [translatingTo, setTranslatingTo] = useState<string | null>(null)
   const [enabledLocales, setEnabledLocales] = useState<string[]>([])
   const [showVersionModal, setShowVersionModal] = useState(false)
   const [versions, setVersions] = useState<CmsLocalization[]>([])
@@ -148,6 +149,36 @@ export default function CmsItemPage() {
     } catch (e: any) {
       toast.error(e.response?.data?.error || 'Failed to start translation')
       setTranslating(false)
+    }
+  }
+
+  const handleTranslateTo = async (targetLocale: string) => {
+    if (hasUnsavedChanges()) { toast.error('Save changes first'); return }
+    if (!confirm(`Translate current ${selectedLocale.toUpperCase()} content → ${targetLocale.toUpperCase()}? This will overwrite the ${targetLocale.toUpperCase()} content.`)) return
+    setTranslatingTo(targetLocale)
+    try {
+      const { job_id } = await cmsApi.translateLocalization(itemId, selectedLocale, targetLocale, selectedStage)
+      toast.loading(`Translating to ${targetLocale.toUpperCase()}…`, { id: job_id })
+      let attempts = 0
+      const poll = setInterval(async () => {
+        attempts++
+        if (attempts > 120) { clearInterval(poll); toast.error('Translation timed out', { id: job_id }); setTranslatingTo(null); return }
+        try {
+          const job = await cmsApi.getCmsTranslateJobStatus(job_id)
+          if (job.status === 'completed') {
+            clearInterval(poll)
+            toast.success(`Translated to ${targetLocale.toUpperCase()}`, { id: job_id })
+            setTranslatingTo(null)
+          } else if (job.status === 'failed') {
+            clearInterval(poll)
+            toast.error(`Translation failed: ${job.error_message}`, { id: job_id })
+            setTranslatingTo(null)
+          }
+        } catch { clearInterval(poll); setTranslatingTo(null) }
+      }, 3000)
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || 'Failed to start translation')
+      setTranslatingTo(null)
     }
   }
 
@@ -300,17 +331,31 @@ export default function CmsItemPage() {
             )}
           </div>
 
-          {/* Translate from row */}
+          {/* Translate from / to rows */}
           {enabledLocales.filter(l => l !== selectedLocale).length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 mb-4 pb-3 border-b border-gray-200">
-              <span className="text-sm text-gray-600 shrink-0">Translate from:</span>
-              {enabledLocales.filter(l => l !== selectedLocale).map(loc => (
-                <Button key={loc} variant="outline" size="sm" onClick={() => handleTranslateFrom(loc)}
-                  disabled={translating} isLoading={translating}>
-                  <Languages className="w-4 h-4 mr-1" />{loc.toUpperCase()}
-                </Button>
-              ))}
-              {translating && <span className="text-xs text-gray-400 animate-pulse">Translating…</span>}
+            <div className="space-y-2 mb-4 pb-3 border-b border-gray-200">
+              {/* Translate from */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm text-gray-500 shrink-0 w-28">Translate from:</span>
+                {enabledLocales.filter(l => l !== selectedLocale).map(loc => (
+                  <Button key={loc} variant="outline" size="sm" onClick={() => handleTranslateFrom(loc)}
+                    disabled={translating || !!translatingTo} isLoading={translating}>
+                    <Languages className="w-4 h-4 mr-1" />{loc.toUpperCase()}
+                  </Button>
+                ))}
+                {translating && <span className="text-xs text-gray-400 animate-pulse">Translating…</span>}
+              </div>
+              {/* Translate to */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm text-gray-500 shrink-0 w-28">Translate to:</span>
+                {enabledLocales.filter(l => l !== selectedLocale).map(loc => (
+                  <Button key={loc} variant="outline" size="sm" onClick={() => handleTranslateTo(loc)}
+                    disabled={translating || !!translatingTo} isLoading={translatingTo === loc}>
+                    <Languages className="w-4 h-4 mr-1" />{loc.toUpperCase()}
+                  </Button>
+                ))}
+                {translatingTo && <span className="text-xs text-gray-400 animate-pulse">Translating to {translatingTo.toUpperCase()}…</span>}
+              </div>
             </div>
           )}
 

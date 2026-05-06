@@ -88,7 +88,8 @@ func (s *OpenAIService) TranslateJSONBatch(ctx context.Context, data map[string]
 			"6. If a string value consists entirely of a placeholder (e.g. \"[amount]\"), return it unchanged.\n"+
 			"7. URLs (any substring starting with http:// or https://) must be copied verbatim — do NOT translate or alter them.\n"+
 			"8. Email addresses (any token matching user@domain) must be copied verbatim — do NOT translate or alter them.\n"+
-			"9. If a string value is ONLY a URL or ONLY an email address, return it completely unchanged.\n\n"+
+			"9. If a string value is ONLY a URL or ONLY an email address, return it completely unchanged.\n"+
+			"10. Proper nouns and brand/product names (e.g. LapakGaming, Joytify, Google, YouTube) must NOT be translated — keep them exactly as written.\n\n"+
 			"Input JSON:\n%s",
 		sourceLang, targetLang, string(jsonBytes),
 	)
@@ -277,7 +278,8 @@ func (s *OpenAIService) Translate(ctx context.Context, text, sourceLang, targetL
 			"2. Translate all other text normally. Do NOT wrap any translated word in square brackets.\n"+
 			"3. URLs (substrings starting with http:// or https://) must be copied verbatim — do not translate or alter them.\n"+
 			"4. Email addresses (tokens matching user@domain) must be copied verbatim — do not translate or alter them.\n"+
-			"5. If the entire text is a URL or email address, return it completely unchanged.\n\n"+
+			"5. If the entire text is a URL or email address, return it completely unchanged.\n"+
+			"6. Proper nouns and brand/product names (e.g. LapakGaming, Joytify, Google, YouTube) must NOT be translated — keep them exactly as written.\n\n"+
 			"Example: \"Hi [name]! Selamat datang di pesta!\" → \"Hi [name]! Welcome to the party!\"\n\n"+
 			"Text to translate: %s",
 		sourceLang, targetLang, text,
@@ -464,9 +466,12 @@ func (s *OpenAIService) TranslateHTML(ctx context.Context, html, sourceLang, tar
 			"STRICT RULES:\n"+
 			"1. Preserve ALL HTML tags, attributes, and structure exactly.\n"+
 			"2. Only translate visible text content between tags.\n"+
-			"3. Do NOT translate tag names, attribute names, attribute values (including src, href, alt), or CSS.\n"+
-			"4. Preserve [bracketed] placeholder tokens verbatim.\n"+
-			"5. Return ONLY the translated HTML — no explanation, no markdown fences.\n\n"+
+			"3. Do NOT translate tag names, attribute names, or attribute values (including src, href, alt, class, id).\n"+
+			"4. Preserve [bracketed] placeholder tokens (e.g. [name], [amount]) verbatim — copy them character-for-character.\n"+
+			"5. URLs (substrings starting with http:// or https://) must be copied verbatim — do NOT translate or alter them.\n"+
+			"6. Email addresses (tokens matching user@domain) must be copied verbatim — do NOT translate or alter them.\n"+
+			"7. Proper nouns and brand/product names (e.g. LapakGaming, Joytify, Google, YouTube) must NOT be translated — keep them exactly as written.\n"+
+			"8. Return ONLY the translated HTML — no explanation, no markdown fences.\n\n"+
 			"HTML:\n%s",
 		sourceLang, targetLang, html,
 	)

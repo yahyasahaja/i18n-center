@@ -65,7 +65,12 @@
       "Bash(npm test *)",
       "Bash(npx jest *)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(grep -E \"\\\\.go$\")",
+      "Read(//Users/yahyasahaja/projects/lapakgaming/lapakgaming-context/**)",
+      "Bash(swag init *)",
+      "Bash(node -e \"require\\('./tests/06-cms.spec.ts'\\)\")",
+      "Bash(git commit *)"
     ]
   }
 }

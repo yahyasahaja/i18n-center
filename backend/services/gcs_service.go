@@ -20,20 +20,64 @@ import (
 	"time"
 )
 
-// GCSService handles uploads to Google Cloud Storage using service account credentials.
-// Credentials are loaded from GCS_CREDENTIALS_BASE64 env var (base64-encoded service account JSON).
+// GCSService uploads CMS images to Google Cloud Storage and returns PixelShift URLs for
+// serving them through LapakGaming's image CDN pipeline.
+//
+// # Image serving architecture
+//
+// LapakGaming uses a double-CDN pipeline to serve images cost-effectively:
+//
+//	Browser
+//	  → Cloudflare (outer CDN, 7-30 day edge cache)
+//	      ↓ miss
+//	  → PixelShift Cloud Run (on-the-fly resize / format conversion)
+//	      ↓ fetches source image
+//	  → HAProxy origin shield (caches raw source images)
+//	      ↓ miss
+//	  → GCS (only on first request for that source image)
+//
+// PixelShift's API is a simple query-parameter proxy:
+//
+//	https://img.lapakgaming.com/?src={url-encoded-source-url}&w=720&f=webp&q=75&onerror=redirect
+//
+// The `src` parameter MUST be a URL reachable through HAProxy (e.g. https://www.lapakgaming.com/static/...)
+// and NOT a direct storage.googleapis.com URL.  Reasons:
+//
+//  1. HAProxy acts as an origin shield between PixelShift and GCS — it caches source images so
+//     repeated transforms of the same image don't each hit GCS and pay egress ($0.12/GB).
+//  2. Direct GCS URLs bypass this shield entirely, defeating the cost-optimisation architecture.
+//  3. HAProxy's CDN config already routes /static/* → correct GCS bucket, so the path mapping
+//     is handled transparently without any extra credentials.
+//
+// # GCS object path
+//
+// Objects are stored at {GCS_CMS_IMAGE_PREFIX}/{filename} inside {GCS_BUCKET}.
+// The default prefix is "static/cms", which HAProxy maps to the lapakgaming-frontend bucket's
+// /static/ path — the same routing used for product banners and other platform assets.
+//
+// # Returned URL
+//
+// The Upload method returns a PixelShift URL with no transform params:
+//
+//	https://img.lapakgaming.com/?src=https%3A%2F%2Fwww.lapakgaming.com%2Fstatic%2Fcms%2F{uuid}.jpg
+//
+// Consumers (FE rendering rich-text HTML) may append transform params as needed, e.g. &w=720&f=webp.
+// The Cloudflare cache key includes all query params, so each transform variant is cached separately.
 type GCSService struct {
-	bucket          string
-	pathPrefix      string
-	pixelshiftBase  string
-	serviceAccount  *gcsServiceAccount
-	httpClient      *http.Client
+	bucket         string
+	pathPrefix     string
+	// publicBase is the HAProxy-fronted base URL PixelShift uses to fetch source images.
+	// Must be www.lapakgaming.com (or the env-equivalent), never a direct GCS URL.
+	publicBase     string
+	pixelshiftBase string
+	serviceAccount *gcsServiceAccount
+	httpClient     *http.Client
 }
 
 type gcsServiceAccount struct {
-	ClientEmail string `json:"client_email"`
+	ClientEmail  string `json:"client_email"`
 	PrivateKeyID string `json:"private_key_id"`
-	PrivateKey  string `json:"private_key"`
+	PrivateKey   string `json:"private_key"`
 }
 
 type gcsTokenResponse struct {
@@ -66,18 +110,36 @@ func NewGCSService() (*GCSService, error) {
 		return nil, fmt.Errorf("GCS service account missing required fields")
 	}
 
+	// GCS_CMS_IMAGE_PREFIX is the object path prefix inside the bucket.
+	// Default "static/cms" aligns with HAProxy's /static/* → GCS routing rule, which is the
+	// same path family used for product banners (e.g. /static/banner/...).
 	pathPrefix := os.Getenv("GCS_CMS_IMAGE_PREFIX")
 	if pathPrefix == "" {
-		pathPrefix = "public/cms"
+		pathPrefix = "static/cms"
 	}
+
+	// CMS_IMAGE_PUBLIC_BASE is the HAProxy-fronted base URL that becomes the `src` param in
+	// PixelShift requests.  This must route through HAProxy so PixelShift's CDN origin shield
+	// can cache source images — never use a direct storage.googleapis.com URL here.
+	//   dev:  https://dev.lapakgaming.com  (or equivalent staging domain)
+	//   prod: https://www.lapakgaming.com
+	publicBase := os.Getenv("CMS_IMAGE_PUBLIC_BASE")
+	if publicBase == "" {
+		publicBase = "https://www.lapakgaming.com"
+	}
+
+	// PIXELSHIFT_BASE_URL is the PixelShift service endpoint.
+	//   dev:  https://dev-img.lapakgaming.com  (flat subdomain — CF Business plan limitation)
+	//   prod: https://img.lapakgaming.com
 	pixelshiftBase := os.Getenv("PIXELSHIFT_BASE_URL")
 	if pixelshiftBase == "" {
-		pixelshiftBase = "https://img.lapakgaming.com/s"
+		pixelshiftBase = "https://img.lapakgaming.com"
 	}
 
 	return &GCSService{
 		bucket:         bucket,
-		pathPrefix:     strings.TrimSuffix(pathPrefix, "/"),
+		pathPrefix:     strings.Trim(pathPrefix, "/"),
+		publicBase:     strings.TrimSuffix(publicBase, "/"),
 		pixelshiftBase: strings.TrimSuffix(pixelshiftBase, "/"),
 		serviceAccount: &sa,
 		httpClient: &http.Client{
@@ -86,7 +148,18 @@ func NewGCSService() (*GCSService, error) {
 	}, nil
 }
 
-// Upload uploads data to GCS and returns the public PixelShift URL.
+// Upload stores data in GCS and returns a PixelShift URL for the uploaded image.
+//
+// The returned URL has the form:
+//
+//	https://img.lapakgaming.com/?src=https%3A%2F%2Fwww.lapakgaming.com%2Fstatic%2Fcms%2F{uuid}.jpg
+//
+// This URL is safe to embed directly in rich-text HTML <img> tags. Consumers that need a
+// specific size or format can append PixelShift transform params, for example:
+//
+//	…&w=720&h=400&f=webp&q=75&onerror=redirect
+//
+// Each unique combination of src + params is cached separately by Cloudflare (7-30 day TTL).
 func (s *GCSService) Upload(ctx context.Context, filename string, contentType string, data []byte) (string, error) {
 	token, err := s.getAccessToken(ctx)
 	if err != nil {
@@ -106,7 +179,6 @@ func (s *GCSService) Upload(ctx context.Context, filename string, contentType st
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(data)))
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -119,18 +191,17 @@ func (s *GCSService) Upload(ctx context.Context, filename string, contentType st
 		return "", fmt.Errorf("GCS upload failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// The Cloudflare rewrite strips the GCS bucket prefix:
-	// GCS path: {bucket}/{pathPrefix}/{filename}
-	// Cloudflare maps /s/* → /lapakgaming-frontend-development/public/* in GCS
-	// So PixelShift URL is derived from pathPrefix stripped of the "public/" part.
-	publicPath := strings.TrimPrefix(s.pathPrefix, "public/")
-	if publicPath == s.pathPrefix {
-		// pathPrefix doesn't start with "public/", use as-is
-		publicPath = s.pathPrefix
-	}
-	publicURL := s.pixelshiftBase + "/" + publicPath + "/" + filename
+	// Construct the HAProxy-fronted source URL.
+	// This is what PixelShift will fetch when a browser requests the image.
+	// HAProxy's CDN origin shield sits between PixelShift and GCS, caching the raw source
+	// image so that multiple transform variants (different w/h/f/q params) don't each incur
+	// a separate GCS egress hit.
+	srcURL := s.publicBase + "/" + objectName
 
-	return publicURL, nil
+	// Build the final PixelShift URL.  No transform params are added here — the stored URL
+	// is the "canonical" reference; FE rendering code appends params as needed per context.
+	pixelshiftURL := s.pixelshiftBase + "/?src=" + url.QueryEscape(srcURL)
+	return pixelshiftURL, nil
 }
 
 // getAccessToken mints a short-lived OAuth2 access token from the service account private key.

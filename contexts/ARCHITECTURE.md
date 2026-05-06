@@ -167,6 +167,82 @@ i18n-center/
 - **Status Codes**: Standard HTTP status codes
 - **Validation**: GORM binding validation
 
+## Image Serving — PixelShift CDN Pipeline
+
+CMS rich-text content can include images uploaded through the admin UI. Images are stored in GCS
+and served via LapakGaming's shared image CDN pipeline. Understanding this pipeline is important
+before changing any GCS path or URL construction logic.
+
+### Why not link to GCS directly?
+
+Direct `storage.googleapis.com` URLs would:
+- Expose the raw bucket name/path publicly
+- Bypass Cloudflare CDN caching (no edge TTL, every request hits GCS)
+- Incur full GCS egress costs ($0.12/GB) on every image load
+- Miss PixelShift's on-the-fly resize/WebP conversion capability
+
+### The double-CDN pipeline
+
+```
+Browser
+  → Cloudflare (outer CDN — 7-30 day edge cache)
+      ↓ miss
+  → PixelShift Cloud Run  (on-the-fly resize / format / quality)
+      ↓ fetches source image via
+  → HAProxy origin shield  (caches raw source image in memory)
+      ↓ miss
+  → GCS                    (only on first request for that object)
+```
+
+### PixelShift API
+
+PixelShift is a query-parameter proxy, not a path-based CDN:
+
+```
+https://img.lapakgaming.com/?src={url-encoded-source-url}&w=720&f=webp&q=75&onerror=redirect
+```
+
+The `src` value must be a URL routable through HAProxy (e.g. `https://www.lapakgaming.com/static/cms/...`).
+**Never pass a `storage.googleapis.com` URL as `src`** — it bypasses the HAProxy origin shield and
+defeats the cost-optimisation design.
+
+### GCS path → public URL mapping
+
+| Layer | Value |
+|-------|-------|
+| GCS object | `static/cms/{uuid}.jpg` in bucket `lapakgaming-frontend-{env}` |
+| HAProxy-fronted URL (src) | `https://www.lapakgaming.com/static/cms/{uuid}.jpg` |
+| Stored PixelShift URL | `https://img.lapakgaming.com/?src=https%3A%2F%2Fwww.lapakgaming.com%2Fstatic%2Fcms%2F{uuid}.jpg` |
+
+HAProxy's CDN origin shield routes `/static/*` to the GCS bucket, so the path mapping is
+transparent — no extra credentials or bucket config required for reads.
+
+### Transform params
+
+The stored URL contains no transform params. FE code that renders rich-text HTML may append
+them at render time (e.g. `&w=720&f=webp&q=75`). Each unique `src + params` combination is
+cached separately by Cloudflare.
+
+### Environment variables
+
+| Variable | Purpose | Dev default | Prod default |
+|----------|---------|-------------|--------------|
+| `GCS_BUCKET` | Target GCS bucket | `lapakgaming-frontend-development` | `lapakgaming-frontend-production` |
+| `GCS_CMS_IMAGE_PREFIX` | Object path prefix | `static/cms` | `static/cms` |
+| `GCS_CREDENTIALS_BASE64` | Service account JSON (base64) | — | — |
+| `CMS_IMAGE_PUBLIC_BASE` | HAProxy base for `src` param | `https://dev.lapakgaming.com` | `https://www.lapakgaming.com` |
+| `PIXELSHIFT_BASE_URL` | PixelShift endpoint | `https://dev-img.lapakgaming.com` | `https://img.lapakgaming.com` |
+
+> `dev-img` uses a flat subdomain (`dev-img.lapakgaming.com`) rather than `dev.img.lapakgaming.com`
+> because Cloudflare's Business plan does not support subdomain chaining beyond one level.
+
+### Implementation
+
+See `backend/services/gcs_service.go` — the `GCSService` struct and `Upload` method contain
+detailed inline documentation explaining each architectural choice.
+
+---
+
 ## Scalability Considerations
 
 - **Stateless**: JWT allows horizontal scaling
