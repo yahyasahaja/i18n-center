@@ -232,7 +232,7 @@ export function RichTextEditor({ value, onChange, disabled, placeholder }: RichT
   const isEmpty = !editor.getText().trim()
 
   return (
-    <div className="border border-gray-300 rounded-md overflow-hidden flex flex-col">
+    <div className="border border-gray-300 rounded-md overflow-hidden flex flex-col min-h-[260px]">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-0.5 px-2 py-1 bg-gray-50 border-b border-gray-200 shrink-0">
         {!htmlMode && (
@@ -404,7 +404,7 @@ export function RichTextEditor({ value, onChange, disabled, placeholder }: RichT
         />
       ) : (
         <div
-          className={`relative flex-1 cursor-text ${disabled ? 'bg-gray-50' : 'bg-white'}`}
+          className={`relative flex flex-col flex-1 cursor-text ${disabled ? 'bg-gray-50' : 'bg-white'}`}
           onClick={() => { if (!disabled) editor.chain().focus().run() }}
         >
           {isEmpty && placeholder && !disabled && (

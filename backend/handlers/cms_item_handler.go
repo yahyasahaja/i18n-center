@@ -446,6 +446,91 @@ func (h *CmsItemHandler) TranslateLocalization(c *gin.Context) {
 	})
 }
 
+type backfillCmsLocalizationBody struct {
+	SourceLocale  string   `json:"source_locale" binding:"required"`
+	TargetLocales []string `json:"target_locales" binding:"required"`
+	Stage         string   `json:"stage" binding:"required"`
+}
+
+// BackfillLocalizations enqueues one async AI translation job per target locale.
+// @Summary      Backfill CMS localizations (async)
+// @Description  Enqueue OpenAI translation jobs for multiple target locales. Poll each job_id for individual status.
+// @Tags         cms
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id    path      string                       true  "CMS item ID (UUID)"
+// @Param        body  body      backfillCmsLocalizationBody  true  "Backfill request"
+// @Success      202  {object}  map[string]interface{}
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /cms/items/{id}/localizations/backfill [post]
+func (h *CmsItemHandler) BackfillLocalizations(c *gin.Context) {
+	itemID := c.Param("id")
+	itemUUID, err := uuid.Parse(itemID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CMS item ID"})
+		return
+	}
+
+	var item models.CmsItem
+	if err := database.DB.First(&item, "id = ?", itemUUID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+		return
+	}
+
+	var body backfillCmsLocalizationBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(body.TargetLocales) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "At least one target_locale is required"})
+		return
+	}
+
+	stage := models.DeploymentStage(body.Stage)
+
+	// Verify source localization exists
+	var sourceLoc models.CmsLocalization
+	if err := database.DB.
+		Where("cms_item_id = ? AND locale = ? AND stage = ?", itemUUID, body.SourceLocale, stage).
+		Order("version DESC").
+		First(&sourceLoc).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Source localization not found"})
+		return
+	}
+
+	userID, _ := h.currentUser(c)
+
+	jobIDs := make([]string, 0, len(body.TargetLocales))
+	for _, targetLocale := range body.TargetLocales {
+		if targetLocale == body.SourceLocale {
+			continue
+		}
+		job := models.CmsTranslateJob{
+			ApplicationID: item.ApplicationID,
+			CmsItemID:     itemUUID,
+			SourceLocale:  body.SourceLocale,
+			TargetLocale:  targetLocale,
+			Stage:         stage,
+			Status:        models.JobStatusPending,
+			CreatedBy:     userID,
+		}
+		if err := database.DB.Create(&job).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue job for locale " + targetLocale})
+			return
+		}
+		jobIDs = append(jobIDs, job.ID.String())
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"job_ids": jobIDs,
+		"count":   len(jobIDs),
+		"message": fmt.Sprintf("%d CMS translation jobs enqueued. Poll /cms/translate-jobs/:job_id for each status.", len(jobIDs)),
+	})
+}
+
 type deployCmsLocalizationBody struct {
 	Locale    string `json:"locale" binding:"required"`
 	FromStage string `json:"from_stage" binding:"required"`

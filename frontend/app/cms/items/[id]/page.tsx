@@ -7,7 +7,7 @@ import { useAppDispatch, useAppSelector } from '@/hooks/redux'
 import { fetchApplications } from '@/store/slices/applicationSlice'
 import { cmsApi, type CmsItem, type CmsLocalization, type CmsTemplateField } from '@/services/api'
 import toast from 'react-hot-toast'
-import { Save, ChevronRight, Languages, Upload, RotateCcw, History } from 'lucide-react'
+import { Save, ChevronRight, Languages, Upload, RotateCcw, History, ChevronsRight } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
@@ -47,6 +47,9 @@ export default function CmsItemPage() {
   const [enabledLocales, setEnabledLocales] = useState<string[]>([])
   const [showVersionModal, setShowVersionModal] = useState(false)
   const [versions, setVersions] = useState<CmsLocalization[]>([])
+  const [backfilling, setBackfilling] = useState(false)
+  const [backfillProgress, setBackfillProgress] = useState<Record<string, 'pending'|'completed'|'failed'>>({})
+  const [showBackfillModal, setShowBackfillModal] = useState(false)
 
   useEffect(() => {
     const token = localStorage.getItem('token')
@@ -213,6 +216,68 @@ export default function CmsItemPage() {
     }
   }
 
+  const handleBackfill = async () => {
+    const targets = enabledLocales.filter(l => l !== selectedLocale)
+    if (targets.length === 0) return
+    if (hasUnsavedChanges()) { toast.error('Save changes first'); return }
+    if (!confirm(`Translate ${selectedLocale.toUpperCase()} → all other locales (${targets.map(l => l.toUpperCase()).join(', ')})? Existing content will be overwritten.`)) return
+
+    setBackfilling(true)
+    const initial: Record<string, 'pending'|'completed'|'failed'> = {}
+    targets.forEach(l => { initial[l] = 'pending' })
+    setBackfillProgress(initial)
+    setShowBackfillModal(true)
+
+    try {
+      const { job_ids } = await cmsApi.backfillLocalizations(itemId, selectedLocale, targets, selectedStage)
+
+      // Poll all jobs in parallel
+      const intervals: NodeJS.Timeout[] = []
+      job_ids.forEach((jobId, idx) => {
+        const locale = targets[idx]
+        let attempts = 0
+        const iv = setInterval(async () => {
+          attempts++
+          if (attempts > 120) {
+            clearInterval(iv)
+            setBackfillProgress(prev => ({ ...prev, [locale]: 'failed' }))
+            return
+          }
+          try {
+            const job = await cmsApi.getCmsTranslateJobStatus(jobId)
+            if (job.status === 'completed') {
+              clearInterval(iv)
+              setBackfillProgress(prev => ({ ...prev, [locale]: 'completed' }))
+            } else if (job.status === 'failed') {
+              clearInterval(iv)
+              setBackfillProgress(prev => ({ ...prev, [locale]: 'failed' }))
+            }
+          } catch { clearInterval(iv) }
+        }, 3000)
+        intervals.push(iv)
+      })
+
+      // When all done, mark backfill complete
+      const checkDone = setInterval(() => {
+        setBackfillProgress(prev => {
+          const done = Object.values(prev).every(s => s !== 'pending')
+          if (done) {
+            clearInterval(checkDone)
+            intervals.forEach(iv => clearInterval(iv))
+            setBackfilling(false)
+            const failed = Object.entries(prev).filter(([, s]) => s === 'failed').map(([l]) => l.toUpperCase())
+            if (failed.length === 0) toast.success('All locales translated')
+            else toast.error(`Failed: ${failed.join(', ')}`)
+          }
+          return prev
+        })
+      }, 1000)
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || 'Failed to start backfill')
+      setBackfilling(false)
+    }
+  }
+
   const renderFieldEditor = (field: CmsTemplateField) => {
     const value = formData[field.key]
     const onChange = (val: any) => setFormData(prev => ({ ...prev, [field.key]: val }))
@@ -350,10 +415,14 @@ export default function CmsItemPage() {
                 <span className="text-sm text-gray-500 shrink-0 w-28">Translate to:</span>
                 {enabledLocales.filter(l => l !== selectedLocale).map(loc => (
                   <Button key={loc} variant="outline" size="sm" onClick={() => handleTranslateTo(loc)}
-                    disabled={translating || !!translatingTo} isLoading={translatingTo === loc}>
+                    disabled={translating || !!translatingTo || backfilling} isLoading={translatingTo === loc}>
                     <Languages className="w-4 h-4 mr-1" />{loc.toUpperCase()}
                   </Button>
                 ))}
+                <Button variant="outline" size="sm" onClick={handleBackfill}
+                  disabled={translating || !!translatingTo || backfilling} isLoading={backfilling}>
+                  <ChevronsRight className="w-4 h-4 mr-1" />All
+                </Button>
                 {translatingTo && <span className="text-xs text-gray-400 animate-pulse">Translating to {translatingTo.toUpperCase()}…</span>}
               </div>
             </div>
@@ -387,6 +456,26 @@ export default function CmsItemPage() {
             </p>
           )}
         </Card>
+
+        {/* Backfill Progress Modal */}
+        <Modal isOpen={showBackfillModal} onClose={() => { if (!backfilling) setShowBackfillModal(false) }}
+          title={`Translating from ${selectedLocale.toUpperCase()} → All Locales`}
+          footer={
+            <Button variant="outline" onClick={() => setShowBackfillModal(false)} disabled={backfilling}>
+              {backfilling ? 'In progress…' : 'Close'}
+            </Button>
+          }>
+          <div className="space-y-2">
+            {Object.entries(backfillProgress).map(([locale, status]) => (
+              <div key={locale} className="flex items-center justify-between p-2.5 bg-gray-50 rounded-md">
+                <span className="text-sm font-medium">{locale.toUpperCase()}</span>
+                <Badge variant={status === 'completed' ? 'success' : status === 'failed' ? 'danger' : 'secondary'} size="sm">
+                  {status === 'pending' ? '⏳ translating…' : status === 'completed' ? '✓ done' : '✕ failed'}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        </Modal>
 
         {/* Version History Modal */}
         <Modal isOpen={showVersionModal} onClose={() => setShowVersionModal(false)}

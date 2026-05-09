@@ -173,6 +173,7 @@ func SetupRoutes() *gin.Engine {
 	cmsLoc.GET("/localizations/detail", cmsItemHandler.GetLocalization, middleware.RequireRole("super_admin", "operator"))
 	cmsLoc.POST("/localizations", cmsItemHandler.SaveLocalization, middleware.RequireRole("super_admin", "operator"))
 	cmsLoc.POST("/localizations/translate", cmsItemHandler.TranslateLocalization, middleware.RequireRole("super_admin", "operator"))
+	cmsLoc.POST("/localizations/backfill", cmsItemHandler.BackfillLocalizations, middleware.RequireRole("super_admin", "operator"))
 	cmsLoc.POST("/localizations/deploy", cmsItemHandler.DeployLocalization, middleware.RequireRole("super_admin", "operator"))
 	cmsLoc.POST("/localizations/revert", cmsItemHandler.RevertLocalization, middleware.RequireRole("super_admin", "operator"))
 	cmsLoc.GET("/localizations/versions", cmsItemHandler.ListVersions, middleware.RequireRole("super_admin", "operator"))

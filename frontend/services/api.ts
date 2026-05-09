@@ -513,6 +513,14 @@ export const cmsApi = {
     const response = await api.get(`/cms/items/${itemId}/localizations/versions`, { params: { locale, stage } })
     return response.data
   },
+  backfillLocalizations: async (itemId: string, sourceLocale: string, targetLocales: string[], stage: string) => {
+    const response = await api.post(`/cms/items/${itemId}/localizations/backfill`, {
+      source_locale: sourceLocale,
+      target_locales: targetLocales,
+      stage,
+    })
+    return response.data as { job_ids: string[]; count: number; message: string }
+  },
 
   // Translate job
   getCmsTranslateJobStatus: async (jobId: string) => {

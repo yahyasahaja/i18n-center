@@ -1278,6 +1278,71 @@
                 }
             }
         },
+        "/cms/items/{id}/localizations/backfill": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Enqueue OpenAI translation jobs for multiple target locales. Poll each job_id for individual status.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "cms"
+                ],
+                "summary": "Backfill CMS localizations (async)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "CMS item ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Backfill request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.backfillCmsLocalizationBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/cms/items/{id}/localizations/deploy": {
             "post": {
                 "security": [
@@ -2816,6 +2881,28 @@
                 },
                 "stage": {
                     "type": "string"
+                }
+            }
+        },
+        "handlers.backfillCmsLocalizationBody": {
+            "type": "object",
+            "required": [
+                "source_locale",
+                "stage",
+                "target_locales"
+            ],
+            "properties": {
+                "source_locale": {
+                    "type": "string"
+                },
+                "stage": {
+                    "type": "string"
+                },
+                "target_locales": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },

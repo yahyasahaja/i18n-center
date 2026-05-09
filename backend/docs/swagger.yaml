@@ -109,6 +109,21 @@ definitions:
     - locale
     - stage
     type: object
+  handlers.backfillCmsLocalizationBody:
+    properties:
+      source_locale:
+        type: string
+      stage:
+        type: string
+      target_locales:
+        items:
+          type: string
+        type: array
+    required:
+    - source_locale
+    - stage
+    - target_locales
+    type: object
   handlers.cmsTemplateFieldInput:
     properties:
       key:
@@ -1428,6 +1443,49 @@ paths:
       security:
       - BearerAuth: []
       summary: Save localization
+      tags:
+      - cms
+  /cms/items/{id}/localizations/backfill:
+    post:
+      consumes:
+      - application/json
+      description: Enqueue OpenAI translation jobs for multiple target locales. Poll
+        each job_id for individual status.
+      parameters:
+      - description: CMS item ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Backfill request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.backfillCmsLocalizationBody'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Backfill CMS localizations (async)
       tags:
       - cms
   /cms/items/{id}/localizations/deploy:

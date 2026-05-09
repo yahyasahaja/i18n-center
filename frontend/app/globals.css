@@ -10,14 +10,25 @@ body {
 
 /* ── Rich text editor (TipTap / ProseMirror) ────────────────────────── */
 
+/* Make EditorContent fill its parent so the whole wrapper is clickable */
+.rich-text-editor {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
 /* Force the inner ProseMirror div to fill height and have visible text */
 .rich-text-editor .ProseMirror {
+  flex: 1;
   min-height: 200px;
   padding: 12px;
   outline: none;
-  color: #111827; /* gray-900 — always dark regardless of OS colour scheme */
+  /* !important: override Tailwind dark-mode and any browser UA stylesheet */
+  color: #111827 !important;
   background: transparent;
   line-height: 1.6;
+  cursor: text;
 }
 
 /* Placeholder */
