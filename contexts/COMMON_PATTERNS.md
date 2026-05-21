@@ -1,5 +1,142 @@
 # Common Patterns & Code Snippets
 
+## Critical patterns (USE THESE — do not re-implement)
+
+### Versioned-insert with race retry (translation_versions, cms_localizations)
+
+Every write to a versioned table needs to compute `next_version = MAX(version) + 1` and insert atomically. Done naively, two concurrent writers compute the same number and silently create duplicate rows.
+
+**Always use the helper. Never write `MAX(version)+1` directly.**
+
+```go
+// CMS — services.SaveCmsLocalizationVersion
+loc, err := services.SaveCmsLocalizationVersion(
+    nil,                          // or *gorm.DB if inside an outer transaction
+    cmsItemID,
+    locale,
+    stage,
+    data,
+    sourceLocale,                 // "" if manual edit (no AI source)
+    userID,
+)
+
+// Translation — TranslationService.saveVersion / saveVersionTx
+v, err := translationService.SaveTranslation(componentID, locale, stage, data, userID)
+```
+
+Both retry up to 5 times against the partial unique index (`idx_cms_loc_unique_version`, `idx_tv_unique_version`). The retry loop re-reads `MAX(version)` and inserts again — bounded retry budget is deliberate because high collision count means application-level pathology (one component being hammered), not normal load.
+
+### Detect unique-key violation
+
+```go
+import "github.com/your-org/i18n-center/services"
+
+if err := tx.Create(&row).Error; err != nil {
+    if services.IsUniqueViolation(err) {
+        // expected race — re-read and retry, or return existing row
+    }
+    return err
+}
+```
+
+Message-based; no dependency on `jackc/pgconn`. Matches `SQLSTATE 23505`, `duplicate key value`, or `unique constraint`.
+
+### Cache invalidation after a translation write
+
+```go
+// Per-write invalidation (saveVersion already calls this for you on non-tx path)
+services.InvalidateAfterTranslationWrite(componentID, locale, stage)
+
+// App-wide invalidation (locale deleted, bulk deploy)
+services.InvalidateApplicationReadCache(applicationID)
+```
+
+`InvalidateAfterTranslationWrite` busts:
+- `translation:{componentID}:{locale}:{stage}`
+- `component:{componentID}`
+- `translations:bypage:{appID}:*:{locale}:{stage}` (scoped — draft writes don't touch production cache)
+- `translations:bytag:{appID}:*:{locale}:{stage}`
+
+If you add a NEW write path for translations, call this helper. Without it, FE2 (next-intl) will serve stale strings for up to 1 hour after a production deploy.
+
+### Translate-job idempotency
+
+Lookup-then-insert, with a second lookup on the unique-violation race:
+
+```go
+// In the handler:
+if existing := findActiveTranslateJob(componentID, sourceLocale, targetLocale, jobType); existing != nil {
+    c.JSON(http.StatusAccepted, gin.H{
+        "job_id":  existing.ID.String(),
+        "status":  existing.Status,
+        "deduped": true,
+    })
+    return
+}
+
+job := models.TranslateJob{ /* ... */ }
+if err := database.DB.Create(&job).Error; err != nil {
+    // DB unique constraint may have caught a race — try the lookup again
+    if existing := findActiveTranslateJob(...); existing != nil {
+        // return existing
+    }
+    return // ... error
+}
+```
+
+Equivalent helper for CMS: `findActiveCmsTranslateJob`. Both back the partial unique indexes `idx_translate_jobs_dedupe` / `idx_cms_translate_jobs_dedupe`.
+
+### Application API-key scoping on public endpoints
+
+```go
+applicationID, err := uuid.Parse(c.Param("id"))
+// ... 400 on parse failure ...
+if apiKeyAppID := middleware.GetAPIKeyApplicationID(c); apiKeyAppID != uuid.Nil && apiKeyAppID != applicationID {
+    c.JSON(http.StatusForbidden, gin.H{"error": "API key does not have access to this application"})
+    return
+}
+```
+
+JWT-authenticated requests return `uuid.Nil` from `GetAPIKeyApplicationID`, so the check passes for operators. API-key requests MUST be scope-checked, otherwise an API key issued for app A can fetch app B's data. Apply on every public read endpoint.
+
+### CMS identifier case-folding
+
+```go
+// On both create AND read paths
+identifier := normalizeIdentifier(input)   // lowercase + trim
+```
+
+The SDK lowercases identifiers before sending. If the server doesn't normalize on create, an item created as `Flash_Banner` will 404 on SDK calls.
+
+### Public cache headers for Cloudflare
+
+```go
+setPublicCacheHeaders(c, string(stage), 300)
+c.JSON(http.StatusOK, response)
+```
+
+Production stage → `public, max-age=60, s-maxage=300, stale-while-revalidate=600` + `Vary: X-API-Key, Authorization, Accept-Encoding`. Draft/staging → `private, no-store`. Apply on every PUBLIC read endpoint (translation by-page/by-tag/bulk, CMS by-identifier).
+
+### Singleton background tasks across K8s replicas (advisory lock)
+
+When a background goroutine must run on **exactly one pod** (e.g. retention sweep, audit archive), use a Postgres advisory lock:
+
+```go
+var got bool
+database.DB.WithContext(ctx).Raw(
+    "SELECT pg_try_advisory_lock(?)", yourFixedKey,
+).Scan(&got)
+if !got { return }    // another pod holds it; skip this tick
+defer database.DB.WithContext(ctx).Exec(
+    "SELECT pg_advisory_unlock(?)", yourFixedKey,
+)
+// ... do the singleton work ...
+```
+
+Use a fixed int64 per task (declare next to the function). Auto-release on session close means a crashed leader doesn't block the next tick. Currently used by `jobs.RunCleanupTicker` (key `0x6931386e63746e6d`).
+
+---
+
 ## Backend Patterns
 
 ### Handler with Service Pattern

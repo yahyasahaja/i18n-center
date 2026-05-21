@@ -8,9 +8,18 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/your-org/i18n-center/database"
+	"github.com/your-org/i18n-center/middleware"
 	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/services"
 )
+
+// normalizeIdentifier matches the SDK's case-folding so an item created as
+// "Flash_Banner" in the admin UI is still found when an FE calls
+// getCmsContent('flash_banner'). The SDK lowercases before sending; the server
+// must do the same on create and read.
+func normalizeIdentifier(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
 
 type CmsItemHandler struct {
 	auditService services.AuditServicer
@@ -31,6 +40,7 @@ func (h *CmsItemHandler) currentUser(c *gin.Context) (uuid.UUID, string) {
 	name, _ := username.(string)
 	return userID, name
 }
+
 
 // ─── CMS Items ───────────────────────────────────────────────────────────────
 
@@ -126,7 +136,7 @@ func (h *CmsItemHandler) CreateItem(c *gin.Context) {
 	item := models.CmsItem{
 		ApplicationID: appUUID,
 		TemplateID:    templateID,
-		Identifier:    strings.TrimSpace(body.Identifier),
+		Identifier:    normalizeIdentifier(body.Identifier),
 		Name:          strings.TrimSpace(body.Name),
 		Description:   strings.TrimSpace(body.Description),
 		CreatedBy:     userID,
@@ -346,25 +356,8 @@ func (h *CmsItemHandler) SaveLocalization(c *gin.Context) {
 
 	userID, _ := h.currentUser(c)
 
-	// Determine next version
-	var latestVersion int
-	database.DB.Model(&models.CmsLocalization{}).
-		Where("cms_item_id = ? AND locale = ? AND stage = ?", itemUUID, body.Locale, stage).
-		Select("COALESCE(MAX(version), 0)").
-		Scan(&latestVersion)
-
-	loc := models.CmsLocalization{
-		CmsItemID: itemUUID,
-		Locale:    body.Locale,
-		Stage:     stage,
-		Version:   latestVersion + 1,
-		Data:      body.Data,
-		IsActive:  true,
-		CreatedBy: userID,
-		UpdatedBy: userID,
-	}
-
-	if err := database.DB.Create(&loc).Error; err != nil {
+	loc, err := services.SaveCmsLocalizationVersion(nil, itemUUID, body.Locale, stage, body.Data, "", userID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -424,6 +417,19 @@ func (h *CmsItemHandler) TranslateLocalization(c *gin.Context) {
 
 	userID, _ := h.currentUser(c)
 
+	// Idempotency: dedupe double-clicks on the same (item, source, target, stage).
+	// idx_cms_translate_jobs_dedupe enforces this at the DB layer; this lookup
+	// gives a clean 202 response rather than bouncing back a 500.
+	if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, body.TargetLocale, stage); existing != nil {
+		c.JSON(http.StatusAccepted, gin.H{
+			"job_id":  existing.ID.String(),
+			"status":  existing.Status,
+			"deduped": true,
+			"message": "Existing CMS translation job is " + existing.Status + ". Poll /cms/translate-jobs/" + existing.ID.String() + " for status.",
+		})
+		return
+	}
+
 	job := models.CmsTranslateJob{
 		ApplicationID: item.ApplicationID,
 		CmsItemID:     itemUUID,
@@ -435,6 +441,16 @@ func (h *CmsItemHandler) TranslateLocalization(c *gin.Context) {
 	}
 
 	if err := database.DB.Create(&job).Error; err != nil {
+		// Lost the dedupe race — DB unique constraint kicked in.
+		if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, body.TargetLocale, stage); existing != nil {
+			c.JSON(http.StatusAccepted, gin.H{
+				"job_id":  existing.ID.String(),
+				"status":  existing.Status,
+				"deduped": true,
+				"message": "Existing CMS translation job is " + existing.Status + ".",
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue translation job"})
 		return
 	}
@@ -444,6 +460,21 @@ func (h *CmsItemHandler) TranslateLocalization(c *gin.Context) {
 		"status":  job.Status,
 		"message": fmt.Sprintf("CMS translation job enqueued. Poll /cms/translate-jobs/%s for status.", job.ID.String()),
 	})
+}
+
+// findActiveCmsTranslateJob returns the first pending/running CmsTranslateJob
+// matching the de-duplication tuple, or nil if none exists.
+func findActiveCmsTranslateJob(cmsItemID uuid.UUID, sourceLocale, targetLocale string, stage models.DeploymentStage) *models.CmsTranslateJob {
+	var job models.CmsTranslateJob
+	err := database.DB.Where(
+		"cms_item_id = ? AND source_locale = ? AND target_locale = ? AND stage = ? AND status IN ?",
+		cmsItemID, sourceLocale, targetLocale, stage,
+		[]string{models.JobStatusPending, models.JobStatusRunning},
+	).Order("created_at DESC").First(&job).Error
+	if err != nil {
+		return nil
+	}
+	return &job
 }
 
 type backfillCmsLocalizationBody struct {
@@ -504,8 +535,14 @@ func (h *CmsItemHandler) BackfillLocalizations(c *gin.Context) {
 	userID, _ := h.currentUser(c)
 
 	jobIDs := make([]string, 0, len(body.TargetLocales))
+	dedupedCount := 0
 	for _, targetLocale := range body.TargetLocales {
 		if targetLocale == body.SourceLocale {
+			continue
+		}
+		if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, targetLocale, stage); existing != nil {
+			jobIDs = append(jobIDs, existing.ID.String())
+			dedupedCount++
 			continue
 		}
 		job := models.CmsTranslateJob{
@@ -518,6 +555,12 @@ func (h *CmsItemHandler) BackfillLocalizations(c *gin.Context) {
 			CreatedBy:     userID,
 		}
 		if err := database.DB.Create(&job).Error; err != nil {
+			// Lost the dedupe race — pick up the existing job and keep going.
+			if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, targetLocale, stage); existing != nil {
+				jobIDs = append(jobIDs, existing.ID.String())
+				dedupedCount++
+				continue
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue job for locale " + targetLocale})
 			return
 		}
@@ -525,9 +568,10 @@ func (h *CmsItemHandler) BackfillLocalizations(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"job_ids": jobIDs,
-		"count":   len(jobIDs),
-		"message": fmt.Sprintf("%d CMS translation jobs enqueued. Poll /cms/translate-jobs/:job_id for each status.", len(jobIDs)),
+		"job_ids":       jobIDs,
+		"count":         len(jobIDs),
+		"deduped_count": dedupedCount,
+		"message":       fmt.Sprintf("%d CMS translation jobs (%d already in-flight). Poll /cms/translate-jobs/:job_id for each status.", len(jobIDs)-dedupedCount, dedupedCount),
 	})
 }
 
@@ -579,25 +623,8 @@ func (h *CmsItemHandler) DeployLocalization(c *gin.Context) {
 
 	userID, _ := h.currentUser(c)
 
-	// Determine next version for target stage
-	var latestVersion int
-	database.DB.Model(&models.CmsLocalization{}).
-		Where("cms_item_id = ? AND locale = ? AND stage = ?", itemUUID, body.Locale, toStage).
-		Select("COALESCE(MAX(version), 0)").
-		Scan(&latestVersion)
-
-	deployed := models.CmsLocalization{
-		CmsItemID: itemUUID,
-		Locale:    body.Locale,
-		Stage:     toStage,
-		Version:   latestVersion + 1,
-		Data:      source.Data,
-		IsActive:  true,
-		CreatedBy: userID,
-		UpdatedBy: userID,
-	}
-
-	if err := database.DB.Create(&deployed).Error; err != nil {
+	deployed, err := services.SaveCmsLocalizationVersion(nil, itemUUID, body.Locale, toStage, source.Data, "", userID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -646,24 +673,8 @@ func (h *CmsItemHandler) RevertLocalization(c *gin.Context) {
 
 	userID, _ := h.currentUser(c)
 
-	var latestVersion int
-	database.DB.Model(&models.CmsLocalization{}).
-		Where("cms_item_id = ? AND locale = ? AND stage = ?", itemUUID, body.Locale, body.Stage).
-		Select("COALESCE(MAX(version), 0)").
-		Scan(&latestVersion)
-
-	reverted := models.CmsLocalization{
-		CmsItemID: itemUUID,
-		Locale:    body.Locale,
-		Stage:     models.DeploymentStage(body.Stage),
-		Version:   latestVersion + 1,
-		Data:      prev.Data,
-		IsActive:  true,
-		CreatedBy: userID,
-		UpdatedBy: userID,
-	}
-
-	if err := database.DB.Create(&reverted).Error; err != nil {
+	reverted, err := services.SaveCmsLocalizationVersion(nil, itemUUID, body.Locale, models.DeploymentStage(body.Stage), prev.Data, "", userID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -739,8 +750,8 @@ func (h *CmsItemHandler) GetCmsTranslateJobStatus(c *gin.Context) {
 // @Failure      404  {object}  map[string]string
 // @Router       /applications/{id}/cms/{identifier} [get]
 func GetCmsItemByIdentifier(c *gin.Context) {
-	appID := c.Param("id")
-	identifier := c.Param("identifier")
+	appIDStr := c.Param("id")
+	identifier := normalizeIdentifier(c.Param("identifier"))
 	locale := c.Query("locale")
 	stageStr := c.Query("stage")
 	if locale == "" {
@@ -751,9 +762,23 @@ func GetCmsItemByIdentifier(c *gin.Context) {
 		stage = models.StageProduction
 	}
 
+	applicationID, err := uuid.Parse(appIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid application ID"})
+		return
+	}
+
+	// Application-scope check for API-key-authenticated requests. Without this,
+	// an API key issued for app A can fetch CMS content from app B. JWT requests
+	// pass through (operators already scoped at the role layer).
+	if apiKeyAppID := middleware.GetAPIKeyApplicationID(c); apiKeyAppID != uuid.Nil && apiKeyAppID != applicationID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "API key does not have access to this application"})
+		return
+	}
+
 	var item models.CmsItem
 	if err := database.DB.
-		Where("application_id = ? AND identifier = ?", appID, identifier).
+		Where("application_id = ? AND identifier = ?", applicationID, identifier).
 		First(&item).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
 		return

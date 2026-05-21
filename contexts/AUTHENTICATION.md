@@ -187,6 +187,33 @@ api.DELETE("/applications/:id", appHandler.DeleteApplication,
     middleware.RequireRole("super_admin"))
 ```
 
+## Application API keys (client apps)
+
+Application-scoped API keys (prefix `sk_`) authenticate client apps (FE1, FE2, Go services) for translation / CMS read endpoints. They're stored as SHA-256 hashes in `application_api_keys.key_hash`; the full key is shown once on create.
+
+### Required scoping check on PUBLIC read endpoints
+
+`middleware.TranslationAuthMiddleware` accepts either a JWT or an API key. JWT requests return `uuid.Nil` from `GetAPIKeyApplicationID(c)`; API-key requests return the bound application ID.
+
+**Every public read endpoint that takes an `:id` (application ID) path param MUST verify the key's app matches:**
+
+```go
+applicationID, err := uuid.Parse(c.Param("id"))
+if err != nil { /* 400 */ }
+if apiKeyAppID := middleware.GetAPIKeyApplicationID(c); apiKeyAppID != uuid.Nil && apiKeyAppID != applicationID {
+    c.JSON(http.StatusForbidden, gin.H{"error": "API key does not have access to this application"})
+    return
+}
+```
+
+Endpoints that currently enforce this:
+- `GetTranslationsByPage` ([translation_handler.go](../backend/handlers/translation_handler.go))
+- `GetTranslationsByTag`
+- `GetMultipleTranslations` (when called with `component_codes` + `application_code`)
+- `GetCmsItemByIdentifier` ([cms_item_handler.go](../backend/handlers/cms_item_handler.go))
+
+**If you add a new public read endpoint, you MUST include this check.** Missing it is a cross-tenant data leak.
+
 ## Frontend Authentication
 
 ### Token Storage

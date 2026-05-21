@@ -757,26 +757,13 @@ func processCmsTranslateJob(ctx context.Context, job *models.CmsTranslateJob) {
 		return
 	}
 
-	// Determine next version for target localization
-	var latestVersion int
-	database.DB.Model(&models.CmsLocalization{}).
-		Where("cms_item_id = ? AND locale = ? AND stage = ?", job.CmsItemID, job.TargetLocale, job.Stage).
-		Select("COALESCE(MAX(version), 0)").
-		Scan(&latestVersion)
-
-	loc := models.CmsLocalization{
-		CmsItemID:    job.CmsItemID,
-		Locale:       job.TargetLocale,
-		Stage:        job.Stage,
-		Version:      latestVersion + 1,
-		Data:         models.JSONB(translatedData),
-		SourceLocale: job.SourceLocale,
-		IsActive:     true,
-		CreatedBy:    job.CreatedBy,
-		UpdatedBy:    job.CreatedBy,
-	}
-
-	if err := database.DB.Create(&loc).Error; err != nil {
+	// Insert next version with race-safe retry. SaveCmsLocalizationVersion handles
+	// the partial unique index collision (two workers picking the same version
+	// number under concurrency) and retries up to 5 times before erroring out.
+	if _, err := services.SaveCmsLocalizationVersion(
+		nil, job.CmsItemID, job.TargetLocale, job.Stage,
+		models.JSONB(translatedData), job.SourceLocale, job.CreatedBy,
+	); err != nil {
 		_ = markCmsTranslateJobFailed(job.ID, "Failed to save localization", err.Error())
 		return
 	}

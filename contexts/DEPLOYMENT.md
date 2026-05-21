@@ -2,7 +2,24 @@
 
 ## Overview
 
-Deployment to Google Kubernetes Engine (GKE) with CloudSQL PostgreSQL and Redis.
+Deployment to Google Kubernetes Engine (GKE) with Cloud SQL PostgreSQL and Redis.
+
+### Production topology (LapakGaming)
+
+- **Pods**: stateless, ≥2 replicas. The in-process worker is K8s-safe via `FOR UPDATE SKIP LOCKED` on all three job tables.
+- **Postgres**: Cloud SQL — **SHARED with Hydra** (OAuth2 server in the B2C login hot path). Set the connection-pool ceilings (`DB_MAX_OPEN_CONNS` default 20 per pod) so i18n-center can't starve Hydra.
+- **Redis**: single VM (per v2 SoW — not Memorystore). Single point of failure. Service degrades gracefully on Redis down (cache errors are logged, never block requests), but every miss hits DB. Provisioning checklist:
+  - `maxmemory` matched to instance RAM
+  - `maxmemory-policy allkeys-lru`
+  - `tcp-keepalive 60`
+  - `timeout 0`
+- **Cloudflare** in front of `/applications/:id/cms/:identifier` and `/applications/:id/translations/by-page/:pageCode` and `/applications/:id/translations/by-tag/:tagCode`. Backend emits `Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600` for production-stage responses, draft/staging get `private, no-store`.
+
+### Stateless K8s — patterns to know
+
+- **Singleton background tasks** (e.g. `RunCleanupTicker`) use a Postgres advisory lock for leader-election. Only one pod runs the work each tick; others no-op. See `jobs/cleanup.go`.
+- **Job workers** use `FOR UPDATE SKIP LOCKED` on `add_language_jobs`, `translate_jobs`, `cms_translate_jobs`. Multiple replicas claim jobs concurrently without coordination.
+- **No in-memory state** that's load-balanced. The OpenAI mock-mode check, API key validation, and JWT validation are pure functions of env + claims/secret. The frontend Redux store is per-tab.
 
 ## Prerequisites
 
@@ -17,13 +34,21 @@ Deployment to Google Kubernetes Engine (GKE) with CloudSQL PostgreSQL and Redis.
 ### Backend Environment Variables
 
 ```env
-# Database
+# Environment — boot fails when ENV=production + CORS_ORIGIN is '*' or empty
+ENV=production
+
+# Database (shared Cloud SQL with Hydra)
 DB_HOST=cloudsql-proxy
 DB_PORT=5432
 DB_USER=postgres
 DB_PASSWORD=your-password
 DB_NAME=i18n_center
 DB_SSLMODE=require
+
+# Connection pool ceilings — keep i18n-center from starving Hydra
+DB_MAX_OPEN_CONNS=20         # per pod; 3 pods × 20 leaves headroom in default max_connections=100
+DB_MAX_IDLE_CONNS=5
+DB_CONN_MAX_LIFETIME_MIN=30  # rotate to match Cloud SQL idle-disconnect
 
 # Redis
 REDIS_HOST=redis-service
@@ -37,7 +62,7 @@ JWT_SECRET=your-jwt-secret
 PORT=8080
 GIN_MODE=release
 
-# CORS
+# CORS — explicit origin required in production
 CORS_ORIGIN=https://your-frontend-domain.com
 
 # OpenAI (optional)

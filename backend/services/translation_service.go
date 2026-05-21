@@ -272,7 +272,7 @@ func (s *TranslationService) saveVersionTx(tx *gorm.DB, componentID uuid.UUID, l
 			return &newVersion, nil
 		}
 		lastErr = createErr
-		if !isUniqueViolation(createErr) {
+		if !IsUniqueViolation(createErr) {
 			return nil, createErr
 		}
 		// Lost the race — another writer used our nextVersion. Re-read and retry.
@@ -280,9 +280,10 @@ func (s *TranslationService) saveVersionTx(tx *gorm.DB, componentID uuid.UUID, l
 	return nil, fmt.Errorf("saveVersion: exhausted %d retries on unique version conflict: %w", maxAttempts, lastErr)
 }
 
-// isUniqueViolation returns true if err is a Postgres SQLSTATE 23505 (unique_violation).
-// We match on the error message to avoid taking a hard dependency on jackc/pgconn.
-func isUniqueViolation(err error) bool {
+// IsUniqueViolation returns true if err is a Postgres SQLSTATE 23505 (unique_violation).
+// Match on the error message to avoid taking a hard dependency on jackc/pgconn.
+// Exported because CMS handlers run the same retry-on-collision pattern.
+func IsUniqueViolation(err error) bool {
 	if err == nil {
 		return false
 	}

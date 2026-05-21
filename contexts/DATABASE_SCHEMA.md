@@ -4,6 +4,16 @@
 
 PostgreSQL database with GORM as ORM. Auto-migration on startup.
 
+### Deployment notes (production)
+
+- **Shared Cloud SQL with Hydra.** i18n-center runs in the same Postgres instance as the Hydra OAuth2 server (B2C login hot path). i18n-center's table names don't collide with Hydra's (`hydra_oauth2_*` vs unprefixed), but a dedicated schema (e.g. `i18n_center.*`) is on the roadmap for blast-radius isolation.
+- **Connection pool ceilings** (set in `database.InitDatabase`):
+  - `DB_MAX_OPEN_CONNS` = 20 per pod (default)
+  - `DB_MAX_IDLE_CONNS` = 5
+  - `DB_CONN_MAX_LIFETIME_MIN` = 30
+  Sized so 3 pods × 20 = 60 connections leaves headroom in Cloud SQL's default `max_connections = 100` for Hydra.
+- **Migrations run on every pod start** via `AutoMigrate` + `migrateCodeFields` + `dropTagPageNameColumns` + `ensureSearchIndexes` + `ensurePerformanceIndexes`. All idempotent (`CREATE INDEX IF NOT EXISTS`, `ALTER TABLE … IF EXISTS`) so concurrent boot is safe.
+
 ## Models
 
 ### Application
@@ -324,7 +334,21 @@ All changes to resources are tracked in the `AuditLog` table:
 - `component_id`
 - `locale`
 - `stage`
-- `(component_id, locale, stage, version)` - Composite for lookups
+- `idx_tv_lookup` (`component_id, locale, stage, version DESC` WHERE `deleted_at IS NULL`) — composite covering the hot read query (latest active version per component+locale+stage). Required for p95 <50ms at scale.
+- `idx_tv_unique_version` (`component_id, locale, stage, version` WHERE `deleted_at IS NULL`) — **partial unique** index that catches the read-MAX-then-insert race. `services.TranslationService.saveVersion` retries up to 5× on collision.
+
+### TranslateJob
+- `idx_translate_jobs_dedupe` (`component_id, source_locale, (target_locales[1]), job_type` WHERE `deleted_at IS NULL AND status IN ('pending','running')`) — partial unique to dedupe double-clicks on AutoTranslate/Backfill. The handler does lookup-then-insert and rescues the unique-violation on race.
+
+### CmsLocalization
+- `idx_cms_loc_lookup` (`cms_item_id, locale, stage, version DESC` WHERE `deleted_at IS NULL`) — mirror of `idx_tv_lookup` for the CMS hot read path.
+- `idx_cms_loc_unique_version` (`cms_item_id, locale, stage, version` WHERE `deleted_at IS NULL`) — partial unique. `services.SaveCmsLocalizationVersion` retries up to 5× on collision.
+
+### CmsTranslateJob
+- `idx_cms_translate_jobs_dedupe` (`cms_item_id, source_locale, target_locale, stage` WHERE `deleted_at IS NULL AND status IN ('pending','running')`) — mirror of `idx_translate_jobs_dedupe` for CMS translate jobs (single-target per row, so simpler index).
+
+### CmsItem
+- `idx_cms_item_app_identifier` (`application_id, identifier`) — composite unique, identifiers are case-folded to lowercase on create (`normalizeIdentifier`) so SDK lookups always match.
 
 ### User
 - `username` (unique)

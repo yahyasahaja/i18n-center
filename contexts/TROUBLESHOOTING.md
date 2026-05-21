@@ -2,6 +2,21 @@
 
 ## Common Issues & Solutions
 
+### Known-bug fingerprints (fixed — recognize the symptom, don't re-fix)
+
+| Symptom | Where | Resolution |
+|---|---|---|
+| SDK `getCmsContent('flash_banner')` returns 404 even though the item exists in the admin UI | CMS item identifier case-mismatch (SDK lowercases, server didn't) | Fixed: `normalizeIdentifier` on create + read. Verify with `SELECT identifier FROM cms_items WHERE application_id = '…'` — should all be lowercase. |
+| API key for application A can fetch CMS content from application B | `GetCmsItemByIdentifier` missing API-key scoping | Fixed: `middleware.GetAPIKeyApplicationID` check, returns 403 on mismatch. Same pattern used in `GetTranslationsByTag` and `GetTranslationsByPage`. |
+| Two version-N rows for the same component+locale+stage; `ORDER BY version DESC` is non-deterministic | Concurrent writers picked the same `MAX(version)+1` | Fixed: partial unique indexes `idx_tv_unique_version` / `idx_cms_loc_unique_version` + retry on `services.IsUniqueViolation`. If you see duplicates in old data, clean up with `DELETE … WHERE id NOT IN (SELECT MAX(id) FROM …)`. |
+| Translate button creates two OpenAI calls per click | Translate-job handler had no idempotency | Fixed: `findActiveTranslateJob` / `findActiveCmsTranslateJob` lookup + partial unique index `idx_translate_jobs_dedupe` / `idx_cms_translate_jobs_dedupe`. |
+| Production-stage `by-page` / `by-tag` translations stale for up to 1 hour after deploy | Aggregate cache wasn't invalidated on save | Fixed: `services.InvalidateAfterTranslationWrite` busts the affected `(appID, locale, stage)` cell on every save/revert/deploy. |
+| `CleanupOldVersions` runs N times every 5 min on N pods | Ticker had no leader-election | Fixed: Postgres advisory lock (`pg_try_advisory_lock(0x6931386e63746e6d)`) at top of `tickCleanup`. Losers no-op. |
+| Hydra latency spikes when i18n-center is under load | Unbounded GORM connection pool starves shared Cloud SQL | Fixed: `SetMaxOpenConns(20)` per pod (env-tunable). With 3 pods × 20 = 60 of Cloud SQL's default 100 max_connections. |
+| Boot fails with `CORS_ORIGIN must be set to an explicit origin` | Production safety check | Set `CORS_ORIGIN` to a real origin (e.g. `https://i18n-center.lapakgaming.com`) when `ENV=production`. The wildcard `*` is rejected because it pairs unsafely with `Allow-Credentials: true`. |
+
+---
+
 ### Backend Issues
 
 #### Database Connection Failed

@@ -78,15 +78,33 @@ All tests pass without a live DB (sqlmock). `observability.Logger` defaults to `
 ### Environment variables
 ```
 PORT, ENV, DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, DB_SSLMODE
+DB_MAX_OPEN_CONNS=20     # per-pod; shared Cloud SQL with Hydra, tune to avoid starvation
+DB_MAX_IDLE_CONNS=5
+DB_CONN_MAX_LIFETIME_MIN=30
 REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, REDIS_DB
 JWT_SECRET, JWT_EXPIRY
 OPENAI_API_KEY           # per-application key overrides this global default
-CORS_ORIGIN
+CORS_ORIGIN              # MUST be an explicit origin when ENV=production (boot fails on '*' or empty)
 LOG_SQL=false            # set true to log GORM queries
 DD_ENABLED, DD_AGENT_HOST, DD_DOGSTATSD_PORT   # Datadog (production only)
 # GCS — optional, required only for CMS image upload:
 GCS_BUCKET, GCS_CREDENTIALS_BASE64, GCS_CMS_IMAGE_PREFIX, PIXELSHIFT_BASE_URL
 ```
+
+### Deployment topology
+- **GKE** — stateless pods, ≥2 replicas. The in-process worker (`jobs/worker.go`) is K8s-safe via `FOR UPDATE SKIP LOCKED` on all three job tables (`add_language_jobs`, `translate_jobs`, `cms_translate_jobs`).
+- **Cloud SQL Postgres — SHARED with Hydra** (OAuth2 in B2C login hot path). Pool ceilings above keep i18n-center from starving Hydra. Table namespaces don't collide today (i18n-center uses unprefixed names; Hydra uses `hydra_oauth2_*`) but a dedicated schema is on the roadmap.
+- **Redis on a single VM** (not Memorystore, per SoW). Single point of failure — code degrades gracefully (cache errors are logged, never block requests) but Redis-down means every request hits Postgres. Provisioning checklist: `maxmemory <size>`, `maxmemory-policy allkeys-lru`, `tcp-keepalive 60`.
+- **Cloudflare** in front of public read endpoints, `Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600` for production responses.
+
+### Stateless-K8s patterns
+
+Any background task that must run on **exactly one pod** uses a Postgres session-level advisory lock as a leader-election. Example: `jobs/cleanup.go` calls `pg_try_advisory_lock(<fixed-int-key>)` at each tick; losers no-op. Auto-release on session close means a crashed leader doesn't block the next tick.
+
+Things that already use this pattern:
+- `RunCleanupTicker` — `translation_versions` retention sweep (key `0x6931386e63746e6d`)
+
+If you add another singleton background job, pick a new int64 key and document it next to `cleanupAdvisoryLockKey`.
 
 ---
 
@@ -270,3 +288,16 @@ State is passed between suites via `e2e/.test-state.json` (written by global-set
 - **`observability.Logger` starts as `zap.NewNop()`** — `InitLogger()` is called by `main.go` at startup, but tests never call it. This is intentional.
 - **CMS pages don't use Redux** — they fetch data directly via `cmsApi.*` and hold it in local state.
 - **Swagger security tag on public endpoints**: `GetCmsItemByIdentifier` and translation read endpoints intentionally omit `@Security BearerAuth` — they accept API keys via `TranslationAuthMiddleware`.
+
+## Patterns to reuse (NOT re-implement)
+
+When you find yourself writing one of these, use the existing helper instead:
+
+- **Insert next version with retry on race** — `services.SaveCmsLocalizationVersion` for CMS, `TranslationService.saveVersion`/`saveVersionTx` for translations. Both rely on partial unique indexes (`idx_cms_loc_unique_version`, `idx_tv_unique_version`) and retry up to 5 times on duplicate-key error. **Do NOT** roll your own MAX(version)+1 read-then-insert — concurrent writers will collide and silently produce duplicate version rows.
+- **Detect unique-key violation** — `services.IsUniqueViolation(err)`. Message-based heuristic (matches `SQLSTATE 23505`); no dependency on `jackc/pgconn`.
+- **Cache invalidation after a translation write** — `services.InvalidateAfterTranslationWrite(componentID, locale, stage)`. Scopes the by-page/by-tag pattern delete to the affected (appID, locale, stage) cell so draft writes don't touch production cache.
+- **Cache invalidation for app-wide changes** — `services.InvalidateApplicationReadCache(appID)`. Used by `DeleteLanguage` and the post-commit hook in `DeployLocale`.
+- **Translate-job idempotency lookup** — `findActiveTranslateJob` (in `translation_handler.go`) for translations and `findActiveCmsTranslateJob` (in `cms_item_handler.go`) for CMS. Both back the dedupe partial unique index. Always lookup-then-insert, with a second lookup on the unique-violation race for the catch-up path.
+- **Application API-key scoping on public endpoints** — `middleware.GetAPIKeyApplicationID(c)` returns `uuid.Nil` for JWT requests; non-nil means an API key authenticated this request and the handler MUST verify it matches the URL's application_id (see `GetTranslationsByPage`, `GetTranslationsByTag`, `GetCmsItemByIdentifier`). Missing this check is a cross-tenant leak.
+- **CMS identifier normalization** — `normalizeIdentifier(s)` in `cms_item_handler.go` lowercases + trims. The SDK (`i18ncenter-js`) lowercases before sending; the server must do the same on create and read or you'll silently 404.
+- **Public read endpoint cache headers** — `setPublicCacheHeaders(c, stage, sMaxage)` in `translation_handler.go`. Production stages emit `public, max-age=60, s-maxage=300, stale-while-revalidate=600` + `Vary: X-API-Key, Authorization, Accept-Encoding`; draft/staging get `private, no-store`.

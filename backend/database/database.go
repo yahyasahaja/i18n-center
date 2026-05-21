@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/your-org/i18n-center/models"
@@ -42,6 +44,25 @@ func InitDatabase() error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
+
+	// Connection pool sizing. The Cloud SQL Postgres is shared with Hydra (OAuth2
+	// server in the B2C login hot path), so an unbounded pool here can starve
+	// Hydra under load. Defaults are conservative; tune via env if needed.
+	//
+	//   DB_MAX_OPEN_CONNS — total connections this pod may hold open. Default 20.
+	//   DB_MAX_IDLE_CONNS — idle connections kept alive. Default 5.
+	//   DB_CONN_MAX_LIFETIME_MIN — rotate connections every N minutes to align
+	//       with Cloud SQL's idle-disconnect window and avoid stale sockets. Default 30.
+	//
+	// Back-of-envelope: 3 replicas × 20 = 60 connections to share with Hydra's pool.
+	// Cloud SQL Postgres default max_connections is 100 — plenty of headroom.
+	sqlDB, dbErr := DB.DB()
+	if dbErr != nil {
+		return fmt.Errorf("failed to get underlying sql.DB: %w", dbErr)
+	}
+	sqlDB.SetMaxOpenConns(envIntOr("DB_MAX_OPEN_CONNS", 20))
+	sqlDB.SetMaxIdleConns(envIntOr("DB_MAX_IDLE_CONNS", 5))
+	sqlDB.SetConnMaxLifetime(time.Duration(envIntOr("DB_CONN_MAX_LIFETIME_MIN", 30)) * time.Minute)
 
 	// Handle migration for code fields (backfill existing data)
 	if err := migrateCodeFields(); err != nil {
@@ -407,7 +428,52 @@ func ensurePerformanceIndexes() error {
 		return fmt.Errorf("translate_jobs dedupe index: %w", err)
 	}
 
+	// CMS mirror of the translation_versions indexes. cms_localizations has the
+	// same hot read path (latest version per item+locale+stage) and the same
+	// write-path race (MAX(version)+1 read-then-insert across SaveLocalization,
+	// DeployLocalization, RevertLocalization, and processCmsTranslateJob).
+	if err := DB.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_cms_loc_lookup
+		ON cms_localizations (cms_item_id, locale, stage, version DESC)
+		WHERE deleted_at IS NULL
+	`).Error; err != nil {
+		return fmt.Errorf("cms_localizations lookup index: %w", err)
+	}
+	if err := DB.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_cms_loc_unique_version
+		ON cms_localizations (cms_item_id, locale, stage, version)
+		WHERE deleted_at IS NULL
+	`).Error; err != nil {
+		return fmt.Errorf("cms_localizations unique version index: %w", err)
+	}
+
+	// Idempotency for CMS translate-job creation. Same pattern as
+	// idx_translate_jobs_dedupe but cms_translate_jobs has a single
+	// target_locale column (not a Postgres array) so the index is simpler.
+	if err := DB.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_cms_translate_jobs_dedupe
+		ON cms_translate_jobs (cms_item_id, source_locale, target_locale, stage)
+		WHERE deleted_at IS NULL AND status IN ('pending', 'running')
+	`).Error; err != nil {
+		return fmt.Errorf("cms_translate_jobs dedupe index: %w", err)
+	}
+
 	return nil
+}
+
+// envIntOr reads an env var as int, falling back to dflt if unset or unparseable.
+// Used for pool-sizing knobs that operations may want to tune per environment.
+func envIntOr(key string, dflt int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return dflt
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		log.Printf("invalid %s=%q (using default %d): %v", key, raw, dflt, err)
+		return dflt
+	}
+	return n
 }
 
 // CleanupOldVersions keeps only the last 50 versions per component-locale-stage
