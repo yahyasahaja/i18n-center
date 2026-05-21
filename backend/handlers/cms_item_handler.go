@@ -768,6 +768,14 @@ func GetCmsItemByIdentifier(c *gin.Context) {
 		return
 	}
 
+	// Same cache strategy as translation read endpoints: Cloudflare-cacheable for
+	// production, no-store for draft/staging so operator edits are visible immediately.
+	if stage == models.StageProduction {
+		c.Header("Cache-Control", "public, max-age=60, s-maxage=300, stale-while-revalidate=600")
+		c.Header("Vary", "X-API-Key, Authorization, Accept-Encoding")
+	} else {
+		c.Header("Cache-Control", "private, no-store")
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"identifier": item.Identifier,
 		"locale":     locale,

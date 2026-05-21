@@ -1,7 +1,9 @@
 package routes
 
 import (
+	"log"
 	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
@@ -20,12 +22,24 @@ func SetupRoutes() *gin.Engine {
 	r.Use(middleware.ObservabilityMiddleware())
 	r.Use(middleware.ErrorLoggingMiddleware())
 
-	// CORS middleware
-	r.Use(func(c *gin.Context) {
-		corsOrigin := os.Getenv("CORS_ORIGIN")
-		if corsOrigin == "" {
-			corsOrigin = "*"
+	// CORS middleware.
+	//
+	// Production safety: refuse to start with a wildcard origin when ENV=production.
+	// Pairing Access-Control-Allow-Origin: * with Allow-Credentials: true is rejected
+	// by browsers anyway, but on top of that we don't want a misconfigured pod to
+	// silently allow any origin against an authenticated dashboard. Fail fast in
+	// CI/CD instead of debugging in prod.
+	corsOrigin := strings.TrimSpace(os.Getenv("CORS_ORIGIN"))
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("ENV")))
+	if env == "production" || env == "prod" {
+		if corsOrigin == "" || corsOrigin == "*" {
+			log.Fatalf("CORS_ORIGIN must be set to an explicit origin (not empty or '*') when ENV=%s", env)
 		}
+	}
+	if corsOrigin == "" {
+		corsOrigin = "*"
+	}
+	r.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", corsOrigin)
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-API-Key, accept, origin, Cache-Control, X-Requested-With")

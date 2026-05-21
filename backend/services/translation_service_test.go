@@ -308,7 +308,7 @@ func TestSaveTranslation_Branches(t *testing.T) {
 		assert.Nil(t, got)
 	})
 
-	t.Run("next version and cleanup", func(t *testing.T) {
+	t.Run("next version", func(t *testing.T) {
 		mock := setupTranslationServiceDB(t)
 		svc := NewTranslationService()
 		compID := uuid.New()
@@ -322,8 +322,8 @@ func TestSaveTranslation_Branches(t *testing.T) {
 		mock.ExpectQuery(`INSERT INTO "translation_versions"`).
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(uuid.New()))
 		mock.ExpectCommit()
-		mock.ExpectExec(`DELETE FROM translation_versions`).
-			WillReturnResult(sqlmock.NewResult(0, 0))
+		// Version-retention cleanup moved to background ticker (jobs.RunCleanupTicker),
+		// so we no longer expect a DELETE on every save.
 
 		got, err := svc.SaveTranslation(compID, "id", models.StageDraft, models.JSONB{"new": "2"}, uuid.Nil)
 		require.NoError(t, err)

@@ -492,22 +492,40 @@ func (h *ApplicationHandler) DeployLocale(c *gin.Context) {
 		return
 	}
 
+	// Per-component DeployToStage performs its own writes and cache invalidation.
+	// Wrap the whole fan-out in a transaction so a mid-flight failure rolls every
+	// component's deploy back — the API contract ("no changes applied") was previously
+	// a lie when component N of 100 failed and components 1..N-1 had been persisted.
+	//
+	// Cache invalidation runs *after* the transaction commits so stale entries are
+	// never busted on a rollback (would cause spurious DB reads later).
 	translationService := services.NewTranslationService()
-	for _, comp := range components {
-		if err := translationService.DeployToStage(comp.ID, req.Locale, fromStage, toStage, userID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":  "Deploy failed (no changes applied)",
-				"detail": fmt.Sprintf("Component %s: %v", comp.Code, err),
-				"retry":  true,
-			})
-			return
+	failedComponent := ""
+	var firstErr error
+
+	txErr := database.DB.Transaction(func(tx *gorm.DB) error {
+		for _, comp := range components {
+			if err := translationService.DeployToStageTx(tx, comp.ID, req.Locale, fromStage, toStage, userID); err != nil {
+				failedComponent = comp.Code
+				firstErr = err
+				return err
+			}
 		}
+		deploy.StageCompleted = string(toStage)
+		return tx.Save(&deploy).Error
+	})
+	if txErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Deploy failed (rolled back, no changes applied)",
+			"detail": fmt.Sprintf("Component %s: %v", failedComponent, firstErr),
+			"retry":  true,
+		})
+		return
 	}
 
-	deploy.StageCompleted = string(toStage)
-	if err := database.DB.Save(&deploy).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update deploy state: " + err.Error()})
-		return
+	// Tx committed — now invalidate caches for every component in this (locale, toStage) cell.
+	for _, comp := range components {
+		services.InvalidateAfterTranslationWrite(comp.ID, req.Locale, string(toStage))
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -720,7 +738,7 @@ func (h *ApplicationHandler) DeleteLanguage(c *gin.Context) {
 		}
 		cache.Delete(cache.ComponentKey(compID.String()))
 	}
-	cache.Delete(cache.ApplicationKey(appIDStr))
+	services.InvalidateApplicationReadCache(appID)
 
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)

@@ -83,6 +83,13 @@ func InitDatabase() error {
 		log.Printf("Note: search indexes setup error (non-fatal): %v", err)
 	}
 
+	// Indexes that protect hot read paths and prevent version-number races.
+	// Non-fatal: server still starts if these fail (e.g. on a slave at boot),
+	// but performance and write-concurrency safety will be degraded.
+	if err := ensurePerformanceIndexes(); err != nil {
+		log.Printf("Note: performance indexes setup error (non-fatal): %v", err)
+	}
+
 	// Add observability callbacks
 	setupObservabilityCallbacks()
 
@@ -347,6 +354,59 @@ func ensureSearchIndexes() error {
 	`).Error; err != nil {
 		return fmt.Errorf("code trigram index: %w", err)
 	}
+	return nil
+}
+
+// ensurePerformanceIndexes creates indexes that protect the two highest-stakes
+// access patterns on translation_versions:
+//
+//  1. The hot read query: latest active version for a (component_id, locale, stage).
+//     Public translation endpoints hit this path on every cache miss; without a
+//     composite index that includes version DESC, the planner falls back to the
+//     component_id b-tree and re-sorts in memory — fine at low row counts,
+//     painful past a few hundred thousand rows.
+//
+//  2. The version-number race on concurrent saves. saveVersion reads MAX(version)
+//     and then inserts version+1; without a unique constraint two concurrent
+//     writers can both pick the same number and silently create duplicate rows.
+//     A partial unique index turns that into a duplicate-key error the service
+//     can retry deterministically.
+func ensurePerformanceIndexes() error {
+	// Composite read index for the hot path.
+	// Partial on deleted_at IS NULL so soft-deleted rows don't bloat the index.
+	if err := DB.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_tv_lookup
+		ON translation_versions (component_id, locale, stage, version DESC)
+		WHERE deleted_at IS NULL
+	`).Error; err != nil {
+		return fmt.Errorf("translation_versions lookup index: %w", err)
+	}
+
+	// Partial unique index to eliminate the version-number race.
+	// Only active, non-deleted rows participate — historical soft-deleted rows
+	// may share a version number with newer rows from the same logical chain.
+	if err := DB.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_tv_unique_version
+		ON translation_versions (component_id, locale, stage, version)
+		WHERE deleted_at IS NULL
+	`).Error; err != nil {
+		return fmt.Errorf("translation_versions unique version index: %w", err)
+	}
+
+	// Idempotency for translate-job creation: at most one pending+running job
+	// per (component, source, first target, type) tuple. Stops double-clicks
+	// from queuing duplicate OpenAI work that races each other on save.
+	// target_locales is a Postgres text[]; index on the first element so the
+	// auto-translate case (single target) is constrained while backfill
+	// (multi-target) is unaffected.
+	if err := DB.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_translate_jobs_dedupe
+		ON translate_jobs (component_id, source_locale, (target_locales[1]), job_type)
+		WHERE deleted_at IS NULL AND status IN ('pending', 'running')
+	`).Error; err != nil {
+		return fmt.Errorf("translate_jobs dedupe index: %w", err)
+	}
+
 	return nil
 }
 

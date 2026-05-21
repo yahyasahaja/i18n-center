@@ -55,6 +55,24 @@ func (h *TranslationHandler) getClientInfo(c *gin.Context) (ipAddress, userAgent
 	return ipAddress, userAgent
 }
 
+// setPublicCacheHeaders adds Cache-Control directives that allow Cloudflare (and
+// any other shared cache) to cache the response for `sMaxage` seconds while keeping
+// browser-side caches short. Only safe to call on responses for the production
+// stage and only when the caller is anonymous / API-key-authenticated (i.e. the
+// data is the same for every consumer of the application).
+//
+// Aligns with the SoW v2 architecture: Cloudflare edge cache with max-age=300,
+// served as the first layer in front of i18n-center.
+func setPublicCacheHeaders(c *gin.Context, stage string, sMaxage int) {
+	if stage != string(models.StageProduction) {
+		// Non-production stages are operator-only and rev frequently.
+		c.Header("Cache-Control", "private, no-store")
+		return
+	}
+	c.Header("Cache-Control", fmt.Sprintf("public, max-age=60, s-maxage=%d, stale-while-revalidate=600", sMaxage))
+	c.Header("Vary", "X-API-Key, Authorization, Accept-Encoding")
+}
+
 // GetTranslation retrieves translation for a component
 // @Summary      Get translation
 // @Description  Get translation data for a component by locale and stage
@@ -189,6 +207,7 @@ func (h *TranslationHandler) GetMultipleTranslations(c *gin.Context) {
 		for code, translation := range translations {
 			response[code] = translation.Data
 		}
+		setPublicCacheHeaders(c, string(stage), 300)
 		c.JSON(http.StatusOK, response)
 		return
 	}
@@ -284,6 +303,7 @@ func (h *TranslationHandler) GetTranslationsByTag(c *gin.Context) {
 	cacheKey := cache.TranslationsByTagKey(applicationIDStr, tagCode, locale, string(stage))
 	var response map[string]interface{}
 	if err := cache.Get(cacheKey, &response); err == nil {
+		setPublicCacheHeaders(c, string(stage), 300)
 		c.JSON(http.StatusOK, response)
 		return
 	}
@@ -325,6 +345,7 @@ func (h *TranslationHandler) GetTranslationsByTag(c *gin.Context) {
 		}
 	}
 	_ = cache.Set(cacheKey, response, time.Hour)
+	setPublicCacheHeaders(c, string(stage), 300)
 	c.JSON(http.StatusOK, response)
 }
 
@@ -375,6 +396,7 @@ func (h *TranslationHandler) GetTranslationsByPage(c *gin.Context) {
 	cacheKey := cache.TranslationsByPageKey(applicationIDStr, pageCode, locale, string(stage))
 	var response map[string]interface{}
 	if err := cache.Get(cacheKey, &response); err == nil {
+		setPublicCacheHeaders(c, string(stage), 300)
 		c.JSON(http.StatusOK, response)
 		return
 	}
@@ -416,6 +438,7 @@ func (h *TranslationHandler) GetTranslationsByPage(c *gin.Context) {
 		}
 	}
 	_ = cache.Set(cacheKey, response, time.Hour)
+	setPublicCacheHeaders(c, string(stage), 300)
 	c.JSON(http.StatusOK, response)
 }
 
@@ -655,6 +678,21 @@ func (h *TranslationHandler) AutoTranslate(c *gin.Context) {
 
 	userID, _ := h.getCurrentUser(c)
 
+	// Idempotency: if a pending/running job already exists for the same
+	// (component, source, target, type) tuple, return that one instead of
+	// creating a duplicate. The partial unique index idx_translate_jobs_dedupe
+	// enforces this at the DB level too — this lookup just gives a clean 202
+	// response when a user double-clicks, instead of bouncing back a 500.
+	if existing := findActiveTranslateJob(componentID, req.SourceLocale, req.TargetLocale, models.TranslateJobTypeAutoTranslate); existing != nil {
+		c.JSON(http.StatusAccepted, gin.H{
+			"job_id":     existing.ID.String(),
+			"status":     existing.Status,
+			"deduped":    true,
+			"message":    "Existing translation job is still " + existing.Status + ". Poll /translate-jobs/" + existing.ID.String() + " for status.",
+		})
+		return
+	}
+
 	job := models.TranslateJob{
 		ApplicationID: component.ApplicationID,
 		ComponentID:   componentID,
@@ -665,6 +703,17 @@ func (h *TranslationHandler) AutoTranslate(c *gin.Context) {
 		CreatedBy:     userID,
 	}
 	if err := database.DB.Create(&job).Error; err != nil {
+		// Unique-index violation race: another request enqueued the same job between
+		// our lookup and our insert. Find and return it.
+		if existing := findActiveTranslateJob(componentID, req.SourceLocale, req.TargetLocale, models.TranslateJobTypeAutoTranslate); existing != nil {
+			c.JSON(http.StatusAccepted, gin.H{
+				"job_id":  existing.ID.String(),
+				"status":  existing.Status,
+				"deduped": true,
+				"message": "Existing translation job is " + existing.Status + ". Poll /translate-jobs/" + existing.ID.String() + " for status.",
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue translation job"})
 		return
 	}
@@ -674,6 +723,21 @@ func (h *TranslationHandler) AutoTranslate(c *gin.Context) {
 		"status":  job.Status,
 		"message": "Translation job enqueued. Poll /translate-jobs/" + job.ID.String() + " for status.",
 	})
+}
+
+// findActiveTranslateJob returns the first pending/running TranslateJob matching
+// the de-duplication tuple, or nil if none exists.
+func findActiveTranslateJob(componentID uuid.UUID, sourceLocale, targetLocale, jobType string) *models.TranslateJob {
+	var job models.TranslateJob
+	err := database.DB.Where(
+		"component_id = ? AND source_locale = ? AND target_locales[1] = ? AND job_type = ? AND status IN ?",
+		componentID, sourceLocale, targetLocale, jobType,
+		[]string{models.JobStatusPending, models.JobStatusRunning},
+	).Order("created_at DESC").First(&job).Error
+	if err != nil {
+		return nil
+	}
+	return &job
 }
 
 type BackfillRequest struct {
@@ -732,9 +796,18 @@ func (h *TranslationHandler) BackfillTranslations(c *gin.Context) {
 
 	userID, _ := h.getCurrentUser(c)
 
-	// One job per target locale so each can be tracked and retried independently
+	// One job per target locale so each can be tracked and retried independently.
+	// Backfill is also de-duplicated per-locale: if a pending/running job already
+	// exists for a (component, source, target, backfill) tuple, we return its ID
+	// rather than queuing a duplicate.
 	jobIDs := make([]string, 0, len(req.TargetLocales))
+	dedupedCount := 0
 	for _, targetLocale := range req.TargetLocales {
+		if existing := findActiveTranslateJob(componentID, req.SourceLocale, targetLocale, models.TranslateJobTypeBackfill); existing != nil {
+			jobIDs = append(jobIDs, existing.ID.String())
+			dedupedCount++
+			continue
+		}
 		job := models.TranslateJob{
 			ApplicationID: component.ApplicationID,
 			ComponentID:   componentID,
@@ -745,6 +818,12 @@ func (h *TranslationHandler) BackfillTranslations(c *gin.Context) {
 			CreatedBy:     userID,
 		}
 		if err := database.DB.Create(&job).Error; err != nil {
+			// Lost the dedupe race — pick up the existing job and keep going.
+			if existing := findActiveTranslateJob(componentID, req.SourceLocale, targetLocale, models.TranslateJobTypeBackfill); existing != nil {
+				jobIDs = append(jobIDs, existing.ID.String())
+				dedupedCount++
+				continue
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue job for locale " + targetLocale})
 			return
 		}
@@ -752,9 +831,10 @@ func (h *TranslationHandler) BackfillTranslations(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"job_ids": jobIDs,
-		"count":   len(jobIDs),
-		"message": fmt.Sprintf("%d translation jobs enqueued. Poll /translate-jobs/:job_id for each status.", len(jobIDs)),
+		"job_ids":       jobIDs,
+		"count":         len(jobIDs),
+		"deduped_count": dedupedCount,
+		"message":       fmt.Sprintf("%d translation jobs enqueued (%d already in-flight). Poll /translate-jobs/:job_id for each status.", len(jobIDs)-dedupedCount, dedupedCount),
 	})
 }
 
