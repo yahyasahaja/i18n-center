@@ -455,6 +455,14 @@ definitions:
         type: string
       id:
         type: string
+      key_contexts:
+        allOf:
+        - $ref: '#/definitions/models.JSONB'
+        description: |-
+          KeyContexts holds optional per-key context hints used as authoring notes for
+          AI translation. Keys use dot-notation paths into the translation tree
+          (e.g. "greeting.welcome"); values are short human-readable descriptions.
+          Never returned by public translation read endpoints — UI-only metadata.
       name:
         type: string
       pages:

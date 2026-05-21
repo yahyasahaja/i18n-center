@@ -195,7 +195,7 @@ func processAddLanguageJob(ctx context.Context, job *models.AddLanguageJob, tran
 			}
 
 			// Pass ctx so the HTTP call to OpenAI can be cancelled on SIGTERM
-			translatedData, err := openAIService.TranslateJSON(ctx, sourceTranslation.Data, comp.DefaultLocale, job.Locale)
+			translatedData, err := openAIService.TranslateJSON(ctx, sourceTranslation.Data, jsonbToStringMap(comp.KeyContexts), comp.DefaultLocale, job.Locale)
 			if err != nil {
 				results <- result{err: fmt.Errorf("component %s: %w", comp.Code, err), compCode: comp.Code}
 				_ = database.DB.Exec(
@@ -425,6 +425,12 @@ func processTranslateJob(ctx context.Context, job *models.TranslateJob, translat
 		return
 	}
 
+	// Load component KeyContexts to inject as AI hints. Missing record is fine —
+	// we just translate without hints.
+	var componentForCtx models.Component
+	_ = database.DB.Select("id, key_contexts").First(&componentForCtx, "id = ?", job.ComponentID).Error
+	keyContexts := jsonbToStringMap(componentForCtx.KeyContexts)
+
 	currentSource := map[string]interface{}(sourceTranslation.Data)
 	var finalData map[string]interface{}
 
@@ -452,7 +458,7 @@ func processTranslateJob(ctx context.Context, job *models.TranslateJob, translat
 
 		if len(changed) > 0 {
 			// Send only the changed/new keys to AI.
-			translatedPartial, err := openAIService.TranslateJSON(ctx, changed, job.SourceLocale, targetLocale)
+			translatedPartial, err := openAIService.TranslateJSON(ctx, changed, keyContexts, job.SourceLocale, targetLocale)
 			if err != nil {
 				_ = markTranslateJobFailed(job.ID, "Translation failed", err.Error())
 				return
@@ -475,7 +481,7 @@ func processTranslateJob(ctx context.Context, job *models.TranslateJob, translat
 		)
 	} else {
 		// ── Full-translate path (first run or no snapshot) ───────────────────
-		finalData, err = openAIService.TranslateJSON(ctx, currentSource, job.SourceLocale, targetLocale)
+		finalData, err = openAIService.TranslateJSON(ctx, currentSource, keyContexts, job.SourceLocale, targetLocale)
 		if err != nil {
 			_ = markTranslateJobFailed(job.ID, "Translation failed", err.Error())
 			return
@@ -613,6 +619,24 @@ func mergeTranslations(base, additions map[string]interface{}) map[string]interf
 		result[k] = v
 	}
 	return result
+}
+
+// jsonbToStringMap flattens a JSONB into a map[string]string, dropping non-string
+// values. Used to feed component KeyContexts into the OpenAI service.
+func jsonbToStringMap(j models.JSONB) map[string]string {
+	if len(j) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(j))
+	for k, v := range j {
+		if s, ok := v.(string); ok && s != "" {
+			out[k] = s
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // jsonEqual compares two values by their JSON representation to avoid type-mismatch

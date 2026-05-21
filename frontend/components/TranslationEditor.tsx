@@ -17,6 +17,7 @@ interface TranslationEditorProps {
   applicationId: string
   enabledLanguages: string[]
   defaultLocale: string
+  keyContexts?: Record<string, string> | null
 }
 
 const STAGE_VALUES = ['draft', 'staging', 'production']
@@ -27,7 +28,11 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
   applicationId,
   enabledLanguages,
   defaultLocale,
+  keyContexts,
 }) => {
+  const keyContextEntries = keyContexts
+    ? Object.entries(keyContexts).filter(([path, ctx]) => path && ctx)
+    : []
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
@@ -909,6 +914,34 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
           </>
         )}
       </Card>
+
+      {keyContextEntries.length > 0 && (
+        <Card title="Key Contexts (AI translation hints)">
+          <p className="text-xs text-gray-500 mb-3">
+            Authoring notes attached to specific keys on this component. Read-only here —
+            edit them under <em>Edit component</em>. These hints are passed to the AI
+            translator to disambiguate meaning and are NOT included in translation output.
+          </p>
+          <div className="overflow-hidden border border-gray-200 rounded-md">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium text-gray-700 w-1/3">Key path</th>
+                  <th className="px-3 py-2 text-left font-medium text-gray-700">Context</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 bg-white">
+                {keyContextEntries.map(([path, ctx]) => (
+                  <tr key={path}>
+                    <td className="px-3 py-2 font-mono text-gray-800">{path}</td>
+                    <td className="px-3 py-2 text-gray-700">{ctx}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       {/* Version Comparison Modal (current vs previous) */}
       <Modal

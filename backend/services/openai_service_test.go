@@ -62,16 +62,47 @@ func TestMockTranslateJSON(t *testing.T) {
 
 func TestTranslateJSONBatch_MockMode(t *testing.T) {
 	s := NewOpenAIService("mock")
-	got, err := s.TranslateJSONBatch(context.Background(), map[string]interface{}{"hello": "Hello"}, "en", "es")
+	got, err := s.TranslateJSONBatch(context.Background(), map[string]interface{}{"hello": "Hello"}, nil, "en", "es")
 	assert.NoError(t, err)
 	assert.Equal(t, "Hello [es-mock]", got["hello"])
 }
 
 func TestTranslate_MockMode(t *testing.T) {
 	s := NewOpenAIService("mock")
-	got, err := s.Translate(context.Background(), "Hello", "en", "id")
+	got, err := s.Translate(context.Background(), "Hello", "", "en", "id")
 	assert.NoError(t, err)
 	assert.Equal(t, "Hello [id-mock]", got)
+}
+
+func TestBuildKeyHintsSection(t *testing.T) {
+	data := map[string]interface{}{
+		"greeting": map[string]interface{}{
+			"welcome": "Hi",
+		},
+		"checkout": map[string]interface{}{
+			"cta": "Pay now",
+		},
+		"meta": map[string]interface{}{
+			"count": 5,
+		},
+	}
+	contexts := map[string]string{
+		"greeting.welcome": "user greeting",
+		"checkout.cta":     "payment confirmation button",
+		"unknown.path":     "irrelevant — should be dropped",
+		"meta.count":       "non-string leaf — should be dropped",
+		"empty.note":       "   ",
+	}
+	got := buildKeyHintsSection(data, contexts)
+	assert.Contains(t, got, "KEY HINTS")
+	assert.Contains(t, got, "checkout.cta: payment confirmation button")
+	assert.Contains(t, got, "greeting.welcome: user greeting")
+	assert.NotContains(t, got, "unknown.path")
+	assert.NotContains(t, got, "meta.count")
+	assert.NotContains(t, got, "empty.note")
+
+	// No contexts at all → no section
+	assert.Equal(t, "", buildKeyHintsSection(data, nil))
 }
 
 func TestValidateTranslatedJSON(t *testing.T) {

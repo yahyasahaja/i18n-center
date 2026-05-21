@@ -3402,6 +3402,14 @@
                 "id": {
                     "type": "string"
                 },
+                "key_contexts": {
+                    "description": "KeyContexts holds optional per-key context hints used as authoring notes for\nAI translation. Keys use dot-notation paths into the translation tree\n(e.g. \"greeting.welcome\"); values are short human-readable descriptions.\nNever returned by public translation read endpoints — UI-only metadata.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.JSONB"
+                        }
+                    ]
+                },
                 "name": {
                     "type": "string"
                 },

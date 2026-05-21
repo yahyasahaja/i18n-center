@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -55,9 +56,13 @@ const (
 // that all keys are preserved and all [bracketed] placeholders survive, and
 // retries up to maxRetries times on structural or placeholder validation failure.
 //
+// keyContexts is an optional dot-path → context-hint map (e.g. "greeting.welcome" →
+// "user greeting"). Hints are injected into the prompt as authoring notes so the
+// model can disambiguate meaning — they are NOT part of the output JSON.
+//
 // Falls back to TranslateJSONPerKey if the serialized JSON exceeds maxBatchChars
 // (very large components).
-func (s *OpenAIService) TranslateJSONBatch(ctx context.Context, data map[string]interface{}, sourceLang, targetLang string) (map[string]interface{}, error) {
+func (s *OpenAIService) TranslateJSONBatch(ctx context.Context, data map[string]interface{}, keyContexts map[string]string, sourceLang, targetLang string) (map[string]interface{}, error) {
 	if s.isMockMode() {
 		return mockTranslateJSON(data, targetLang), nil
 	}
@@ -73,8 +78,10 @@ func (s *OpenAIService) TranslateJSONBatch(ctx context.Context, data map[string]
 
 	// Fall back to per-key translation for oversized components
 	if len(jsonBytes) > maxBatchChars {
-		return s.TranslateJSONPerKey(ctx, data, sourceLang, targetLang)
+		return s.TranslateJSONPerKey(ctx, data, keyContexts, sourceLang, targetLang)
 	}
+
+	hintsSection := buildKeyHintsSection(data, keyContexts)
 
 	prompt := fmt.Sprintf(
 		"Translate all string values in the JSON below from %s to %s.\n\n"+
@@ -90,8 +97,8 @@ func (s *OpenAIService) TranslateJSONBatch(ctx context.Context, data map[string]
 			"8. Email addresses (any token matching user@domain) must be copied verbatim — do NOT translate or alter them.\n"+
 			"9. If a string value is ONLY a URL or ONLY an email address, return it completely unchanged.\n"+
 			"10. Proper nouns and brand/product names (e.g. LapakGaming, Joytify, Google, YouTube) must NOT be translated — keep them exactly as written.\n\n"+
-			"Input JSON:\n%s",
-		sourceLang, targetLang, string(jsonBytes),
+			"%sInput JSON:\n%s",
+		sourceLang, targetLang, hintsSection, string(jsonBytes),
 	)
 
 	var lastErr error
@@ -143,7 +150,7 @@ func (s *OpenAIService) TranslateJSONBatch(ctx context.Context, data map[string]
 	}
 
 	// All retries exhausted — fall back to per-key so we never lose data
-	perKeyResult, perKeyErr := s.TranslateJSONPerKey(ctx, data, sourceLang, targetLang)
+	perKeyResult, perKeyErr := s.TranslateJSONPerKey(ctx, data, keyContexts, sourceLang, targetLang)
 	if perKeyErr != nil {
 		return nil, fmt.Errorf("batch failed after %d retries (%w); per-key fallback also failed: %v", maxRetries, lastErr, perKeyErr)
 	}
@@ -261,13 +268,23 @@ func validatePlaceholders(source, translated string) error {
 
 // Translate translates a single string, preserving [bracketed] placeholders.
 // Used as the per-key fallback inside TranslateJSONPerKey.
-func (s *OpenAIService) Translate(ctx context.Context, text, sourceLang, targetLang string) (string, error) {
+// keyContext is an optional authoring-note hint about the source key's intent
+// (e.g. "greeting on landing page"); empty string disables the hint.
+func (s *OpenAIService) Translate(ctx context.Context, text, keyContext, sourceLang, targetLang string) (string, error) {
 	if s.isMockMode() {
 		return mockTranslateText(text, targetLang), nil
 	}
 
 	if s.APIKey == "" {
 		return "", fmt.Errorf("OpenAI API key not configured")
+	}
+
+	contextLine := ""
+	if strings.TrimSpace(keyContext) != "" {
+		contextLine = fmt.Sprintf(
+			"\nAuthoring note about this text (use only to disambiguate meaning, do NOT include in output): %s\n",
+			strings.TrimSpace(keyContext),
+		)
 	}
 
 	prompt := fmt.Sprintf(
@@ -280,9 +297,10 @@ func (s *OpenAIService) Translate(ctx context.Context, text, sourceLang, targetL
 			"4. Email addresses (tokens matching user@domain) must be copied verbatim — do not translate or alter them.\n"+
 			"5. If the entire text is a URL or email address, return it completely unchanged.\n"+
 			"6. Proper nouns and brand/product names (e.g. LapakGaming, Joytify, Google, YouTube) must NOT be translated — keep them exactly as written.\n\n"+
-			"Example: \"Hi [name]! Selamat datang di pesta!\" → \"Hi [name]! Welcome to the party!\"\n\n"+
+			"Example: \"Hi [name]! Selamat datang di pesta!\" → \"Hi [name]! Welcome to the party!\"\n"+
+			"%s\n"+
 			"Text to translate: %s",
-		sourceLang, targetLang, text,
+		sourceLang, targetLang, contextLine, text,
 	)
 
 	requestBody := OpenAIRequest{
@@ -332,21 +350,27 @@ func (s *OpenAIService) Translate(ctx context.Context, text, sourceLang, targetL
 // TranslateJSONPerKey translates a JSON map value-by-value (one API call per string).
 // Only used as a fallback when batch translation fails or the JSON is too large.
 // Keys are always preserved unchanged.
-func (s *OpenAIService) TranslateJSONPerKey(ctx context.Context, data map[string]interface{}, sourceLang, targetLang string) (map[string]interface{}, error) {
+// keyContexts maps dot-notation paths (e.g. "greeting.welcome") to authoring-note hints.
+func (s *OpenAIService) TranslateJSONPerKey(ctx context.Context, data map[string]interface{}, keyContexts map[string]string, sourceLang, targetLang string) (map[string]interface{}, error) {
+	return s.translateJSONPerKey(ctx, data, keyContexts, "", sourceLang, targetLang)
+}
+
+func (s *OpenAIService) translateJSONPerKey(ctx context.Context, data map[string]interface{}, keyContexts map[string]string, pathPrefix, sourceLang, targetLang string) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 	for key, value := range data {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("cancelled at key %s: %w", key, err)
 		}
+		path := joinPath(pathPrefix, key)
 		switch v := value.(type) {
 		case string:
-			translated, err := s.Translate(ctx, v, sourceLang, targetLang)
+			translated, err := s.Translate(ctx, v, keyContexts[path], sourceLang, targetLang)
 			if err != nil {
 				return nil, fmt.Errorf("error translating key %s: %w", key, err)
 			}
 			result[key] = translated
 		case map[string]interface{}:
-			translated, err := s.TranslateJSONPerKey(ctx, v, sourceLang, targetLang)
+			translated, err := s.translateJSONPerKey(ctx, v, keyContexts, path, sourceLang, targetLang)
 			if err != nil {
 				return nil, err
 			}
@@ -361,8 +385,67 @@ func (s *OpenAIService) TranslateJSONPerKey(ctx context.Context, data map[string
 // TranslateJSON is the primary entry point for component-level translation.
 // It tries TranslateJSONBatch first (one API call per component) and only
 // falls back to TranslateJSONPerKey if batch fails after retries.
-func (s *OpenAIService) TranslateJSON(ctx context.Context, data map[string]interface{}, sourceLang, targetLang string) (map[string]interface{}, error) {
-	return s.TranslateJSONBatch(ctx, data, sourceLang, targetLang)
+// keyContexts is an optional dot-path → context-hint map; pass nil if none.
+func (s *OpenAIService) TranslateJSON(ctx context.Context, data map[string]interface{}, keyContexts map[string]string, sourceLang, targetLang string) (map[string]interface{}, error) {
+	return s.TranslateJSONBatch(ctx, data, keyContexts, sourceLang, targetLang)
+}
+
+// joinPath concatenates a path prefix and a key with a dot, handling the empty prefix.
+func joinPath(prefix, key string) string {
+	if prefix == "" {
+		return key
+	}
+	return prefix + "." + key
+}
+
+// buildKeyHintsSection returns a "KEY HINTS" block to prepend to the batch prompt,
+// or "" if no relevant contexts apply. It only includes paths that actually map
+// to a string leaf in data — irrelevant entries from a renamed/removed key are
+// silently dropped so they don't confuse the model.
+func buildKeyHintsSection(data map[string]interface{}, keyContexts map[string]string) string {
+	if len(keyContexts) == 0 {
+		return ""
+	}
+	leaves := map[string]bool{}
+	collectStringLeafPaths(data, "", leaves)
+
+	type pair struct{ path, ctx string }
+	var entries []pair
+	for path, ctx := range keyContexts {
+		if !leaves[path] {
+			continue
+		}
+		if strings.TrimSpace(ctx) == "" {
+			continue
+		}
+		entries = append(entries, pair{path, ctx})
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+	// Stable order for deterministic prompts (helps caching/retries).
+	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
+
+	var b strings.Builder
+	b.WriteString("KEY HINTS — authoring notes about source intent. Use them to disambiguate meaning and tone. ")
+	b.WriteString("Paths use dot-notation into the input JSON. Do NOT include these notes in the output:\n")
+	for _, e := range entries {
+		fmt.Fprintf(&b, "- %s: %s\n", e.path, e.ctx)
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+func collectStringLeafPaths(data map[string]interface{}, prefix string, out map[string]bool) {
+	for k, v := range data {
+		path := joinPath(prefix, k)
+		switch vv := v.(type) {
+		case string:
+			out[path] = true
+		case map[string]interface{}:
+			collectStringLeafPaths(vv, path, out)
+		}
+	}
 }
 
 // GetDefaultOpenAIKey returns the default OpenAI key from environment
@@ -441,7 +524,7 @@ func (s *OpenAIService) TranslateCMSFields(ctx context.Context, data map[string]
 				result[key] = val
 				continue
 			}
-			translated, err := s.Translate(ctx, strVal, sourceLang, targetLang)
+			translated, err := s.Translate(ctx, strVal, "", sourceLang, targetLang)
 			if err != nil {
 				return nil, fmt.Errorf("field %q (text): %w", key, err)
 			}

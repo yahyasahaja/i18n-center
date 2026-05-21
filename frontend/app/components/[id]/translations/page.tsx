@@ -148,6 +148,7 @@ export default function ComponentTranslationsPage() {
           applicationId={currentComponent.application_id}
           enabledLanguages={currentApplication?.enabled_languages || ['en']}
           defaultLocale={currentComponent.default_locale}
+          keyContexts={currentComponent.key_contexts}
         />
       </div>
 

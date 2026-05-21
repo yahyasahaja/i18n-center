@@ -8,6 +8,10 @@ export interface Component {
   code: string
   description: string
   structure: Record<string, any>
+  // key_contexts: optional flat dot-path → context-hint map. Used as AI
+  // translation hints; never returned by public translation read endpoints.
+  // Null when the component has no contexts authored.
+  key_contexts?: Record<string, string> | null
   default_locale: string
   tags?: { id: string; application_id: string; code: string }[]
   pages?: { id: string; application_id: string; code: string }[]

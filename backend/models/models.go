@@ -261,6 +261,11 @@ type Component struct {
 	Code          string         `gorm:"uniqueIndex:idx_component_app_code;not null" json:"code"` // Unique per application (composite with application_id)
 	Description   string         `json:"description"`
 	Structure     JSONB          `gorm:"type:jsonb" json:"structure"` // The JSON structure template
+	// KeyContexts holds optional per-key context hints used as authoring notes for
+	// AI translation. Keys use dot-notation paths into the translation tree
+	// (e.g. "greeting.welcome"); values are short human-readable descriptions.
+	// Never returned by public translation read endpoints — UI-only metadata.
+	KeyContexts   JSONB          `gorm:"type:jsonb" json:"key_contexts"`
 	DefaultLocale string         `gorm:"not null" json:"default_locale"`
 	Tags          []Tag          `gorm:"many2many:component_tags;" json:"tags,omitempty"`
 	Pages         []Page         `gorm:"many2many:component_pages;" json:"pages,omitempty"`

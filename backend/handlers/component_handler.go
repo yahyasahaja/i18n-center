@@ -51,6 +51,31 @@ func (h *ComponentHandler) getClientInfo(c *gin.Context) (ipAddress, userAgent s
 	return ipAddress, userAgent
 }
 
+// sanitizeKeyContexts coerces a JSONB blob into a flat {dot.path: non-empty string} map.
+// Non-string values and empty strings are dropped so the prompt builder can safely
+// treat the result as map[string]string.
+func sanitizeKeyContexts(raw models.JSONB) models.JSONB {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(models.JSONB, len(raw))
+	for k, v := range raw {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		trimmed := strings.TrimSpace(s)
+		if trimmed == "" {
+			continue
+		}
+		out[k] = trimmed
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // replaceComponentTagsAndPages sets the component's tags and pages by ID (only those belonging to the same application).
 func replaceComponentTagsAndPages(component *models.Component, tagIDs, pageIDs []string) error {
 	if tagIDs != nil {
@@ -207,6 +232,7 @@ type createComponentBody struct {
 	Description   string       `json:"description"`
 	DefaultLocale string       `json:"default_locale" binding:"required"`
 	Structure     models.JSONB `json:"structure"`
+	KeyContexts   models.JSONB `json:"key_contexts"`
 	TagIDs        []string     `json:"tag_ids"`
 	PageIDs       []string     `json:"page_ids"`
 }
@@ -229,6 +255,7 @@ func (h *ComponentHandler) CreateComponent(c *gin.Context) {
 		Description:   strings.TrimSpace(body.Description),
 		DefaultLocale: strings.TrimSpace(body.DefaultLocale),
 		Structure:     body.Structure,
+		KeyContexts:   sanitizeKeyContexts(body.KeyContexts),
 		CreatedBy:     userID,
 		UpdatedBy:     userID,
 	}
@@ -259,6 +286,7 @@ type updateComponentBody struct {
 	Description   *string       `json:"description"`
 	DefaultLocale *string       `json:"default_locale"`
 	Structure     *models.JSONB `json:"structure"`
+	KeyContexts   *models.JSONB `json:"key_contexts"`
 	TagIDs        []string      `json:"tag_ids"`
 	PageIDs       []string      `json:"page_ids"`
 }
@@ -281,6 +309,7 @@ func (h *ComponentHandler) UpdateComponent(c *gin.Context) {
 		Code:          component.Code,
 		Description:   component.Description,
 		Structure:     component.Structure,
+		KeyContexts:   component.KeyContexts,
 		DefaultLocale: component.DefaultLocale,
 	}
 
@@ -305,6 +334,9 @@ func (h *ComponentHandler) UpdateComponent(c *gin.Context) {
 	if body.Structure != nil {
 		component.Structure = *body.Structure
 	}
+	if body.KeyContexts != nil {
+		component.KeyContexts = sanitizeKeyContexts(*body.KeyContexts)
+	}
 	component.UpdatedBy = userID
 
 	if err := database.DB.Save(&component).Error; err != nil {
@@ -323,6 +355,7 @@ func (h *ComponentHandler) UpdateComponent(c *gin.Context) {
 		Code:          component.Code,
 		Description:   component.Description,
 		Structure:     component.Structure,
+		KeyContexts:   component.KeyContexts,
 		DefaultLocale: component.DefaultLocale,
 	}
 	h.auditService.LogUpdate(userID, username, "component", component.ID, component.Code, before, after, ipAddress, userAgent)
