@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/your-org/i18n-center/models"
+	"github.com/jmoiron/sqlx"
 	"github.com/your-org/i18n-center/observability"
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
@@ -16,9 +16,29 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-var DB *gorm.DB
+// Two handles share the same underlying connection pool:
+//
+//   - DB (*gorm.DB)   — used by handlers/services that still go through the
+//                       legacy ORM path. Will be removed once every package
+//                       has migrated to the repository layer (Commit I).
+//   - SQLX (*sqlx.DB) — used by the new raw-SQL repositories. Lives in
+//                       backend/repository/*.
+//
+// Both pull connections from the same *sql.DB so we don't double-budget the
+// shared-with-Hydra Cloud SQL pool.
+var (
+	DB   *gorm.DB
+	SQLX *sqlx.DB
+)
 
-// InitDatabase initializes the database connection
+// InitDatabase opens the database connection, sizes the pool, and prepares
+// both the GORM and sqlx handles. It does NOT migrate the schema — that's
+// the job of the `i18n-center-migrate` binary, run manually before each
+// deploy that includes a schema change.
+//
+// If the schema is missing entirely, the server will boot fine but every
+// query will fail with `relation "..." does not exist`. The fix is to exec
+// into the pod and run `i18n-center-migrate up`.
 func InitDatabase() error {
 	dsn := fmt.Sprintf(
 		"host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
@@ -40,22 +60,20 @@ func InitDatabase() error {
 	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(gormLogLevel),
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	// Connection pool sizing. The Cloud SQL Postgres is shared with Hydra (OAuth2
-	// server in the B2C login hot path), so an unbounded pool here can starve
-	// Hydra under load. Defaults are conservative; tune via env if needed.
+	// Connection pool sizing. The Cloud SQL Postgres is shared with Hydra
+	// (OAuth2 server in the B2C login hot path), so an unbounded pool here
+	// can starve Hydra under load. Defaults are conservative; tune via env.
 	//
-	//   DB_MAX_OPEN_CONNS — total connections this pod may hold open. Default 20.
+	//   DB_MAX_OPEN_CONNS — total connections per pod. Default 20.
 	//   DB_MAX_IDLE_CONNS — idle connections kept alive. Default 5.
-	//   DB_CONN_MAX_LIFETIME_MIN — rotate connections every N minutes to align
-	//       with Cloud SQL's idle-disconnect window and avoid stale sockets. Default 30.
+	//   DB_CONN_MAX_LIFETIME_MIN — rotate connections every N min to align
+	//       with Cloud SQL's idle-disconnect window. Default 30.
 	//
-	// Back-of-envelope: 3 replicas × 20 = 60 connections to share with Hydra's pool.
-	// Cloud SQL Postgres default max_connections is 100 — plenty of headroom.
+	// Budget: 3 replicas × 20 = 60 of Cloud SQL's default max_connections=100.
 	sqlDB, dbErr := DB.DB()
 	if dbErr != nil {
 		return fmt.Errorf("failed to get underlying sql.DB: %w", dbErr)
@@ -64,57 +82,13 @@ func InitDatabase() error {
 	sqlDB.SetMaxIdleConns(envIntOr("DB_MAX_IDLE_CONNS", 5))
 	sqlDB.SetConnMaxLifetime(time.Duration(envIntOr("DB_CONN_MAX_LIFETIME_MIN", 30)) * time.Minute)
 
-	// Handle migration for code fields (backfill existing data)
-	if err := migrateCodeFields(); err != nil {
-		return fmt.Errorf("failed to migrate code fields: %w", err)
-	}
+	// Wrap the same *sql.DB in sqlx so the new repository layer shares the
+	// pool with the legacy GORM path. Connections are pooled once, not twice.
+	SQLX = sqlx.NewDb(sqlDB, "postgres")
 
-	// Drop name column from tags and pages (identifiers are code-only now)
-	if err := dropTagPageNameColumns(); err != nil {
-		return fmt.Errorf("failed to drop tag/page name columns: %w", err)
-	}
-
-	// Auto-migrate tables
-	err = DB.AutoMigrate(
-		&models.User{},
-		&models.Application{},
-		&models.ApplicationAPIKey{},
-		&models.Tag{},
-		&models.Page{},
-		&models.Component{},
-		&models.TranslationVersion{},
-		&models.AuditLog{},
-		&models.ApplicationLocaleDeploy{},
-		&models.AddLanguageJob{},
-		&models.TranslateJob{},
-		// CMS models
-		&models.CmsTemplate{},
-		&models.CmsTemplateField{},
-		&models.CmsItem{},
-		&models.CmsLocalization{},
-		&models.CmsTranslateJob{},
-	)
-
-	if err != nil {
-		return fmt.Errorf("failed to migrate database: %w", err)
-	}
-
-	// Enable pg_trgm for efficient ILIKE text search on components
-	if err := ensureSearchIndexes(); err != nil {
-		log.Printf("Note: search indexes setup error (non-fatal): %v", err)
-	}
-
-	// Indexes that protect hot read paths and prevent version-number races.
-	// Non-fatal: server still starts if these fail (e.g. on a slave at boot),
-	// but performance and write-concurrency safety will be degraded.
-	if err := ensurePerformanceIndexes(); err != nil {
-		log.Printf("Note: performance indexes setup error (non-fatal): %v", err)
-	}
-
-	// Add observability callbacks
 	setupObservabilityCallbacks()
 
-	log.Println("Database connected and migrated successfully")
+	log.Println("Database connected. Reminder: schema is NOT migrated automatically — run `i18n-center-migrate up` in the pod before sending traffic on a fresh deploy.")
 	return nil
 }
 
@@ -192,273 +166,6 @@ func setupObservabilityCallbacks() {
 		duration := time.Since(startTime.(time.Time))
 		observability.RecordDatabaseMetrics("delete", duration, db.Error)
 	})
-}
-
-// migrateCodeFields handles migration of code fields for existing data
-func migrateCodeFields() error {
-	// Check if applications table has code column
-	var hasCodeColumn bool
-	err := DB.Raw(`
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_name = 'applications' AND column_name = 'code'
-		)
-	`).Scan(&hasCodeColumn).Error
-
-	if err != nil {
-		return fmt.Errorf("failed to check code column: %w", err)
-	}
-
-	// If code column doesn't exist, add it as nullable first
-	if !hasCodeColumn {
-		// Add code column as nullable
-		if err := DB.Exec("ALTER TABLE applications ADD COLUMN code text").Error; err != nil {
-			// Column might already exist, ignore error
-			log.Printf("Note: applications.code column may already exist: %v", err)
-		}
-	}
-
-	// Backfill code for existing applications (use name as base, make it URL-safe)
-	// This handles both new columns and existing nullable columns
-	if err := DB.Exec(`
-		UPDATE applications
-		SET code = LOWER(REGEXP_REPLACE(name, '[^a-zA-Z0-9]+', '_', 'g'))
-		WHERE code IS NULL OR code = ''
-	`).Error; err != nil {
-		return fmt.Errorf("failed to backfill application codes: %w", err)
-	}
-
-	// Make code NOT NULL (safe now that all rows have values)
-	// Check if column is already NOT NULL to avoid errors
-	var isNotNull bool
-	err = DB.Raw(`
-		SELECT is_nullable = 'NO'
-		FROM information_schema.columns
-		WHERE table_name = 'applications' AND column_name = 'code'
-	`).Scan(&isNotNull).Error
-
-	if err == nil && !isNotNull {
-		if err := DB.Exec("ALTER TABLE applications ALTER COLUMN code SET NOT NULL").Error; err != nil {
-			return fmt.Errorf("failed to set code as NOT NULL: %w", err)
-		}
-	}
-
-	// Check if components table has code column
-	var hasComponentCodeColumn bool
-	err = DB.Raw(`
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_name = 'components' AND column_name = 'code'
-		)
-	`).Scan(&hasComponentCodeColumn).Error
-
-	if err != nil {
-		return fmt.Errorf("failed to check component code column: %w", err)
-	}
-
-	// If code column doesn't exist, add it as nullable first
-	if !hasComponentCodeColumn {
-		// Add code column as nullable
-		if err := DB.Exec("ALTER TABLE components ADD COLUMN code text").Error; err != nil {
-			// Column might already exist, ignore error
-			log.Printf("Note: components.code column may already exist: %v", err)
-		}
-	}
-
-	// Backfill code for existing components
-	// This handles both new columns and existing nullable columns
-	if err := DB.Exec(`
-		UPDATE components
-		SET code = LOWER(REGEXP_REPLACE(name, '[^a-zA-Z0-9]+', '_', 'g'))
-		WHERE code IS NULL OR code = ''
-	`).Error; err != nil {
-		return fmt.Errorf("failed to backfill component codes: %w", err)
-	}
-
-	// Make code NOT NULL (safe now that all rows have values)
-	// Check if column is already NOT NULL to avoid errors
-	var isComponentNotNull bool
-	err = DB.Raw(`
-		SELECT is_nullable = 'NO'
-		FROM information_schema.columns
-		WHERE table_name = 'components' AND column_name = 'code'
-	`).Scan(&isComponentNotNull).Error
-
-	if err == nil && !isComponentNotNull {
-		if err := DB.Exec("ALTER TABLE components ALTER COLUMN code SET NOT NULL").Error; err != nil {
-			return fmt.Errorf("failed to set component code as NOT NULL: %w", err)
-		}
-	}
-
-	// Update unique constraint: change from single column to composite (application_id, code)
-	// Check if the old unique index exists and drop it
-	var oldIndexExists bool
-	err = DB.Raw(`
-		SELECT EXISTS (
-			SELECT 1 FROM pg_indexes
-			WHERE tablename = 'components'
-			AND indexname = 'components_code_key'
-		)
-	`).Scan(&oldIndexExists).Error
-
-	if err == nil && oldIndexExists {
-		// Drop the old single-column unique index
-		if err := DB.Exec("DROP INDEX IF EXISTS components_code_key").Error; err != nil {
-			log.Printf("Note: Could not drop old unique index (may not exist): %v", err)
-		}
-	}
-
-	// Check if composite unique index exists
-	var compositeIndexExists bool
-	err = DB.Raw(`
-		SELECT EXISTS (
-			SELECT 1 FROM pg_indexes
-			WHERE tablename = 'components'
-			AND indexname = 'idx_component_app_code'
-		)
-	`).Scan(&compositeIndexExists).Error
-
-	if err == nil && !compositeIndexExists {
-		// Create composite unique index
-		if err := DB.Exec("CREATE UNIQUE INDEX idx_component_app_code ON components(application_id, code) WHERE deleted_at IS NULL").Error; err != nil {
-			// If it fails, try without WHERE clause (for older PostgreSQL or if soft delete isn't used)
-			if err2 := DB.Exec("CREATE UNIQUE INDEX idx_component_app_code ON components(application_id, code)").Error; err2 != nil {
-				return fmt.Errorf("failed to create composite unique index: %w (original: %v)", err2, err)
-			}
-		}
-	}
-
-	return nil
-}
-
-// dropTagPageNameColumns drops the name column from tags and pages tables if present.
-// Tag and Page are now identified by code only.
-func dropTagPageNameColumns() error {
-	for _, table := range []string{"tags", "pages"} {
-		var hasName bool
-		err := DB.Raw(`
-			SELECT EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'name'
-			)
-		`, table).Scan(&hasName).Error
-		if err != nil {
-			return fmt.Errorf("failed to check %s.name column: %w", table, err)
-		}
-		if hasName {
-			if err := DB.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS name", table)).Error; err != nil {
-				return fmt.Errorf("failed to drop %s.name: %w", table, err)
-			}
-			log.Printf("Dropped column name from table %s", table)
-		}
-	}
-	return nil
-}
-
-// ensureSearchIndexes creates GIN trigram indexes on components for fast ILIKE search.
-func ensureSearchIndexes() error {
-	// Enable pg_trgm extension (needed for GIN trigram index)
-	if err := DB.Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm").Error; err != nil {
-		return fmt.Errorf("pg_trgm extension: %w", err)
-	}
-	// GIN index on components.name for trigram ILIKE
-	if err := DB.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_components_name_trgm
-		ON components USING GIN (name gin_trgm_ops)
-	`).Error; err != nil {
-		return fmt.Errorf("name trigram index: %w", err)
-	}
-	// GIN index on components.code for trigram ILIKE
-	if err := DB.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_components_code_trgm
-		ON components USING GIN (code gin_trgm_ops)
-	`).Error; err != nil {
-		return fmt.Errorf("code trigram index: %w", err)
-	}
-	return nil
-}
-
-// ensurePerformanceIndexes creates indexes that protect the two highest-stakes
-// access patterns on translation_versions:
-//
-//  1. The hot read query: latest active version for a (component_id, locale, stage).
-//     Public translation endpoints hit this path on every cache miss; without a
-//     composite index that includes version DESC, the planner falls back to the
-//     component_id b-tree and re-sorts in memory — fine at low row counts,
-//     painful past a few hundred thousand rows.
-//
-//  2. The version-number race on concurrent saves. saveVersion reads MAX(version)
-//     and then inserts version+1; without a unique constraint two concurrent
-//     writers can both pick the same number and silently create duplicate rows.
-//     A partial unique index turns that into a duplicate-key error the service
-//     can retry deterministically.
-func ensurePerformanceIndexes() error {
-	// Composite read index for the hot path.
-	// Partial on deleted_at IS NULL so soft-deleted rows don't bloat the index.
-	if err := DB.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_tv_lookup
-		ON translation_versions (component_id, locale, stage, version DESC)
-		WHERE deleted_at IS NULL
-	`).Error; err != nil {
-		return fmt.Errorf("translation_versions lookup index: %w", err)
-	}
-
-	// Partial unique index to eliminate the version-number race.
-	// Only active, non-deleted rows participate — historical soft-deleted rows
-	// may share a version number with newer rows from the same logical chain.
-	if err := DB.Exec(`
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_tv_unique_version
-		ON translation_versions (component_id, locale, stage, version)
-		WHERE deleted_at IS NULL
-	`).Error; err != nil {
-		return fmt.Errorf("translation_versions unique version index: %w", err)
-	}
-
-	// Idempotency for translate-job creation: at most one pending+running job
-	// per (component, source, first target, type) tuple. Stops double-clicks
-	// from queuing duplicate OpenAI work that races each other on save.
-	// target_locales is a Postgres text[]; index on the first element so the
-	// auto-translate case (single target) is constrained while backfill
-	// (multi-target) is unaffected.
-	if err := DB.Exec(`
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_translate_jobs_dedupe
-		ON translate_jobs (component_id, source_locale, (target_locales[1]), job_type)
-		WHERE deleted_at IS NULL AND status IN ('pending', 'running')
-	`).Error; err != nil {
-		return fmt.Errorf("translate_jobs dedupe index: %w", err)
-	}
-
-	// CMS mirror of the translation_versions indexes. cms_localizations has the
-	// same hot read path (latest version per item+locale+stage) and the same
-	// write-path race (MAX(version)+1 read-then-insert across SaveLocalization,
-	// DeployLocalization, RevertLocalization, and processCmsTranslateJob).
-	if err := DB.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_cms_loc_lookup
-		ON cms_localizations (cms_item_id, locale, stage, version DESC)
-		WHERE deleted_at IS NULL
-	`).Error; err != nil {
-		return fmt.Errorf("cms_localizations lookup index: %w", err)
-	}
-	if err := DB.Exec(`
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_cms_loc_unique_version
-		ON cms_localizations (cms_item_id, locale, stage, version)
-		WHERE deleted_at IS NULL
-	`).Error; err != nil {
-		return fmt.Errorf("cms_localizations unique version index: %w", err)
-	}
-
-	// Idempotency for CMS translate-job creation. Same pattern as
-	// idx_translate_jobs_dedupe but cms_translate_jobs has a single
-	// target_locale column (not a Postgres array) so the index is simpler.
-	if err := DB.Exec(`
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_cms_translate_jobs_dedupe
-		ON cms_translate_jobs (cms_item_id, source_locale, target_locale, stage)
-		WHERE deleted_at IS NULL AND status IN ('pending', 'running')
-	`).Error; err != nil {
-		return fmt.Errorf("cms_translate_jobs dedupe index: %w", err)
-	}
-
-	return nil
 }
 
 // envIntOr reads an env var as int, falling back to dflt if unset or unparseable.

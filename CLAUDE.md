@@ -32,23 +32,31 @@
 ```
 backend/
   handlers/      # HTTP handlers (one file per resource group)
-  models/        # GORM models
-  services/      # Business logic (openai, audit, gcs)
+  models/        # Domain models (being migrated off GORM tags — see Commit I)
+  services/      # Business logic (openai, audit, gcs, translation)
+  repository/    # Data access layer (raw SQL via sqlx; one subpackage per resource)
   routes/        # Route registration (single routes.go)
   middleware/    # Auth, CORS, observability, rate limiting
-  database/      # DB init + AutoMigrate
+  database/      # DB init — connection + pool only, NO schema mutation
+  migrations/    # SQL migration files (goose), embedded into the binary
+  cmd/migrate/   # Migration CLI — `i18n-center-migrate up/down/status/...`
   cache/         # Redis helpers
-  jobs/          # Async worker (translate jobs)
+  jobs/          # Async worker + retention ticker
   observability/ # Zap logger + Datadog
   docs/          # Swagger auto-generated (never edit by hand)
 ```
 
 ### Adding a new endpoint
-1. Define model in `models/` if needed; add to `AutoMigrate` in `database/database.go`
-2. Create or extend handler in `handlers/`; add Swagger annotations
-3. Register route in `routes/routes.go`
-4. Run `swag init --generalInfo main.go --output docs` to regenerate docs
-5. Add handler test in `handlers/*_test.go` following existing patterns
+1. Define model in `models/` if needed (plain struct, `db:"col"` tags only — no `gorm:""`).
+2. Add a migration: `go run ./cmd/migrate create add_<table> sql`, write `CREATE TABLE`/etc.
+3. Add a repository under `repository/<resource>/`: const queries at top, `Repository` interface, `*sqlx.DB`-backed impl. Take `context.Context`; return `repository.ErrNotFound` etc.
+4. Create or extend handler in `handlers/`; depend on the repository (or a service that wraps it). Add Swagger annotations.
+5. Register route in `routes/routes.go`.
+6. Run `swag init --generalInfo main.go --output docs` to regenerate docs.
+7. Add handler test in `handlers/*_test.go` (sqlmock).
+
+### Schema changes (post-init)
+**Never** mutate the schema from inside the server binary. Add a new migration file under `backend/migrations/`, apply with `i18n-center-migrate up` in the pod. See `backend/migrations/README.md` for the Postgres safe-pattern playbook (CONCURRENTLY, NOT VALID, expand-contract, etc.). The server itself only opens a connection — no AutoMigrate, no `ensure*Indexes`, no boot-time DDL.
 
 ### Swagger annotations (mandatory for all endpoints)
 ```go
@@ -288,6 +296,22 @@ State is passed between suites via `e2e/.test-state.json` (written by global-set
 - **`observability.Logger` starts as `zap.NewNop()`** — `InitLogger()` is called by `main.go` at startup, but tests never call it. This is intentional.
 - **CMS pages don't use Redux** — they fetch data directly via `cmsApi.*` and hold it in local state.
 - **Swagger security tag on public endpoints**: `GetCmsItemByIdentifier` and translation read endpoints intentionally omit `@Security BearerAuth` — they accept API keys via `TranslationAuthMiddleware`.
+
+## Repository pattern (raw SQL via sqlx)
+
+The data layer is being moved off GORM onto raw SQL. New code MUST follow this pattern; old GORM call sites are being converted incrementally (Commits D through I).
+
+**Rules:**
+1. **Raw SQL only.** No ORM-driven query builders. Query strings live as package-level `const`s at the top of `repository_impl.go`.
+2. **Conditional clauses inline.** For search/filter that varies per call, append the conditional fragment inside the function with numbered placeholders — never `fmt.Sprintf` user input into the SQL.
+3. **Methods take `context.Context`** as first arg.
+4. **Repositories accept a `repository.Queryer`** (the subset of sqlx satisfied by both `*sqlx.DB` and `*sqlx.Tx`) so the same method body works inside or outside a transaction. Multi-statement consistency uses `repository.WithTx(ctx, db, func(tx Queryer) error { ... })`.
+5. **Soft deletes are explicit.** Every read includes `WHERE deleted_at IS NULL`. Every write that "deletes" sets `deleted_at = NOW()` — hard deletes are reserved for the retention job (Commit J).
+6. **Domain sentinels** for not-found / conflict: `errors.Is(err, repository.ErrNotFound)`. Never let `sql.ErrNoRows` leak into handlers.
+7. **`repository.JSONB`** for jsonb columns — implements `driver.Valuer` and `sql.Scanner`. Use this on any jsonb field (no GORM-style auto-wrapping).
+8. **`repository.IsUniqueViolation(err)`** for SQLSTATE 23505 detection (race retry on version inserts, idempotency dedupe).
+
+See `backend/repository/types.go` for the base abstractions and `backend/repository/<resource>/` for example impls.
 
 ## Patterns to reuse (NOT re-implement)
 

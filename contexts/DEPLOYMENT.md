@@ -304,23 +304,43 @@ env:
 
 ## Database Migrations
 
-### Initial Setup
+**The server binary never migrates on boot.** Schema changes are operator-driven via the dedicated `i18n-center-migrate` binary (built from `cmd/migrate/`, shipped in the same container image). See [`backend/migrations/README.md`](../backend/migrations/README.md) for the safe-pattern playbook.
 
-1. Connect to CloudSQL:
+### First-time bootstrap
+
+When deploying against a fresh database (no tables yet):
+
 ```bash
-gcloud sql connect i18n-center-db --user=i18n_user
+# 1. Pods can be deployed — they'll boot fine, but every query will 500
+#    until step 2 finishes.
+
+# 2. Exec into any running pod and run the initial migration
+kubectl exec -it deploy/i18n-center-backend -- i18n-center-migrate up
+
+# 3. Verify
+kubectl exec -it deploy/i18n-center-backend -- i18n-center-migrate status
 ```
 
-2. Run migrations (auto-migrated on backend startup, or manual):
+### Subsequent schema changes
+
+Each change ships as a new file in `backend/migrations/` (`00002_<name>.sql`, `00003_<name>.sql`, …).
+
 ```bash
-# Backend auto-migrates on startup
-# Or run manual migrations if needed
+# Before bumping the deploy that depends on the new schema:
+kubectl exec -it deploy/i18n-center-backend -- i18n-center-migrate up
+
+# After: confirm
+kubectl exec -it deploy/i18n-center-backend -- i18n-center-migrate status
+
+# To roll back the most recent migration (rare):
+kubectl exec -it deploy/i18n-center-backend -- i18n-center-migrate down
 ```
 
-3. Initialize admin user:
-```bash
-# Run init script or use API
-```
+For lock-heavy migrations (anything not `CONCURRENTLY` or `NOT VALID`), scale to one replica first to eliminate write contention during the migration window. See the safe-pattern playbook for which DDL is safe at any replica count.
+
+### Initialize admin user
+
+After migrations, create the first admin via the auth endpoint or a one-off SQL insert with bcrypt-hashed password.
 
 ## Monitoring & Logging
 

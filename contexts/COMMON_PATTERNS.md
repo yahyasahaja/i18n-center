@@ -1,5 +1,206 @@
 # Common Patterns & Code Snippets
 
+## Repository pattern (raw SQL via sqlx)
+
+The data access layer is being moved off GORM onto raw SQL. New work follows this pattern; old GORM call sites are being converted in Commits D–I.
+
+### File layout per resource
+
+```
+repository/<resource>/
+    repository.go         # Repository interface + domain types + sentinel errors
+    repository_impl.go    # All queries as const at top; struct + methods
+    repository_impl_test.go
+```
+
+### Skeleton
+
+```go
+// repository/component/repository.go
+package component
+
+import (
+    "context"
+
+    "github.com/google/uuid"
+    "github.com/your-org/i18n-center/repository"
+)
+
+type Component struct {
+    ID            uuid.UUID         `db:"id"`
+    ApplicationID uuid.UUID         `db:"application_id"`
+    Name          string            `db:"name"`
+    Code          string            `db:"code"`
+    Description   string            `db:"description"`
+    KeyContexts   repository.JSONB  `db:"key_contexts"`
+    DefaultLocale string            `db:"default_locale"`
+    CreatedBy     uuid.UUID         `db:"created_by"`
+    UpdatedBy     uuid.UUID         `db:"updated_by"`
+    CreatedAt     time.Time         `db:"created_at"`
+    UpdatedAt     time.Time         `db:"updated_at"`
+}
+
+type Repository interface {
+    GetByID(ctx context.Context, q repository.Queryer, id uuid.UUID) (*Component, error)
+    ListByApp(ctx context.Context, q repository.Queryer, appID uuid.UUID, limit, offset int) ([]Component, int, error)
+    Create(ctx context.Context, q repository.Queryer, c *Component) error
+    Update(ctx context.Context, q repository.Queryer, c *Component) error
+    SoftDelete(ctx context.Context, q repository.Queryer, id, userID uuid.UUID) error
+}
+```
+
+```go
+// repository/component/repository_impl.go
+package component
+
+import (
+    "context"
+    "database/sql"
+    "errors"
+
+    "github.com/google/uuid"
+    "github.com/your-org/i18n-center/repository"
+)
+
+// ── Queries (top of file, const, fully-formed) ──────────────────────────────
+const (
+    queryGetByID = `
+        SELECT id, application_id, name, code, description,
+               key_contexts, default_locale, created_by, updated_by,
+               created_at, updated_at
+        FROM components
+        WHERE id = $1
+          AND deleted_at IS NULL
+    `
+
+    queryListByApp = `
+        SELECT id, application_id, name, code, description,
+               key_contexts, default_locale, created_by, updated_by,
+               created_at, updated_at
+        FROM components
+        WHERE application_id = $1
+          AND deleted_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
+    `
+
+    queryCountByApp = `
+        SELECT COUNT(*) FROM components
+        WHERE application_id = $1 AND deleted_at IS NULL
+    `
+
+    queryInsert = `
+        INSERT INTO components (
+            id, application_id, name, code, description,
+            key_contexts, default_locale, created_by, updated_by,
+            created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+    `
+
+    queryUpdate = `
+        UPDATE components
+        SET name = $2, description = $3, key_contexts = $4,
+            default_locale = $5, updated_by = $6, updated_at = NOW()
+        WHERE id = $1 AND deleted_at IS NULL
+    `
+
+    querySoftDelete = `
+        UPDATE components
+        SET deleted_at = NOW(), updated_by = $2, updated_at = NOW()
+        WHERE id = $1 AND deleted_at IS NULL
+    `
+)
+
+// ── Implementation ──────────────────────────────────────────────────────────
+type Impl struct{}
+
+func New() Repository { return &Impl{} }
+
+func (r *Impl) GetByID(ctx context.Context, q repository.Queryer, id uuid.UUID) (*Component, error) {
+    var c Component
+    if err := q.GetContext(ctx, &c, queryGetByID, id); err != nil {
+        if errors.Is(err, sql.ErrNoRows) {
+            return nil, repository.ErrNotFound
+        }
+        return nil, err
+    }
+    return &c, nil
+}
+
+// ... etc
+```
+
+### Conditional queries (search / filter)
+
+Static parts as const; conditional parts appended in the function with PG numbered placeholders:
+
+```go
+const queryListBase = `
+    SELECT id, application_id, name, code, description,
+           key_contexts, default_locale, created_by, updated_by,
+           created_at, updated_at
+    FROM components
+    WHERE deleted_at IS NULL
+`
+
+func (r *Impl) Search(ctx context.Context, q repository.Queryer, f SearchFilter) ([]Component, error) {
+    sb := strings.Builder{}
+    sb.WriteString(queryListBase)
+    args := []any{}
+    i := 1
+    if f.ApplicationID != uuid.Nil {
+        fmt.Fprintf(&sb, " AND application_id = $%d", i)
+        args = append(args, f.ApplicationID)
+        i++
+    }
+    if f.SearchTerm != "" {
+        fmt.Fprintf(&sb, " AND (name ILIKE $%d OR code ILIKE $%d)", i, i+1)
+        like := "%" + f.SearchTerm + "%"
+        args = append(args, like, like)
+        i += 2
+    }
+    fmt.Fprintf(&sb, " ORDER BY created_at DESC LIMIT $%d OFFSET $%d", i, i+1)
+    args = append(args, f.Limit, f.Offset)
+
+    var out []Component
+    return out, q.SelectContext(ctx, &out, sb.String(), args...)
+}
+```
+
+### IN clause expansion (variable-length lists)
+
+```go
+const queryFindByCodes = `
+    SELECT id, code, ...
+    FROM components
+    WHERE application_id = ? AND code IN (?) AND deleted_at IS NULL
+`
+
+func (r *Impl) FindByCodes(ctx context.Context, q repository.Queryer, appID uuid.UUID, codes []string) ([]Component, error) {
+    expanded, args, err := sqlx.In(queryFindByCodes, appID, codes)
+    if err != nil { return nil, err }
+    expanded = q.Rebind(expanded)   // ? → $1, $2, ... for Postgres
+
+    var out []Component
+    return out, q.SelectContext(ctx, &out, expanded, args...)
+}
+```
+
+### Transactions
+
+```go
+// In a usecase / handler
+err := repository.WithTx(ctx, database.SQLX, func(tx repository.Queryer) error {
+    if err := componentRepo.Update(ctx, tx, c); err != nil { return err }
+    if err := tagRepo.AttachToComponent(ctx, tx, c.ID, tagIDs); err != nil { return err }
+    return nil
+})
+```
+
+Both `*sqlx.DB` (autocommit) and `*sqlx.Tx` satisfy `repository.Queryer`, so the same repository methods participate in either context.
+
+---
+
 ## Critical patterns (USE THESE — do not re-implement)
 
 ### Versioned-insert with race retry (translation_versions, cms_localizations)

@@ -12,7 +12,9 @@ PostgreSQL database with GORM as ORM. Auto-migration on startup.
   - `DB_MAX_IDLE_CONNS` = 5
   - `DB_CONN_MAX_LIFETIME_MIN` = 30
   Sized so 3 pods × 20 = 60 connections leaves headroom in Cloud SQL's default `max_connections = 100` for Hydra.
-- **Migrations run on every pod start** via `AutoMigrate` + `migrateCodeFields` + `dropTagPageNameColumns` + `ensureSearchIndexes` + `ensurePerformanceIndexes`. All idempotent (`CREATE INDEX IF NOT EXISTS`, `ALTER TABLE … IF EXISTS`) so concurrent boot is safe.
+- **Migrations are operator-driven via the `i18n-center-migrate` CLI.** The server binary never touches the schema at boot. `database.InitDatabase` only opens the connection and sizes the pool. Schema is bootstrapped once via `kubectl exec deploy/i18n-center-backend -- i18n-center-migrate up` against a fresh DB. Subsequent changes ship as new files in `backend/migrations/` (numbered, `goose`-formatted) and are applied the same way before each deploy that needs the new schema.
+
+See [`backend/migrations/README.md`](../backend/migrations/README.md) for the Postgres safe-pattern playbook (`CREATE INDEX CONCURRENTLY`, `ADD CONSTRAINT ... NOT VALID`, expand-contract for renames).
 
 ## Models
 
