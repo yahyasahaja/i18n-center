@@ -110,9 +110,23 @@ GCS_BUCKET, GCS_CREDENTIALS_BASE64, GCS_CMS_IMAGE_PREFIX, PIXELSHIFT_BASE_URL
 Any background task that must run on **exactly one pod** uses a Postgres session-level advisory lock as a leader-election. Example: `jobs/cleanup.go` calls `pg_try_advisory_lock(<fixed-int-key>)` at each tick; losers no-op. Auto-release on session close means a crashed leader doesn't block the next tick.
 
 Things that already use this pattern:
-- `RunCleanupTicker` — `translation_versions` retention sweep (key `0x6931386e63746e6d`)
+- `RunCleanupTicker` — `translation_versions` keep-last-N retention sweep (key `0x6931386e63746e6d`)
+- `RunRetentionTicker` — per-table soft-delete + terminal-job retention sweep (key `0x6931386e72746e6d`)
 
-If you add another singleton background job, pick a new int64 key and document it next to `cleanupAdvisoryLockKey`.
+If you add another singleton background job, pick a new int64 key and document it next to `cleanupAdvisoryLockKey` / `retentionAdvisoryLockKey`.
+
+### Retention policy
+The soft-delete / terminal-job sweep (`jobs/retention.go`) runs every 6 hours and hard-deletes rows beyond their per-table TTL:
+
+| Table(s) | TTL | Filter |
+|---|---|---|
+| `audit_logs` | **NEVER** | — (the audit trail is the recovery story for everything else) |
+| `applications` | 365 days | `deleted_at` |
+| `components`, `cms_items`, `cms_templates`, `tags`, `pages`, `users`, `application_api_keys`, `application_locale_deploys` | 90 days | `deleted_at` |
+| `translation_versions`, `cms_localizations` | 30 days | `deleted_at` |
+| `add_language_jobs`, `translate_jobs`, `cms_translate_jobs` | 7 days | `status IN ('completed','failed') AND updated_at` |
+
+The list is `retentionPolicies` in `backend/jobs/retention.go` — edit there to tune. `audit_logs` must not be added.
 
 ---
 

@@ -93,10 +93,15 @@ func main() {
 	go jobs.Run(ctx)
 	observability.Logger.Info("Add-language worker started (in-process, DB-backed)")
 
-	// Background retention sweep — replaces the previous per-save cleanup which
-	// added a full sort to every translation write.
+	// Background retention sweeps — both guarded by separate advisory locks so
+	// exactly one pod runs each per tick. Distinct ownership keeps the
+	// version-count cleanup independent from the soft-delete TTL sweep, so a
+	// slow sweep on one doesn't delay the other.
 	go jobs.RunCleanupTicker(ctx)
 	observability.Logger.Info("Version retention ticker started (5 min interval)")
+
+	go jobs.RunRetentionTicker(ctx)
+	observability.Logger.Info("Soft-delete retention ticker started (6 hr interval)")
 
 	// Setup graceful shutdown (cancel worker context)
 	setupGracefulShutdown(cancel)
