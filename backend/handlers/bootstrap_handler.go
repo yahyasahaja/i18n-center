@@ -7,11 +7,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 
+	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
+	"github.com/your-org/i18n-center/observability"
 	"github.com/your-org/i18n-center/repository"
 	"github.com/your-org/i18n-center/repository/application"
 	"github.com/your-org/i18n-center/repository/component"
+	"github.com/your-org/i18n-center/repository/localedeploy"
 	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
@@ -22,6 +26,7 @@ type BootstrapHandler struct {
 	auditService       services.AuditServicer
 	apps               application.Repository
 	components         component.Repository
+	deploys            localedeploy.Repository
 }
 
 func NewBootstrapHandler() *BootstrapHandler {
@@ -30,6 +35,7 @@ func NewBootstrapHandler() *BootstrapHandler {
 		auditService:       services.NewAuditService(),
 		apps:               application.New(),
 		components:         component.New(),
+		deploys:            localedeploy.New(),
 	}
 }
 
@@ -200,6 +206,7 @@ func (h *BootstrapHandler) BootstrapApplication(c *gin.Context) {
 	// render. Case-insensitive dedupe so re-running with the same locale
 	// doesn't duplicate the entry.
 	enabledLocale := strings.TrimSpace(strings.ToLower(locale))
+	languageWasAdded := false
 	if enabledLocale != "" {
 		alreadyEnabled := false
 		for _, l := range app.EnabledLanguages {
@@ -211,15 +218,61 @@ func (h *BootstrapHandler) BootstrapApplication(c *gin.Context) {
 		if !alreadyEnabled {
 			newLangs := append(append([]string(nil), app.EnabledLanguages...), enabledLocale)
 			if err := h.apps.UpdateEnabledLanguages(ctx, database.SQLX, applicationID, newLangs, userID); err != nil {
-				// Non-fatal: the components and translations are already
-				// persisted. Log via the audit hook below and continue —
-				// re-running bootstrap or hitting Add language manually will
-				// resolve it. Swallowing here keeps the import call green for
-				// the user.
-				_ = err
+				// Non-fatal: components + translations are already persisted.
+				// We log so the failure is visible — silently swallowing
+				// hid this exact bug earlier when the cache layer masked it.
+				observability.Logger.Warn("bootstrap: failed to auto-enable locale",
+					zap.String("application_id", applicationID.String()),
+					zap.String("locale", enabledLocale),
+					zap.Error(err),
+				)
+			} else {
+				languageWasAdded = true
 			}
 		}
 	}
+
+	// Upsert the per-locale deploy ledger row. Without this row, the Pending
+	// Deployments view shows "nothing to promote" even after a successful
+	// bootstrap — that screen reads from application_locale_deploys, not from
+	// translation_versions, so the absence of a ledger entry hides genuinely
+	// promotable data.
+	//
+	// stage_completed = the highest stage this locale has been promoted to.
+	// On bootstrap, we set it to the stage that was just imported:
+	//   * bootstrap --stage=draft       → stage_completed=draft (needs deploy → staging → production)
+	//   * bootstrap --stage=staging     → stage_completed=staging (needs deploy → production)
+	//   * bootstrap --stage=production  → stage_completed=production (terminal)
+	//
+	// Re-bootstrapping with new data BUMPS the ledger BACK to the imported
+	// stage — same convention the AddLanguage worker uses when re-translate
+	// invalidates an already-deployed locale.
+	if enabledLocale != "" {
+		deploy := &localedeploy.Deploy{
+			ApplicationID:  applicationID,
+			Locale:         enabledLocale,
+			StageCompleted: string(stage),
+		}
+		if err := h.deploys.Upsert(ctx, database.SQLX, deploy); err != nil {
+			observability.Logger.Warn("bootstrap: failed to upsert deploy ledger",
+				zap.String("application_id", applicationID.String()),
+				zap.String("locale", enabledLocale),
+				zap.String("stage", string(stage)),
+				zap.Error(err),
+			)
+		}
+	}
+
+	// Bust the application cache so the next GetApplication doesn't return the
+	// pre-bootstrap snapshot. Both branches (components-only change AND
+	// enabled_languages change) need this — without it the per-app page shows
+	// "Enabled Languages: empty" even though the DB has the locale, and the
+	// 1-hour TTL means the user has to wait or manually edit the app to
+	// invalidate. We invalidate by both id and code since GetApplication
+	// caches under whichever identifier was used.
+	cache.Delete(cache.ApplicationKey(applicationID.String()))
+	cache.Delete(cache.ApplicationKey(app.Code))
+	_ = languageWasAdded // available for future telemetry; logging covers user-visible needs
 
 	ipAddress, userAgent := c.ClientIP(), c.GetHeader("User-Agent")
 	h.auditService.LogCreate(userID, "", "bootstrap", applicationID, app.Code, result, ipAddress, userAgent)
