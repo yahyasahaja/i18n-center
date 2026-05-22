@@ -16,6 +16,7 @@ import (
 	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/repository"
 	"github.com/your-org/i18n-center/repository/application"
+	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
 
@@ -510,14 +511,14 @@ func (h *ApplicationHandler) DeployLocale(c *gin.Context) {
 		return
 	}
 
-	var fromStage, toStage models.DeploymentStage
+	var fromStage, toStage translation.Stage
 	switch deploy.StageCompleted {
 	case "draft":
-		fromStage = models.StageDraft
-		toStage = models.StageStaging
+		fromStage = translation.StageDraft
+		toStage = translation.StageStaging
 	case "staging":
-		fromStage = models.StageStaging
-		toStage = models.StageProduction
+		fromStage = translation.StageStaging
+		toStage = translation.StageProduction
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Locale is already fully deployed to production"})
 		return
@@ -529,34 +530,33 @@ func (h *ApplicationHandler) DeployLocale(c *gin.Context) {
 		return
 	}
 
-	// Per-component DeployToStage performs its own writes and cache invalidation.
-	// Wrap the whole fan-out in a transaction so a mid-flight failure rolls every
-	// component's deploy back — the API contract ("no changes applied") was previously
-	// a lie when component N of 100 failed and components 1..N-1 had been persisted.
+	// Per-component translation deploys + the locale-deploys row update should
+	// move in lockstep. Translation versions are now sqlx-backed; locale_deploys
+	// is still GORM-backed until Commit H. Until both share one transaction
+	// system, we deploy components first (each autocommits + invalidates its
+	// own cache cell) and update the deploy state at the end.
 	//
-	// Cache invalidation runs *after* the transaction commits so stale entries are
-	// never busted on a rollback (would cause spurious DB reads later).
+	// Failure mode: if a component deploy errors midway, earlier components
+	// have already been promoted. The endpoint reports the failure and the
+	// operator can retry — DeployToStage is idempotent (inserts a new version
+	// of identical data), so re-running is safe.
+	//
+	// TODO(commit H): once locale_deploys moves to sqlx, wrap both in one
+	// repository.WithTx for full atomicity.
 	translationService := services.NewTranslationService()
-	failedComponent := ""
-	var firstErr error
-
-	txErr := database.DB.Transaction(func(tx *gorm.DB) error {
-		for _, comp := range components {
-			if err := translationService.DeployToStageTx(tx, comp.ID, req.Locale, fromStage, toStage, userID); err != nil {
-				failedComponent = comp.Code
-				firstErr = err
-				return err
-			}
+	for _, comp := range components {
+		if err := translationService.DeployToStage(comp.ID, req.Locale, fromStage, toStage, userID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":  "Deploy failed (partial state — retry to complete)",
+				"detail": fmt.Sprintf("Component %s: %v", comp.Code, err),
+				"retry":  true,
+			})
+			return
 		}
-		deploy.StageCompleted = string(toStage)
-		return tx.Save(&deploy).Error
-	})
-	if txErr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":  "Deploy failed (rolled back, no changes applied)",
-			"detail": fmt.Sprintf("Component %s: %v", failedComponent, firstErr),
-			"retry":  true,
-		})
+	}
+	deploy.StageCompleted = string(toStage)
+	if err := database.DB.Save(&deploy).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to record deploy state: " + err.Error()})
 		return
 	}
 

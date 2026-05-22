@@ -8,10 +8,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/middleware"
 	"github.com/your-org/i18n-center/models"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
 
@@ -64,7 +67,7 @@ func (h *TranslationHandler) getClientInfo(c *gin.Context) (ipAddress, userAgent
 // Aligns with the SoW v2 architecture: Cloudflare edge cache with max-age=300,
 // served as the first layer in front of i18n-center.
 func setPublicCacheHeaders(c *gin.Context, stage string, sMaxage int) {
-	if stage != string(models.StageProduction) {
+	if stage != string(translation.StageProduction) {
 		// Non-production stages are operator-only and rev frequently.
 		c.Header("Cache-Control", "private, no-store")
 		return
@@ -97,9 +100,9 @@ func (h *TranslationHandler) GetTranslation(c *gin.Context) {
 		locale = "en" // default
 	}
 
-	stage := models.DeploymentStage(stageStr)
+	stage := translation.Stage(stageStr)
 	if stage == "" {
-		stage = models.StageProduction // default
+		stage = translation.StageProduction // default
 	}
 
 	componentID, err := uuid.Parse(componentIDStr)
@@ -108,13 +111,13 @@ func (h *TranslationHandler) GetTranslation(c *gin.Context) {
 		return
 	}
 
-	translation, err := h.translationService.GetTranslation(componentID, locale, stage)
+	v, err := h.translationService.GetTranslation(componentID, locale, stage)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Translation not found"})
 		return
 	}
 
-	c.JSON(http.StatusOK, translation)
+	c.JSON(http.StatusOK, v)
 }
 
 // GetMultipleTranslations retrieves translations for multiple components (aggregator)
@@ -150,12 +153,12 @@ func (h *TranslationHandler) GetMultipleTranslations(c *gin.Context) {
 		locale = "en" // default
 	}
 
-	stage := models.DeploymentStage(stageStr)
+	stage := translation.Stage(stageStr)
 	if stage == "" {
-		stage = models.StageProduction // default
+		stage = translation.StageProduction // default
 	}
 
-	var translations map[string]*models.TranslationVersion
+	var translations map[string]*translation.Version
 	var err error
 
 	// Handle component codes
@@ -204,8 +207,8 @@ func (h *TranslationHandler) GetMultipleTranslations(c *gin.Context) {
 
 		// Format response: map component_code -> translation data
 		response := make(map[string]interface{})
-		for code, translation := range translations {
-			response[code] = translation.Data
+		for code, v := range translations {
+			response[code] = v.Data
 		}
 		setPublicCacheHeaders(c, string(stage), 300)
 		c.JSON(http.StatusOK, response)
@@ -249,8 +252,8 @@ func (h *TranslationHandler) GetMultipleTranslations(c *gin.Context) {
 
 	// Format response: map component_id -> translation data
 	response := make(map[string]interface{})
-	for componentIDStr, translation := range translations {
-		response[componentIDStr] = translation.Data
+	for componentIDStr, v := range translations {
+		response[componentIDStr] = v.Data
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -281,9 +284,9 @@ func (h *TranslationHandler) GetTranslationsByTag(c *gin.Context) {
 	if locale == "" {
 		locale = "en"
 	}
-	stage := models.DeploymentStage(stageStr)
+	stage := translation.Stage(stageStr)
 	if stage == "" {
-		stage = models.StageProduction
+		stage = translation.StageProduction
 	}
 
 	applicationID, err := uuid.Parse(applicationIDStr)
@@ -374,9 +377,9 @@ func (h *TranslationHandler) GetTranslationsByPage(c *gin.Context) {
 	if locale == "" {
 		locale = "en"
 	}
-	stage := models.DeploymentStage(stageStr)
+	stage := translation.Stage(stageStr)
 	if stage == "" {
-		stage = models.StageProduction
+		stage = translation.StageProduction
 	}
 
 	applicationID, err := uuid.Parse(applicationIDStr)
@@ -445,7 +448,7 @@ func (h *TranslationHandler) GetTranslationsByPage(c *gin.Context) {
 type SaveTranslationRequest struct {
 	Locale string       `json:"locale" binding:"required"`
 	Stage  string       `json:"stage" binding:"required"`
-	Data   models.JSONB `json:"data" binding:"required"`
+	Data   repository.JSONB `json:"data" binding:"required"`
 }
 
 // SaveTranslation saves a translation
@@ -457,7 +460,7 @@ type SaveTranslationRequest struct {
 // @Security     BearerAuth
 // @Param        id       path      string                  true  "Component ID"
 // @Param        request  body      SaveTranslationRequest  true  "Translation data"
-// @Success      200      {object}  models.TranslationVersion
+// @Success      200      {object}  translation.Version
 // @Failure      400      {object}  map[string]string
 // @Failure      401      {object}  map[string]string
 // @Router       /components/{id}/translations [post]
@@ -475,7 +478,7 @@ func (h *TranslationHandler) SaveTranslation(c *gin.Context) {
 		return
 	}
 
-	stage := models.DeploymentStage(req.Stage)
+	stage := translation.Stage(req.Stage)
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
 
@@ -487,13 +490,13 @@ func (h *TranslationHandler) SaveTranslation(c *gin.Context) {
 	}
 
 	// Get existing translation for before/after comparison
-	var beforeData models.JSONB
+	var beforeData repository.JSONB
 	existingTranslation, _ := h.translationService.GetTranslation(componentID, req.Locale, stage)
 	if existingTranslation != nil {
 		beforeData = existingTranslation.Data
 	}
 
-	translation, err := h.translationService.SaveTranslation(componentID, req.Locale, stage, req.Data, userID)
+	v, err := h.translationService.SaveTranslation(componentID, req.Locale, stage, req.Data, userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -504,7 +507,7 @@ func (h *TranslationHandler) SaveTranslation(c *gin.Context) {
 		userID,
 		username,
 		"translation",
-		translation.ID,
+		v.ID,
 		component.Code,
 		map[string]interface{}{
 			"component_id": componentID.String(),
@@ -522,7 +525,7 @@ func (h *TranslationHandler) SaveTranslation(c *gin.Context) {
 		userAgent,
 	)
 
-	c.JSON(http.StatusOK, translation)
+	c.JSON(http.StatusOK, v)
 }
 
 // RevertTranslation reverts translation to previous version
@@ -536,9 +539,9 @@ func (h *TranslationHandler) RevertTranslation(c *gin.Context) {
 		return
 	}
 
-	stage := models.DeploymentStage(stageStr)
+	stage := translation.Stage(stageStr)
 	if stage == "" {
-		stage = models.StageDraft
+		stage = translation.StageDraft
 	}
 
 	componentID, err := uuid.Parse(componentIDStr)
@@ -577,8 +580,8 @@ func (h *TranslationHandler) DeployTranslation(c *gin.Context) {
 		return
 	}
 
-	fromStage := models.DeploymentStage(req.FromStage)
-	toStage := models.DeploymentStage(req.ToStage)
+	fromStage := translation.Stage(req.FromStage)
+	toStage := translation.Stage(req.ToStage)
 
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
@@ -670,7 +673,7 @@ func (h *TranslationHandler) AutoTranslate(c *gin.Context) {
 	}
 
 	// Verify source translation exists
-	stage := models.DeploymentStage(req.Stage)
+	stage := translation.Stage(req.Stage)
 	if _, err := h.translationService.GetTranslation(componentID, req.SourceLocale, stage); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Source translation not found"})
 		return
@@ -788,7 +791,7 @@ func (h *TranslationHandler) BackfillTranslations(c *gin.Context) {
 	}
 
 	// Verify source translation exists
-	stage := models.DeploymentStage(req.Stage)
+	stage := translation.Stage(req.Stage)
 	if _, err := h.translationService.GetTranslation(componentID, req.SourceLocale, stage); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Source translation not found"})
 		return
@@ -923,9 +926,9 @@ func (h *TranslationHandler) GetVersionComparison(c *gin.Context) {
 		return
 	}
 
-	stage := models.DeploymentStage(stageStr)
+	stage := translation.Stage(stageStr)
 	if stage == "" {
-		stage = models.StageDraft
+		stage = translation.StageDraft
 	}
 
 	componentID, err := uuid.Parse(componentIDStr)
@@ -991,9 +994,9 @@ func (h *TranslationHandler) ListVersions(c *gin.Context) {
 		return
 	}
 
-	stage := models.DeploymentStage(stageStr)
+	stage := translation.Stage(stageStr)
 	if stage == "" {
-		stage = models.StageDraft
+		stage = translation.StageDraft
 	}
 
 	componentID, err := uuid.Parse(componentIDStr)

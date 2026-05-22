@@ -5,7 +5,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/your-org/i18n-center/models"
+
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
 
@@ -34,7 +36,7 @@ type ImportRequest struct {
 // @Param        locale  query     string            true  "Locale"
 // @Param        stage   query     string            false "Stage (default: draft)"
 // @Param        request body      ImportRequest     true  "Import data"
-// @Success      200     {object}  models.TranslationVersion
+// @Success      200     {object}  translation.Version
 // @Failure      400     {object}  map[string]string
 // @Failure      401     {object}  map[string]string
 // @Router       /components/{id}/import [post]
@@ -54,9 +56,9 @@ func (h *ImportHandler) ImportComponent(c *gin.Context) {
 		return
 	}
 
-	stage := models.DeploymentStage(stageStr)
+	stage := translation.Stage(stageStr)
 	if stage == "" {
-		stage = models.StageDraft
+		stage = translation.StageDraft
 	}
 
 	var req ImportRequest
@@ -65,8 +67,8 @@ func (h *ImportHandler) ImportComponent(c *gin.Context) {
 		return
 	}
 
-	// Convert to JSONB
-	jsonData := models.JSONB(req.Data)
+	// Convert to repository.JSONB (the type the translation service expects).
+	jsonData := repository.JSONB(req.Data)
 
 	// Get user ID from context
 	userIDVal, _ := c.Get("user_id")
@@ -77,11 +79,11 @@ func (h *ImportHandler) ImportComponent(c *gin.Context) {
 		}
 	}
 
-	translation, err := h.translationService.SaveTranslation(componentID, locale, stage, jsonData, userID)
+	v, err := h.translationService.SaveTranslation(componentID, locale, stage, jsonData, userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, translation)
+	c.JSON(http.StatusOK, v)
 }

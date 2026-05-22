@@ -6,8 +6,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/models"
+	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
 
@@ -33,9 +35,9 @@ func (h *ExportHandler) ExportApplication(c *gin.Context) {
 		return
 	}
 
-	stage := models.DeploymentStage(stageStr)
+	stage := translation.Stage(stageStr)
 	if stage == "" {
-		stage = models.StageProduction
+		stage = translation.StageProduction
 	}
 
 	// Get all components for this application
@@ -50,9 +52,9 @@ func (h *ExportHandler) ExportApplication(c *gin.Context) {
 	if locale != "" {
 		// Export specific locale
 		for _, component := range components {
-			translation, err := h.translationService.GetTranslation(component.ID, locale, stage)
+			v, err := h.translationService.GetTranslation(component.ID, locale, stage)
 			if err == nil {
-				exportData[component.Name] = translation.Data
+				exportData[component.Name] = v.Data
 			}
 		}
 	} else {
@@ -102,14 +104,14 @@ func (h *ExportHandler) ExportComponent(c *gin.Context) {
 		return
 	}
 
-	stage := models.DeploymentStage(stageStr)
+	stage := translation.Stage(stageStr)
 	if stage == "" {
-		stage = models.StageProduction
+		stage = translation.StageProduction
 	}
 
 	if locale != "" {
 		// Export specific locale
-		translation, err := h.translationService.GetTranslation(componentID, locale, stage)
+		v, err := h.translationService.GetTranslation(componentID, locale, stage)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Translation not found"})
 			return
@@ -117,7 +119,7 @@ func (h *ExportHandler) ExportComponent(c *gin.Context) {
 
 		c.Header("Content-Type", "application/json")
 		c.Header("Content-Disposition", "attachment; filename=component_"+locale+".json")
-		json.NewEncoder(c.Writer).Encode(translation.Data)
+		json.NewEncoder(c.Writer).Encode(v.Data)
 	} else {
 		// Export all locales
 		var translations []models.TranslationVersion

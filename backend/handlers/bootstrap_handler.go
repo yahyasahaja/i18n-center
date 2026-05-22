@@ -6,8 +6,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/models"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
 
@@ -72,9 +75,9 @@ func (h *BootstrapHandler) BootstrapApplication(c *gin.Context) {
 	if locale == "" {
 		locale = "en"
 	}
-	stage := models.DeploymentStage(stageStr)
+	stage := translation.Stage(stageStr)
 	if stage == "" {
-		stage = models.StageDraft
+		stage = translation.StageDraft
 	}
 
 	applicationID, err := uuid.Parse(appIDStr)
@@ -154,7 +157,7 @@ func (h *BootstrapHandler) BootstrapApplication(c *gin.Context) {
 			result.ComponentsUpdated++
 		}
 
-		jsonData := models.JSONB(data)
+		jsonData := repository.JSONB(data)
 		if _, saveErr := h.translationService.SaveTranslation(component.ID, locale, stage, jsonData, userID); saveErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "failed to save translation for '" + code + "': " + saveErr.Error(),

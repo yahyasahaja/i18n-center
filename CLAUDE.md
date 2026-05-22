@@ -313,7 +313,7 @@ The data layer is being moved off GORM onto raw SQL. New code MUST follow this p
 
 See `backend/repository/types.go` for the base abstractions and `backend/repository/<resource>/` for example impls.
 
-### Migration status (Commit E in flight)
+### Migration status (Commit F in flight)
 | Resource | Repository | Handlers wired |
 |---|---|---|
 | User | `repository/user` | ✅ |
@@ -322,7 +322,7 @@ See `backend/repository/types.go` for the base abstractions and `backend/reposit
 | Tag | `repository/tag` | ✅ |
 | Page | `repository/page` | ✅ |
 | Component | `repository/component` | ✅ (CRUD + tag/page attach via transaction) |
-| TranslationVersion | — | Commit F |
+| TranslationVersion | `repository/translation` | ✅ (preserves saveVersion race-retry via partial unique index) |
 | CmsTemplate, CmsItem, CmsLocalization, CmsTemplateField | — | Commit G |
 | AuditLog, AddLanguageJob, TranslateJob, CmsTranslateJob, ApplicationLocaleDeploy | — | Commit H |
 

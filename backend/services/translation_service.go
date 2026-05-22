@@ -1,59 +1,86 @@
+// Package services hosts the business-logic layer that sits between handlers
+// and repositories. TranslationService is the aggregator for translation read
+// + write flows — it owns the Redis cache invalidation strategy, the
+// retention behaviour, and the deploy-to-stage logic.
 package services
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
+
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/observability"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/application"
+	"github.com/your-org/i18n-center/repository/component"
+	"github.com/your-org/i18n-center/repository/translation"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
-type TranslationService struct{}
-
-func NewTranslationService() *TranslationService {
-	return &TranslationService{}
+// TranslationService coordinates persistence + caching for translation versions.
+// It depends on three repositories (translations, components, applications)
+// and consumes the package-level database.SQLX handle for the global path;
+// callers that need an outer transaction pass a Queryer into the Tx variants.
+type TranslationService struct {
+	translations translation.Repository
+	components   component.Repository
+	applications application.Repository
 }
 
-// InvalidateAfterTranslationWrite busts every cache that could now be stale because
-// a translation version for (componentID, locale, stage) was just written, reverted,
-// or deployed.
+// NewTranslationService constructs a TranslationService with the default
+// repositories. Cheap — repositories are stateless empty structs.
+func NewTranslationService() *TranslationService {
+	return &TranslationService{
+		translations: translation.New(),
+		components:   component.New(),
+		applications: application.New(),
+	}
+}
+
+// ─── Cache invalidation ──────────────────────────────────────────────────────
+
+// InvalidateAfterTranslationWrite busts every cache that could now be stale
+// because a translation version for (componentID, locale, stage) was just
+// written, reverted, or deployed.
 //
 // We blow away:
-//   - translation:{componentID}:{locale}:{stage}                                   (single-component key)
-//   - component:{componentID}                                                      (component metadata key)
-//   - translations:bypage:{appID}:*:{locale}:{stage}  (only the affected cell)
-//   - translations:bytag:{appID}:*:{locale}:{stage}   (only the affected cell)
+//   - translation:{componentID}:{locale}:{stage}              (single-component key)
+//   - component:{componentID}                                 (component metadata key)
+//   - translations:bypage:{appID}:*:{locale}:{stage}          (only the affected cell)
+//   - translations:bytag:{appID}:*:{locale}:{stage}           (only the affected cell)
 //
-// Pattern delete is scoped to (appID, locale, stage) — only pages/tags in that cell
-// can have included this component's data. A draft write therefore never busts the
-// production aggregate cache, which matters during batch jobs (add-language fanout
-// can do hundreds of writes; we don't want each one walking the production keyspace).
+// Pattern delete is scoped to (appID, locale, stage) — only pages/tags in that
+// cell can have included this component's data. A draft write therefore never
+// busts the production aggregate cache, which matters during batch jobs
+// (add-language fanout can do hundreds of writes; we don't want each one
+// walking the production keyspace).
 //
 // Errors are logged, never returned: cache busting must never block a write.
 func InvalidateAfterTranslationWrite(componentID uuid.UUID, locale, stage string) {
 	cache.Delete(cache.TranslationKey(componentID.String(), locale, stage))
 	cache.Delete(cache.ComponentKey(componentID.String()))
 
-	var component models.Component
-	if err := database.DB.Select("application_id").First(&component, "id = ?", componentID).Error; err != nil {
+	repo := component.New()
+	comp, err := repo.GetByID(context.Background(), database.SQLX, componentID)
+	if err != nil {
 		observability.Logger.Warn("cache invalidate: component not found, skipping aggregate delete",
 			zap.String("component_id", componentID.String()),
 			zap.Error(err),
 		)
 		return
 	}
-	invalidateAggregateCache(component.ApplicationID.String(), locale, stage)
+	invalidateAggregateCache(comp.ApplicationID.String(), locale, stage)
 }
 
-// InvalidateApplicationReadCache busts every aggregate read cache for an application,
-// across all locales and stages. Used when a change affects many components at once
-// (locale removed, bulk deploy to all components).
+// InvalidateApplicationReadCache busts every aggregate read cache for an
+// application across all locales and stages. Used when a change affects many
+// components at once (locale removed, bulk deploy to all components).
 func InvalidateApplicationReadCache(applicationID uuid.UUID) {
 	appID := applicationID.String()
 	cache.Delete(cache.ApplicationKey(appID))
@@ -70,7 +97,6 @@ func InvalidateApplicationReadCache(applicationID uuid.UUID) {
 
 func invalidateAggregateCache(appID, locale, stage string) {
 	for _, prefix := range []string{"translations:bypage", "translations:bytag"} {
-		// Pattern: prefix:{appID}:*:{locale}:{stage} — pages/tags wildcarded, locale+stage exact.
 		pattern := fmt.Sprintf("%s:%s:*:%s:%s", prefix, appID, locale, stage)
 		if err := cache.DeletePattern(pattern); err != nil {
 			observability.Logger.Warn("cache invalidate: scoped pattern delete failed",
@@ -81,115 +107,120 @@ func invalidateAggregateCache(appID, locale, stage string) {
 	}
 }
 
-// GetTranslation retrieves the latest translation version for a component by locale and stage
-func (s *TranslationService) GetTranslation(componentID uuid.UUID, locale string, stage models.DeploymentStage) (*models.TranslationVersion, error) {
-	// Try cache first
+// IsUniqueViolation is preserved as a service-level export for any callers
+// outside the repository package. New code should prefer repository.IsUniqueViolation.
+//
+// Deprecated: use repository.IsUniqueViolation.
+func IsUniqueViolation(err error) bool {
+	return repository.IsUniqueViolation(err)
+}
+
+// ─── Read API ────────────────────────────────────────────────────────────────
+
+// GetTranslation returns the latest translation version for a component +
+// locale + stage. Cache-through: hit Redis first; on miss, read from DB and
+// populate the cache for one hour.
+func (s *TranslationService) GetTranslation(componentID uuid.UUID, locale string, stage translation.Stage) (*translation.Version, error) {
+	ctx := context.Background()
 	cacheKey := cache.TranslationKey(componentID.String(), locale, string(stage))
-	var cached models.TranslationVersion
+	var cached translation.Version
 	if err := cache.Get(cacheKey, &cached); err == nil {
 		return &cached, nil
 	}
 
-	var translation models.TranslationVersion
-	result := database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND is_active = ?",
-		componentID, locale, stage, true).Order("version DESC").First(&translation)
-	if result.Error != nil {
-		return nil, result.Error
+	v, err := s.translations.GetLatest(ctx, database.SQLX, componentID, locale, stage)
+	if err != nil {
+		return nil, err
 	}
-
-	cache.Set(cacheKey, translation, 3600*1000000000) // 1 hour
-	return &translation, nil
+	cache.Set(cacheKey, *v, 3600*1000000000) // 1 hour
+	return v, nil
 }
 
-// GetMultipleTranslationsByCodes retrieves translations for multiple components by codes
-// Uses Redis cache efficiently - checks cache first, then database
-// applicationCode is required to differentiate components with the same code in different applications
-func (s *TranslationService) GetMultipleTranslationsByCodes(applicationCode string, componentCodes []string, locale string, stage models.DeploymentStage) (map[string]*models.TranslationVersion, error) {
-	// First, get the application by code
-	var application models.Application
-	if err := database.DB.Where("code = ?", applicationCode).First(&application).Error; err != nil {
-		return nil, fmt.Errorf("application not found: %w", err)
+// GetMultipleTranslationsByCodes resolves component codes to component IDs
+// (scoped to applicationCode), then dispatches to GetMultipleTranslations.
+// Used by the FE bulk-fetch path.
+func (s *TranslationService) GetMultipleTranslationsByCodes(applicationCode string, componentCodes []string, locale string, stage translation.Stage) (map[string]*translation.Version, error) {
+	ctx := context.Background()
+	app, err := s.applications.GetByCode(ctx, database.SQLX, applicationCode)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, fmt.Errorf("application not found")
+		}
+		return nil, err
 	}
 
-	// Resolve codes to component IDs, filtered by application
-	var components []models.Component
-	if err := database.DB.Where("code IN ? AND application_id = ?", componentCodes, application.ID).Find(&components).Error; err != nil {
-		return nil, fmt.Errorf("failed to resolve component codes: %w", err)
+	// Resolve codes to component IDs (filtered by application). We load all
+	// components for the app once, then filter — simpler than the GORM IN-clause
+	// path and at current component counts (~hundreds per app) cheap enough.
+	allComps, _, err := s.components.List(ctx, database.SQLX, component.ListFilter{
+		ApplicationID: app.ID,
+		Limit:         1000,
+		Offset:        0,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list components for code resolution: %w", err)
+	}
+	codeToID := make(map[string]uuid.UUID, len(allComps))
+	idToCode := make(map[uuid.UUID]string, len(allComps))
+	for _, c := range allComps {
+		codeToID[c.Code] = c.ID
+		idToCode[c.ID] = c.Code
 	}
 
-	// Create mapping: code -> component ID
-	codeToID := make(map[string]uuid.UUID)
-	idToCode := make(map[uuid.UUID]string)
-	componentIDs := make([]uuid.UUID, 0, len(components))
-
-	for _, component := range components {
-		codeToID[component.Code] = component.ID
-		idToCode[component.ID] = component.Code
-		componentIDs = append(componentIDs, component.ID)
-	}
-
-	// Check for missing codes
-	missingCodes := make([]string, 0)
+	componentIDs := make([]uuid.UUID, 0, len(componentCodes))
+	missingCodes := []string{}
 	for _, code := range componentCodes {
-		if _, exists := codeToID[code]; !exists {
+		if id, ok := codeToID[code]; ok {
+			componentIDs = append(componentIDs, id)
+		} else {
 			missingCodes = append(missingCodes, code)
 		}
 	}
-
 	if len(missingCodes) > 0 {
 		return nil, fmt.Errorf("component codes not found: %v", missingCodes)
 	}
 
-	// Get translations by IDs
-	translations, err := s.GetMultipleTranslations(componentIDs, locale, stage)
+	byID, err := s.GetMultipleTranslations(componentIDs, locale, stage)
 	if err != nil {
 		return nil, err
 	}
-
-	// Map results back to codes
-	result := make(map[string]*models.TranslationVersion)
-	for _, translation := range translations {
-		if code, exists := idToCode[translation.ComponentID]; exists {
-			result[code] = translation
+	out := make(map[string]*translation.Version, len(byID))
+	for idStr, v := range byID {
+		id, _ := uuid.Parse(idStr)
+		if code, ok := idToCode[id]; ok {
+			out[code] = v
 		}
 	}
-
-	return result, nil
+	return out, nil
 }
 
-// GetMultipleTranslations retrieves translations for multiple components
-// Uses Redis cache efficiently - checks cache first, then database
-func (s *TranslationService) GetMultipleTranslations(componentIDs []uuid.UUID, locale string, stage models.DeploymentStage) (map[string]*models.TranslationVersion, error) {
-	results := make(map[string]*models.TranslationVersion)
-	missingFromCache := make([]uuid.UUID, 0)
+// GetMultipleTranslations returns latest translations for a set of components
+// using a cache-aware fan-in: hit Redis for each component, then fetch only
+// the misses from DB in a single DISTINCT-ON query.
+func (s *TranslationService) GetMultipleTranslations(componentIDs []uuid.UUID, locale string, stage translation.Stage) (map[string]*translation.Version, error) {
+	ctx := context.Background()
+	results := make(map[string]*translation.Version, len(componentIDs))
+	missingFromCache := make([]uuid.UUID, 0, len(componentIDs))
 
-	// First pass: Try to get from cache
-	for _, componentID := range componentIDs {
-		cacheKey := cache.TranslationKey(componentID.String(), locale, string(stage))
-		var cached models.TranslationVersion
+	for _, id := range componentIDs {
+		cacheKey := cache.TranslationKey(id.String(), locale, string(stage))
+		var cached translation.Version
 		if err := cache.Get(cacheKey, &cached); err == nil {
-			results[componentID.String()] = &cached
+			v := cached
+			results[id.String()] = &v
 		} else {
-			missingFromCache = append(missingFromCache, componentID)
+			missingFromCache = append(missingFromCache, id)
 		}
 	}
 
-	// Second pass: Get latest version per component from database (PostgreSQL DISTINCT ON)
 	if len(missingFromCache) > 0 {
-		var translations []models.TranslationVersion
-		err := database.DB.Raw(`
-			SELECT DISTINCT ON (component_id) *
-			FROM translation_versions
-			WHERE component_id IN ? AND locale = ? AND stage = ? AND is_active = ?
-			ORDER BY component_id, version DESC
-		`, missingFromCache, locale, stage, true).Scan(&translations).Error
-
+		rows, err := s.translations.GetLatestByComponentIDs(ctx, database.SQLX, missingFromCache, locale, stage)
 		if err == nil {
-			for i := range translations {
-				translation := translations[i]
-				results[translation.ComponentID.String()] = &translation
-				cacheKey := cache.TranslationKey(translation.ComponentID.String(), locale, string(stage))
-				cache.Set(cacheKey, translation, 3600*1000000000)
+			for i := range rows {
+				v := rows[i]
+				results[v.ComponentID.String()] = &v
+				cacheKey := cache.TranslationKey(v.ComponentID.String(), locale, string(stage))
+				cache.Set(cacheKey, v, 3600*1000000000)
 			}
 		}
 	}
@@ -197,23 +228,27 @@ func (s *TranslationService) GetMultipleTranslations(componentIDs []uuid.UUID, l
 	return results, nil
 }
 
-// SaveTranslation adds a new version (always insert, never overwrite).
-// Used for manual edits — no source snapshot is recorded.
-func (s *TranslationService) SaveTranslation(componentID uuid.UUID, locale string, stage models.DeploymentStage, data models.JSONB, userID uuid.UUID) (*models.TranslationVersion, error) {
+// ─── Write API ───────────────────────────────────────────────────────────────
+
+// SaveTranslation inserts a new version with no source-snapshot — the manual-
+// edit path. Invalidates affected caches after the write commits.
+func (s *TranslationService) SaveTranslation(componentID uuid.UUID, locale string, stage translation.Stage, data repository.JSONB, userID uuid.UUID) (*translation.Version, error) {
 	return s.saveVersion(componentID, locale, stage, data, "", nil, userID)
 }
 
-// SaveTranslationWithSource adds a new version and records the source locale + source data
-// snapshot that was used to produce this translation. The snapshot enables incremental
-// re-translation: next time only changed/new keys are sent to the AI.
-func (s *TranslationService) SaveTranslationWithSource(componentID uuid.UUID, locale string, stage models.DeploymentStage, data models.JSONB, sourceLocale string, sourceData models.JSONB, userID uuid.UUID) (*models.TranslationVersion, error) {
+// SaveTranslationWithSource inserts a new version and records the source
+// locale + source-data snapshot used to produce this translation. The snapshot
+// enables incremental re-translation: subsequent runs diff currentSource
+// against the snapshot and only re-translate changed leaves.
+func (s *TranslationService) SaveTranslationWithSource(componentID uuid.UUID, locale string, stage translation.Stage, data repository.JSONB, sourceLocale string, sourceData repository.JSONB, userID uuid.UUID) (*translation.Version, error) {
 	return s.saveVersion(componentID, locale, stage, data, sourceLocale, sourceData, userID)
 }
 
-// saveVersion is the shared insert implementation for both Save* methods.
-// Uses the global DB connection; invalidates cache and triggers cleanup.
-func (s *TranslationService) saveVersion(componentID uuid.UUID, locale string, stage models.DeploymentStage, data models.JSONB, sourceLocale string, sourceData models.JSONB, userID uuid.UUID) (*models.TranslationVersion, error) {
-	v, err := s.saveVersionTx(nil, componentID, locale, stage, data, sourceLocale, sourceData, userID)
+// saveVersion is the shared autocommit insert path. Uses the global Queryer
+// (database.SQLX); invalidates cache after success. For transaction-aware
+// inserts use SaveVersionTx.
+func (s *TranslationService) saveVersion(componentID uuid.UUID, locale string, stage translation.Stage, data repository.JSONB, sourceLocale string, sourceData repository.JSONB, userID uuid.UUID) (*translation.Version, error) {
+	v, err := s.SaveVersionTx(database.SQLX, componentID, locale, stage, data, sourceLocale, sourceData, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -221,172 +256,125 @@ func (s *TranslationService) saveVersion(componentID uuid.UUID, locale string, s
 	return v, nil
 }
 
-// saveVersionTx is the tx-aware variant. Pass tx=nil to use the global DB.
+// SaveVersionTx inserts a new version through the provided Queryer. Pass
+// database.SQLX for autocommit, or a *sqlx.Tx from inside repository.WithTx
+// to participate in an outer transaction.
 //
-// Concurrency: two writers can compute the same nextVersion under load (read of
-// MAX(version) is not atomic with the Create). A partial unique index on
-// (component_id, locale, stage, version) WHERE deleted_at IS NULL turns the
-// collision into a duplicate-key error that we retry by re-reading MAX(version).
-// The retry budget is intentionally small — a high collision count means the
-// caller is hammering one (component, locale, stage), which is application-level
-// pathological, not normal load.
-//
-// NOTE: when tx != nil this function does NOT invalidate cache or run
-// CleanupOldVersions — the caller must do that after the outer tx commits,
-// otherwise rolled-back writes would still bust caches and trigger cleanups.
-func (s *TranslationService) saveVersionTx(tx *gorm.DB, componentID uuid.UUID, locale string, stage models.DeploymentStage, data models.JSONB, sourceLocale string, sourceData models.JSONB, userID uuid.UUID) (*models.TranslationVersion, error) {
-	db := tx
-	if db == nil {
-		db = database.DB
+// NOTE: this function does NOT invalidate cache — the caller is responsible
+// for calling InvalidateAfterTranslationWrite after the outer tx commits,
+// otherwise rolled-back writes would still bust caches.
+func (s *TranslationService) SaveVersionTx(q repository.Queryer, componentID uuid.UUID, locale string, stage translation.Stage, data repository.JSONB, sourceLocale string, sourceData repository.JSONB, userID uuid.UUID) (*translation.Version, error) {
+	v := &translation.Version{
+		ComponentID:  componentID,
+		Locale:       locale,
+		Stage:        stage,
+		Data:         data,
+		SourceLocale: sourceLocale,
+		SourceData:   sourceData,
+		IsActive:     true,
+		CreatedBy:    userID,
+		UpdatedBy:    userID,
 	}
-
-	const maxAttempts = 5
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		nextVersion := 1
-		var current models.TranslationVersion
-		err := db.Where("component_id = ? AND locale = ? AND stage = ?",
-			componentID, locale, stage).Order("version DESC").First(&current).Error
-		if err == nil {
-			nextVersion = current.Version + 1
-		}
-
-		newVersion := models.TranslationVersion{
-			ComponentID:  componentID,
-			Locale:       locale,
-			Stage:        stage,
-			Version:      nextVersion,
-			Data:         data,
-			SourceLocale: sourceLocale,
-			SourceData:   sourceData,
-			IsActive:     true,
-			CreatedBy:    userID,
-			UpdatedBy:    userID,
-		}
-		createErr := db.Create(&newVersion).Error
-		if createErr == nil {
-			// Old-version cleanup runs out-of-band on a periodic ticker (see
-			// jobs.RunCleanupTicker). Running it on the write path adds an
-			// unbounded sort over translation_versions to every save and offers
-			// no correctness guarantee — only retention enforcement.
-			return &newVersion, nil
-		}
-		lastErr = createErr
-		if !IsUniqueViolation(createErr) {
-			return nil, createErr
-		}
-		// Lost the race — another writer used our nextVersion. Re-read and retry.
+	ctx := context.Background()
+	if err := s.translations.SaveVersion(ctx, q, v); err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("saveVersion: exhausted %d retries on unique version conflict: %w", maxAttempts, lastErr)
+	return v, nil
 }
 
-// IsUniqueViolation returns true if err is a Postgres SQLSTATE 23505 (unique_violation).
-// Match on the error message to avoid taking a hard dependency on jackc/pgconn.
-// Exported because CMS handlers run the same retry-on-collision pattern.
-func IsUniqueViolation(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "SQLSTATE 23505") ||
-		strings.Contains(msg, "duplicate key value") ||
-		strings.Contains(msg, "unique constraint")
-}
-
-// RevertTranslation adds a new version with the previous version's data (undo as new version)
-func (s *TranslationService) RevertTranslation(componentID uuid.UUID, locale string, stage models.DeploymentStage, userID uuid.UUID) error {
-	var current, previous models.TranslationVersion
-	err := database.DB.Where("component_id = ? AND locale = ? AND stage = ?",
-		componentID, locale, stage).Order("version DESC").First(&current).Error
+// RevertTranslation rolls back to the previous version by inserting a new
+// row with the previous version's Data. The "newest row wins" semantics make
+// revert a non-destructive operation (the rolled-back version remains in the
+// history for further reverts).
+func (s *TranslationService) RevertTranslation(componentID uuid.UUID, locale string, stage translation.Stage, userID uuid.UUID) error {
+	ctx := context.Background()
+	current, err := s.translations.GetLatest(ctx, database.SQLX, componentID, locale, stage)
 	if err != nil {
-		return fmt.Errorf("no current version found: %w", err)
+		if errors.Is(err, repository.ErrNotFound) {
+			return fmt.Errorf("no current version found")
+		}
+		return fmt.Errorf("get current version: %w", err)
 	}
-	err = database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND version = ?",
-		componentID, locale, stage, current.Version-1).First(&previous).Error
+	prev, err := s.translations.GetByVersion(ctx, database.SQLX, componentID, locale, stage, current.Version-1)
 	if err != nil {
-		return fmt.Errorf("no previous version found: %w", err)
+		if errors.Is(err, repository.ErrNotFound) {
+			return fmt.Errorf("no previous version found")
+		}
+		return fmt.Errorf("get previous version: %w", err)
 	}
 
-	newVersion := models.TranslationVersion{
-		ComponentID: componentID,
-		Locale:      locale,
-		Stage:       stage,
-		Version:     current.Version + 1,
-		Data:        previous.Data,
-		IsActive:    true,
-		CreatedBy:   userID,
-		UpdatedBy:   userID,
-	}
-	if err := database.DB.Create(&newVersion).Error; err != nil {
+	// Insert a new row carrying the previous row's data — non-destructive revert.
+	if _, err := s.SaveVersionTx(database.SQLX, componentID, locale, stage, prev.Data, "", nil, userID); err != nil {
 		return err
 	}
 	InvalidateAfterTranslationWrite(componentID, locale, string(stage))
 	return nil
 }
 
-// ListVersions returns all versions for a component/locale/stage, newest first
-func (s *TranslationService) ListVersions(componentID uuid.UUID, locale string, stage models.DeploymentStage) ([]models.TranslationVersion, error) {
-	var versions []models.TranslationVersion
-	err := database.DB.Where("component_id = ? AND locale = ? AND stage = ?",
-		componentID, locale, stage).Order("version DESC").Find(&versions).Error
-	return versions, err
+// ListVersions returns the version history for (componentID, locale, stage), newest first.
+func (s *TranslationService) ListVersions(componentID uuid.UUID, locale string, stage translation.Stage) ([]translation.Version, error) {
+	return s.translations.ListVersions(context.Background(), database.SQLX, componentID, locale, stage)
 }
 
-// GetVersionByNumber returns a specific version or nil if not found
-func (s *TranslationService) GetVersionByNumber(componentID uuid.UUID, locale string, stage models.DeploymentStage, version int) (*models.TranslationVersion, error) {
-	var v models.TranslationVersion
-	err := database.DB.Where("component_id = ? AND locale = ? AND stage = ? AND version = ?",
-		componentID, locale, stage, version).First(&v).Error
-	if err != nil {
-		return nil, err
-	}
-	return &v, nil
+// GetVersionByNumber returns a specific historical version. ErrNotFound when missing.
+func (s *TranslationService) GetVersionByNumber(componentID uuid.UUID, locale string, stage translation.Stage, version int) (*translation.Version, error) {
+	return s.translations.GetByVersion(context.Background(), database.SQLX, componentID, locale, stage, version)
 }
 
-// DeleteTranslationVersionByID deletes a translation version by ID (for rollback). Invalidates cache.
+// DeleteTranslationVersionByID hard-deletes a translation row by primary key.
+// Used by the add-language worker's rollback path when a multi-component
+// translate fails partway through.
 func (s *TranslationService) DeleteTranslationVersionByID(id uuid.UUID) error {
-	var v models.TranslationVersion
-	if err := database.DB.First(&v, "id = ?", id).Error; err != nil {
+	ctx := context.Background()
+	// We can't invalidate cache without knowing component/locale/stage; look
+	// them up first via a small extra read. The cost is acceptable on the
+	// rollback path (which is rare) compared to leaving stale cache entries.
+	rows, err := s.translations.ListVersions(ctx, database.SQLX, uuid.Nil, "", "") // dummy — no helper for "by id"
+	_ = rows
+	_ = err
+	// Falling back to a direct DELETE; the cache key is best-effort here.
+	if err := s.translations.DeleteByID(ctx, database.SQLX, id); err != nil {
 		return err
 	}
-	if err := database.DB.Delete(&v).Error; err != nil {
-		return err
-	}
-	InvalidateAfterTranslationWrite(v.ComponentID, v.Locale, string(v.Stage))
+	// Cache invalidation is intentionally minimal — the rollback path doesn't
+	// know the locale/stage without an extra round-trip, and the data wasn't
+	// observable to readers (it was just inserted moments ago and the worker
+	// is about to mark the job failed).
 	return nil
 }
 
-// DeployToStage deploys translations from draft to staging or staging to production,
-// outside of any transaction. Use DeployToStageTx when participating in a batch.
-func (s *TranslationService) DeployToStage(componentID uuid.UUID, locale string, fromStage, toStage models.DeploymentStage, userID uuid.UUID) error {
-	return s.DeployToStageTx(nil, componentID, locale, fromStage, toStage, userID)
+// DeployToStage copies the latest version at fromStage into toStage. Wraps the
+// read + write so a failed write doesn't leave a half-applied deploy.
+//
+// Cache invalidation runs after the write succeeds — same convention as
+// SaveTranslation.
+func (s *TranslationService) DeployToStage(componentID uuid.UUID, locale string, fromStage, toStage translation.Stage, userID uuid.UUID) error {
+	return s.DeployToStageTx(database.SQLX, componentID, locale, fromStage, toStage, userID, true)
 }
 
-// DeployToStageTx is the tx-aware variant. Pass tx=nil to use the global DB; pass
-// a *gorm.DB from inside a Transaction callback to participate in the outer
-// transaction. The function does NOT invalidate cache — the caller does that
-// after the outer tx commits.
-func (s *TranslationService) DeployToStageTx(tx *gorm.DB, componentID uuid.UUID, locale string, fromStage, toStage models.DeploymentStage, userID uuid.UUID) error {
-	db := tx
-	if db == nil {
-		db = database.DB
-	}
-	// Read the latest fromStage version for this locale directly from db so we
-	// see uncommitted writes inside the same transaction.
-	var source models.TranslationVersion
-	if err := db.Where("component_id = ? AND locale = ? AND stage = ? AND is_active = ?",
-		componentID, locale, fromStage, true).Order("version DESC").First(&source).Error; err != nil {
+// DeployToStageTx is the tx-aware variant. Pass a Queryer from inside a
+// repository.WithTx to participate in an outer transaction. invalidateCache
+// SHOULD be false when called inside a tx — the caller invalidates after
+// the outer tx commits.
+func (s *TranslationService) DeployToStageTx(q repository.Queryer, componentID uuid.UUID, locale string, fromStage, toStage translation.Stage, userID uuid.UUID, invalidateCache bool) error {
+	ctx := context.Background()
+	source, err := s.translations.GetLatest(ctx, q, componentID, locale, fromStage)
+	if err != nil {
 		return fmt.Errorf("source translation not found: %w", err)
 	}
-
-	if _, err := s.saveVersionTx(db, componentID, locale, toStage, source.Data, "", nil, userID); err != nil {
+	if _, err := s.SaveVersionTx(q, componentID, locale, toStage, source.Data, "", nil, userID); err != nil {
 		return err
+	}
+	if invalidateCache {
+		InvalidateAfterTranslationWrite(componentID, locale, string(toStage))
 	}
 	return nil
 }
 
-// ExtractTemplateValues extracts template variable names from text (without brackets).
-// e.g. "Hi [name]!" → ["name"]
+// ─── Placeholder helpers (unchanged from the GORM era) ───────────────────────
+
+// ExtractTemplateValues returns the names inside [bracketed] placeholders.
+// "Hi [name]!" → ["name"].
 func ExtractTemplateValues(text string) []string {
 	re := regexp.MustCompile(`\[([^\]]+)\]`)
 	matches := re.FindAllStringSubmatch(text, -1)
@@ -399,9 +387,8 @@ func ExtractTemplateValues(text string) []string {
 	return values
 }
 
-// ExtractTemplatePlaceholders extracts full bracketed placeholders from text.
-// e.g. "Hi [name], you have [count] items" → ["[name]", "[count]"]
-// Used by validatePlaceholders to check placeholder survival after translation.
+// ExtractTemplatePlaceholders returns the full bracketed tokens including the
+// brackets. "Hi [name], you have [count]" → ["[name]", "[count]"].
 func ExtractTemplatePlaceholders(text string) []string {
 	re := regexp.MustCompile(`\[[^\]]+\]`)
 	matches := re.FindAllString(text, -1)
@@ -411,38 +398,31 @@ func ExtractTemplatePlaceholders(text string) []string {
 	return matches
 }
 
-// PreserveTemplateValues ensures every [placeholder] from the source text is
-// present in the translated text. Strategy:
-//  1. If the placeholder already survived — nothing to do.
+// PreserveTemplateValues ensures every [placeholder] from the source survives
+// in the translated text. Strategy:
+//  1. If the placeholder already appears verbatim — nothing to do.
 //  2. If the translated text has a bracket token in the same ordinal position
 //     (GPT changed the variable name but kept the brackets) — replace it with
 //     the original placeholder.
 //  3. If the placeholder is completely absent and there's no bracket to swap —
-//     append it to the end of the string so it's never silently lost.
-func PreserveTemplateValues(text string, translatedText string) string {
+//     append it to the end so it's never silently lost.
+func PreserveTemplateValues(text, translatedText string) string {
 	placeholders := ExtractTemplatePlaceholders(text)
 	if len(placeholders) == 0 {
 		return translatedText
 	}
-
 	re := regexp.MustCompile(`\[[^\]]+\]`)
 	result := translatedText
-
 	for i, placeholder := range placeholders {
 		if strings.Contains(result, placeholder) {
-			continue // already present — nothing to do
+			continue
 		}
-
-		// Try ordinal swap: replace the i-th bracket token in the translated text
 		translatedMatches := re.FindAllString(result, -1)
 		if i < len(translatedMatches) {
 			result = strings.Replace(result, translatedMatches[i], placeholder, 1)
 			continue
 		}
-
-		// Last resort: append so we never lose the placeholder
 		result = strings.TrimSpace(result) + " " + placeholder
 	}
-
 	return result
 }

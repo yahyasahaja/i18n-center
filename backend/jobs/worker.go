@@ -10,14 +10,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.uber.org/zap"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/observability"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
-	"go.uber.org/zap"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
 const (
@@ -183,7 +186,7 @@ func processAddLanguageJob(ctx context.Context, job *models.AddLanguageJob, tran
 				return
 			}
 
-			sourceTranslation, err := translationService.GetTranslation(comp.ID, comp.DefaultLocale, models.StageDraft)
+			sourceTranslation, err := translationService.GetTranslation(comp.ID, comp.DefaultLocale, translation.StageDraft)
 			if err != nil {
 				results <- result{err: fmt.Errorf("component %s: no draft translation for default locale %s", comp.Code, comp.DefaultLocale), compCode: comp.Code}
 				// Still count as "processed" so the progress bar advances even on per-component errors.
@@ -205,7 +208,7 @@ func processAddLanguageJob(ctx context.Context, job *models.AddLanguageJob, tran
 				return
 			}
 
-			tr, err := translationService.SaveTranslation(comp.ID, job.Locale, models.StageDraft, translatedData, job.CreatedBy)
+			tr, err := translationService.SaveTranslation(comp.ID, job.Locale, translation.StageDraft, translatedData, job.CreatedBy)
 			if err != nil {
 				results <- result{err: fmt.Errorf("component %s: %w", comp.Code, err), compCode: comp.Code}
 				_ = database.DB.Exec(
@@ -418,7 +421,7 @@ func processTranslateJob(ctx context.Context, job *models.TranslateJob, translat
 	default:
 	}
 
-	sourceTranslation, err := translationService.GetTranslation(job.ComponentID, job.SourceLocale, models.StageDraft)
+	sourceTranslation, err := translationService.GetTranslation(job.ComponentID, job.SourceLocale, translation.StageDraft)
 	if err != nil {
 		_ = markTranslateJobFailed(job.ID, "Source translation not found",
 			fmt.Sprintf("component %s locale %s: %v", job.ComponentID, job.SourceLocale, err))
@@ -435,7 +438,7 @@ func processTranslateJob(ctx context.Context, job *models.TranslateJob, translat
 	var finalData map[string]interface{}
 
 	// Try to load the existing target translation and its stored source snapshot.
-	existingTarget, _ := translationService.GetTranslation(job.ComponentID, targetLocale, models.StageDraft)
+	existingTarget, _ := translationService.GetTranslation(job.ComponentID, targetLocale, translation.StageDraft)
 
 	if existingTarget != nil && len(existingTarget.SourceData) > 0 {
 		// ── Incremental path ────────────────────────────────────────────────────
@@ -494,9 +497,9 @@ func processTranslateJob(ctx context.Context, job *models.TranslateJob, translat
 
 	// Save with source snapshot so future runs can diff against it.
 	if _, err := translationService.SaveTranslationWithSource(
-		job.ComponentID, targetLocale, models.StageDraft,
-		models.JSONB(finalData),
-		job.SourceLocale, models.JSONB(currentSource),
+		job.ComponentID, targetLocale, translation.StageDraft,
+		repository.JSONB(finalData),
+		job.SourceLocale, repository.JSONB(currentSource),
 		job.CreatedBy,
 	); err != nil {
 		_ = markTranslateJobFailed(job.ID, "Failed to save translation", err.Error())
