@@ -135,7 +135,7 @@ export default function DashboardPage() {
             </Button>
             <Button
               variant="primary"
-              onClick={() => push('/components')}
+              onClick={() => push(componentsHref)}
               className="justify-start"
             >
               <Layers className="w-5 h-5 mr-2" />
