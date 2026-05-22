@@ -15,8 +15,8 @@ import (
 )
 
 func TestTagPageAndUtilityHandlers_ValidationPaths(t *testing.T) {
-	db, mock := newMockDB(t)
-	withMockDB(t, db)
+	db, xdb, mock := newMockDB(t)
+	withMockDB(t, db, xdb)
 
 	tagH := NewTagHandler()
 	pageH := NewPageHandler()

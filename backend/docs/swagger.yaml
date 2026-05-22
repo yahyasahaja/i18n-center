@@ -94,7 +94,7 @@ definitions:
       token:
         type: string
       user:
-        $ref: '#/definitions/models.User'
+        $ref: '#/definitions/user.User'
     type: object
   handlers.SaveTranslationRequest:
     properties:
@@ -598,7 +598,7 @@ definitions:
         description: 1, 2, 3, ... current = latest
         type: integer
     type: object
-  models.User:
+  user.User:
     properties:
       created_at:
         type: string
@@ -607,22 +607,12 @@ definitions:
       is_active:
         type: boolean
       role:
-        $ref: '#/definitions/models.UserRole'
+        type: string
       updated_at:
         type: string
       username:
         type: string
     type: object
-  models.UserRole:
-    enum:
-    - super_admin
-    - operator
-    - user_manager
-    type: string
-    x-enum-varnames:
-    - RoleSuperAdmin
-    - RoleOperator
-    - RoleUserManager
 host: localhost:8080
 info:
   contact:
@@ -1276,7 +1266,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.User'
+            $ref: '#/definitions/user.User'
         "401":
           description: Unauthorized
           schema:

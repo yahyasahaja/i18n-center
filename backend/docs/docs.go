@@ -1012,7 +1012,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.User"
+                            "$ref": "#/definitions/user.User"
                         }
                     },
                     "401": {
@@ -2867,7 +2867,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "user": {
-                    "$ref": "#/definitions/models.User"
+                    "$ref": "#/definitions/user.User"
                 }
             }
         },
@@ -3621,7 +3621,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.User": {
+        "user.User": {
             "type": "object",
             "properties": {
                 "created_at": {
@@ -3634,7 +3634,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "role": {
-                    "$ref": "#/definitions/models.UserRole"
+                    "type": "string"
                 },
                 "updated_at": {
                     "type": "string"
@@ -3643,19 +3643,6 @@ const docTemplate = `{
                     "type": "string"
                 }
             }
-        },
-        "models.UserRole": {
-            "type": "string",
-            "enum": [
-                "super_admin",
-                "operator",
-                "user_manager"
-            ],
-            "x-enum-varnames": [
-                "RoleSuperAdmin",
-                "RoleOperator",
-                "RoleUserManager"
-            ]
         }
     },
     "securityDefinitions": {

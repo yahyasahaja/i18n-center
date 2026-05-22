@@ -8,22 +8,27 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
+
 	"github.com/your-org/i18n-center/auth"
 	"github.com/your-org/i18n-center/database"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 )
 
+// withMockDB swaps database.SQLX for a sqlmock-backed *sqlx.DB so the
+// middleware's ValidateAPIKey path can run against deterministic expectations
+// instead of a live Postgres. Restored on test cleanup.
 func withMockDB(t *testing.T) sqlmock.Sqlmock {
 	t.Helper()
 	sqlDB, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	assert.NoError(t, err)
-	db, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{})
-	assert.NoError(t, err)
-	orig := database.DB
-	database.DB = db
-	t.Cleanup(func() { database.DB = orig })
+	xdb := sqlx.NewDb(sqlDB, "postgres")
+	orig := database.SQLX
+	database.SQLX = xdb
+	t.Cleanup(func() {
+		database.SQLX = orig
+		_ = sqlDB.Close()
+	})
 	return mock
 }
 

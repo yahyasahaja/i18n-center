@@ -24,8 +24,8 @@ func cmsTemplateFieldCols() []string {
 // ── setup helper ─────────────────────────────────────────────────────────────
 
 func setupCmsTemplateHandler(t *testing.T) (*CmsTemplateHandler, sqlmock.Sqlmock, *mocks.MockAuditServicer) {
-	db, mock := newMockDB(t)
-	withMockDB(t, db)
+	db, xdb, mock := newMockDB(t)
+	withMockDB(t, db, xdb)
 	auditMock := newMockAuditService()
 	return &CmsTemplateHandler{auditService: auditMock}, mock, auditMock
 }

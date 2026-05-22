@@ -15,8 +15,8 @@ import (
 )
 
 func setupTagHandler(t *testing.T) (*TagHandler, sqlmock.Sqlmock) {
-	db, mock := newMockDB(t)
-	withMockDB(t, db)
+	db, xdb, mock := newMockDB(t)
+	withMockDB(t, db, xdb)
 	return &TagHandler{auditService: newMockAuditService()}, mock
 }
 

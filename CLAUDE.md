@@ -313,6 +313,19 @@ The data layer is being moved off GORM onto raw SQL. New code MUST follow this p
 
 See `backend/repository/types.go` for the base abstractions and `backend/repository/<resource>/` for example impls.
 
+### Migration status (Commit D in flight)
+| Resource | Repository | Handlers wired |
+|---|---|---|
+| User | `repository/user` | ✅ |
+| Application | `repository/application` | ✅ (CRUD + AddLanguage + DeleteLanguage; jobs path still on GORM) |
+| ApplicationAPIKey | `repository/apikey` | ✅ (also powers `auth.ValidateAPIKey`) |
+| Tag, Page, Component | — | Commit E |
+| TranslationVersion | — | Commit F |
+| CmsTemplate, CmsItem, CmsLocalization, CmsTemplateField | — | Commit G |
+| AuditLog, AddLanguageJob, TranslateJob, CmsTranslateJob, ApplicationLocaleDeploy | — | Commit H |
+
+GORM stays loaded in `database.DB` until Commit I — handlers that haven't been ported yet still use it.
+
 ## Patterns to reuse (NOT re-implement)
 
 When you find yourself writing one of these, use the existing helper instead:

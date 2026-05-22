@@ -15,8 +15,8 @@ import (
 )
 
 func setupComponentHandler(t *testing.T) (*ComponentHandler, sqlmock.Sqlmock) {
-	db, mock := newMockDB(t)
-	withMockDB(t, db)
+	db, xdb, mock := newMockDB(t)
+	withMockDB(t, db, xdb)
 	audit := newMockAuditService()
 	h := &ComponentHandler{auditService: audit}
 	return h, mock

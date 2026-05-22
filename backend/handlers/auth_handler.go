@@ -1,23 +1,28 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
 	"github.com/your-org/i18n-center/auth"
 	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/models"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/user"
 	"github.com/your-org/i18n-center/services"
 )
 
 type AuthHandler struct {
 	auditService services.AuditServicer
+	users        user.Repository
 }
 
 func NewAuthHandler() *AuthHandler {
 	return &AuthHandler{
 		auditService: services.NewAuditService(),
+		users:        user.New(),
 	}
 }
 
@@ -55,8 +60,8 @@ type LoginRequest struct {
 }
 
 type LoginResponse struct {
-	Token string      `json:"token"`
-	User  models.User `json:"user"`
+	Token string    `json:"token"`
+	User  user.User `json:"user"`
 }
 
 // Login handles user login
@@ -77,34 +82,35 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	var user models.User
-	if err := database.DB.Where("username = ? AND is_active = ?", req.Username, true).First(&user).Error; err != nil {
+	u, err := h.users.GetActiveByUsername(c.Request.Context(), database.SQLX, req.Username)
+	if err != nil {
+		// Bucket all auth failures into one response — never leak which step failed.
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	if !auth.CheckPasswordHash(req.Password, user.PasswordHash) {
+	if !auth.CheckPasswordHash(req.Password, u.PasswordHash) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	token, err := auth.GenerateToken(user.ID, user.Username, string(user.Role))
+	token, err := auth.GenerateToken(u.ID, u.Username, u.Role)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
 
-	user.PasswordHash = "" // Don't send password hash
+	u.PasswordHash = "" // never serialise the hash
 	c.JSON(http.StatusOK, LoginResponse{
 		Token: token,
-		User:  user,
+		User:  *u,
 	})
 }
 
 type CreateUserRequest struct {
-	Username string          `json:"username" binding:"required"`
-	Password string          `json:"password" binding:"required"`
-	Role     models.UserRole `json:"role" binding:"required"`
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
+	Role     string `json:"role"     binding:"required"`
 }
 
 // CreateUser creates a new user (User Manager only)
@@ -121,83 +127,94 @@ func (h *AuthHandler) CreateUser(c *gin.Context) {
 		return
 	}
 
-	user := models.User{
+	u := user.User{
 		Username:     req.Username,
 		PasswordHash: hashedPassword,
 		Role:         req.Role,
 		IsActive:     true,
 	}
 
-	if err := database.DB.Create(&user).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Username already exists"})
+	if err := h.users.Create(c.Request.Context(), database.SQLX, &u); err != nil {
+		if errors.Is(err, repository.ErrConflict) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Username already exists"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	currentUserID, currentUsername := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
 
-	// Log audit (don't log password)
-	userForAudit := models.User{
-		ID:       user.ID,
-		Username: user.Username,
-		Role:     user.Role,
-		IsActive: user.IsActive,
+	// Log audit — explicitly omit the password hash by reconstructing a sanitized struct.
+	userForAudit := user.User{
+		ID:       u.ID,
+		Username: u.Username,
+		Role:     u.Role,
+		IsActive: u.IsActive,
 	}
 	h.auditService.LogCreate(
 		currentUserID,
 		currentUsername,
 		"user",
-		user.ID,
-		user.Username,
+		u.ID,
+		u.Username,
 		userForAudit,
 		ipAddress,
 		userAgent,
 	)
 
-	user.PasswordHash = ""
-	c.JSON(http.StatusCreated, user)
+	u.PasswordHash = ""
+	c.JSON(http.StatusCreated, u)
 }
 
 // GetUsers lists all users
 func (h *AuthHandler) GetUsers(c *gin.Context) {
-	var users []models.User
-	if err := database.DB.Find(&users).Error; err != nil {
+	users, err := h.users.List(c.Request.Context(), database.SQLX)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	// Remove password hashes
+	// Strip hashes before serialising.
 	for i := range users {
 		users[i].PasswordHash = ""
 	}
-
 	c.JSON(http.StatusOK, users)
 }
 
 // UpdateUser updates user information
 func (h *AuthHandler) UpdateUser(c *gin.Context) {
 	userIDParam := c.Param("id")
-	var user models.User
+	uid, err := uuid.Parse(userIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
 
-	if err := database.DB.First(&user, "id = ?", userIDParam).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+	u, err := h.users.GetByID(c.Request.Context(), database.SQLX, uid)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	currentUserID, currentUsername := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
 
-	// Store before values for audit
-	before := models.User{
-		Username: user.Username,
-		Role:     user.Role,
-		IsActive: user.IsActive,
+	// Snapshot the before-state for the audit log — only the mutable, non-secret fields.
+	before := user.User{
+		Username: u.Username,
+		Role:     u.Role,
+		IsActive: u.IsActive,
 	}
 
 	var req struct {
-		IsActive *bool            `json:"is_active"`
-		Role     *models.UserRole `json:"role"`
-		Password *string          `json:"password"`
+		IsActive *bool   `json:"is_active"`
+		Role     *string `json:"role"`
+		Password *string `json:"password"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -206,10 +223,10 @@ func (h *AuthHandler) UpdateUser(c *gin.Context) {
 	}
 
 	if req.IsActive != nil {
-		user.IsActive = *req.IsActive
+		u.IsActive = *req.IsActive
 	}
 	if req.Role != nil {
-		user.Role = *req.Role
+		u.Role = *req.Role
 	}
 	if req.Password != nil {
 		hashedPassword, err := auth.HashPassword(*req.Password)
@@ -217,36 +234,34 @@ func (h *AuthHandler) UpdateUser(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
 			return
 		}
-		user.PasswordHash = hashedPassword
+		u.PasswordHash = hashedPassword
 	}
 
-	if err := database.DB.Save(&user).Error; err != nil {
+	if err := h.users.Update(c.Request.Context(), database.SQLX, u); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Store after values for audit
-	after := models.User{
-		Username: user.Username,
-		Role:     user.Role,
-		IsActive: user.IsActive,
+	after := user.User{
+		Username: u.Username,
+		Role:     u.Role,
+		IsActive: u.IsActive,
 	}
 
-	// Log audit
 	h.auditService.LogUpdate(
 		currentUserID,
 		currentUsername,
 		"user",
-		user.ID,
-		user.Username,
+		u.ID,
+		u.Username,
 		before,
 		after,
 		ipAddress,
 		userAgent,
 	)
 
-	user.PasswordHash = ""
-	c.JSON(http.StatusOK, user)
+	u.PasswordHash = ""
+	c.JSON(http.StatusOK, u)
 }
 
 // GetCurrentUser returns current authenticated user
@@ -256,18 +271,28 @@ func (h *AuthHandler) UpdateUser(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
-// @Success      200  {object}  models.User
+// @Success      200  {object}  user.User
 // @Failure      401  {object}  map[string]string
 // @Router       /auth/me [get]
 func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	var user models.User
-
-	if err := database.DB.First(&user, "id = ?", userID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+	v, _ := c.Get("user_id")
+	idStr, _ := v.(string)
+	uid, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user context"})
 		return
 	}
 
-	user.PasswordHash = ""
-	c.JSON(http.StatusOK, user)
+	u, err := h.users.GetByID(c.Request.Context(), database.SQLX, uid)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	u.PasswordHash = ""
+	c.JSON(http.StatusOK, u)
 }

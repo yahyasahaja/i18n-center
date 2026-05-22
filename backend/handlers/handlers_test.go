@@ -5,13 +5,15 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
-	"github.com/your-org/i18n-center/cache"
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/mocks"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"github.com/your-org/i18n-center/cache"
+	"github.com/your-org/i18n-center/database"
+	"github.com/your-org/i18n-center/mocks"
 )
 
 func init() {
@@ -21,9 +23,13 @@ func init() {
 	cache.Client = redis.NewClient(&redis.Options{Addr: "localhost:0"})
 }
 
-// newMockDB creates a *gorm.DB backed by go-sqlmock.
-// Uses QueryMatcherRegexp so GORM-generated SQL patterns can be matched with regexes.
-func newMockDB(t *testing.T) (*gorm.DB, sqlmock.Sqlmock) {
+// newMockDB creates BOTH a *gorm.DB and a *sqlx.DB backed by the same sqlmock
+// connection, so tests can match SQL emitted by either the legacy GORM path
+// or the new repository layer through a single sqlmock instance.
+//
+// Uses QueryMatcherRegexp so test expectations can use regex patterns against
+// either GORM's quoted-table SQL or the repository's plain-table SQL.
+func newMockDB(t *testing.T) (*gorm.DB, *sqlx.DB, sqlmock.Sqlmock) {
 	t.Helper()
 	sqlDB, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
@@ -37,15 +43,22 @@ func newMockDB(t *testing.T) (*gorm.DB, sqlmock.Sqlmock) {
 		t.Fatalf("failed to open gorm with sqlmock: %v", err)
 	}
 
-	return db, mock
+	xdb := sqlx.NewDb(sqlDB, "postgres")
+	return db, xdb, mock
 }
 
-// withMockDB sets database.DB to the provided mock and restores original on cleanup.
-func withMockDB(t *testing.T, db *gorm.DB) {
+// withMockDB swaps in BOTH database.DB (GORM) and database.SQLX (sqlx).
+// Pass the same pair returned by newMockDB. Originals restored on cleanup.
+func withMockDB(t *testing.T, db *gorm.DB, xdb *sqlx.DB) {
 	t.Helper()
-	original := database.DB
+	origGorm := database.DB
+	origSqlx := database.SQLX
 	database.DB = db
-	t.Cleanup(func() { database.DB = original })
+	database.SQLX = xdb
+	t.Cleanup(func() {
+		database.DB = origGorm
+		database.SQLX = origSqlx
+	})
 }
 
 // newMockAuditService returns a configured MockAuditServicer.

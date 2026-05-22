@@ -6,26 +6,27 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/models"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 )
 
+// setupAPIKeyDB wires a sqlmock-backed *sqlx.DB into database.SQLX so
+// ValidateAPIKey hits the mock instead of a real Postgres. Restored on
+// test cleanup.
 func setupAPIKeyDB(t *testing.T) sqlmock.Sqlmock {
 	t.Helper()
 	sqlDB, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	require.NoError(t, err)
 
-	gdb, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{})
-	require.NoError(t, err)
+	xdb := sqlx.NewDb(sqlDB, "postgres")
 
-	old := database.DB
-	database.DB = gdb
+	old := database.SQLX
+	database.SQLX = xdb
 	t.Cleanup(func() {
-		database.DB = old
+		database.SQLX = old
 		_ = sqlDB.Close()
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
@@ -34,8 +35,8 @@ func setupAPIKeyDB(t *testing.T) sqlmock.Sqlmock {
 }
 
 func TestHashKey_Deterministic(t *testing.T) {
-	h1 := hashKey("sk_example")
-	h2 := hashKey("sk_example")
+	h1 := HashKey("sk_example")
+	h2 := HashKey("sk_example")
 	assert.Equal(t, h1, h2)
 	assert.Len(t, h1, 64)
 }
@@ -52,11 +53,13 @@ func TestValidateAPIKey_InvalidInput(t *testing.T) {
 
 func TestValidateAPIKey_NotFound(t *testing.T) {
 	mock := setupAPIKeyDB(t)
-	key := models.APIKeyPrefix + "missing"
+	key := APIKeyPrefix + "missing"
 
-	cols := []string{"id", "application_id", "key_hash", "key_prefix", "name", "created_at", "deleted_at"}
-	mock.ExpectQuery(`SELECT .*FROM "application_api_keys"`).
-		WithArgs(hashKey(key), 1).
+	// Repository selects id, application_id, key_hash, key_prefix, name, created_at
+	// — no deleted_at because the WHERE clause already filters it out.
+	cols := []string{"id", "application_id", "key_hash", "key_prefix", "name", "created_at"}
+	mock.ExpectQuery(`SELECT .*FROM application_api_keys`).
+		WithArgs(HashKey(key)).
 		WillReturnRows(sqlmock.NewRows(cols))
 
 	id, ok := ValidateAPIKey(key)
@@ -67,13 +70,13 @@ func TestValidateAPIKey_NotFound(t *testing.T) {
 func TestValidateAPIKey_Success(t *testing.T) {
 	mock := setupAPIKeyDB(t)
 	appID := uuid.New()
-	key := models.APIKeyPrefix + "valid_key_123"
+	key := APIKeyPrefix + "valid_key_123"
 
-	cols := []string{"id", "application_id", "key_hash", "key_prefix", "name", "created_at", "deleted_at"}
-	mock.ExpectQuery(`SELECT .*FROM "application_api_keys"`).
-		WithArgs(hashKey(key), 1).
+	cols := []string{"id", "application_id", "key_hash", "key_prefix", "name", "created_at"}
+	mock.ExpectQuery(`SELECT .*FROM application_api_keys`).
+		WithArgs(HashKey(key)).
 		WillReturnRows(sqlmock.NewRows(cols).AddRow(
-			uuid.New(), appID, hashKey(key), models.APIKeyPrefix+"valid", "test", time.Now(), nil,
+			uuid.New(), appID, HashKey(key), APIKeyPrefix+"valid", "test", time.Now(),
 		))
 
 	id, ok := ValidateAPIKey("   " + key + "   ")

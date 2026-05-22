@@ -16,11 +16,15 @@ import (
 	"gorm.io/gorm"
 )
 
+// setupAuthHandler uses the real constructor so h.users (the sqlx-backed user
+// repository) is non-nil and dispatches against the sqlmock-wired database.SQLX.
+// auditService is then swapped for a mock so tests can assert audit calls.
 func setupAuthHandler(t *testing.T) (*AuthHandler, sqlmock.Sqlmock) {
-	db, mock := newMockDB(t)
-	withMockDB(t, db)
+	db, xdb, mock := newMockDB(t)
+	withMockDB(t, db, xdb)
 	audit := newMockAuditService()
-	h := &AuthHandler{auditService: audit}
+	h := NewAuthHandler()
+	h.auditService = audit
 	return h, mock
 }
 
@@ -114,14 +118,16 @@ func TestGetCurrentUser_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
-// helper: build a full User row columns
+// userColumns lists the columns selected by the sqlx user repository
+// (repository/user/repository_impl.go). deleted_at is intentionally absent —
+// it's only used for the WHERE filter, never in the SELECT projection.
 func userColumns() []string {
-	return []string{"id", "username", "password_hash", "role", "is_active", "created_at", "updated_at", "deleted_at"}
+	return []string{"id", "username", "password_hash", "role", "is_active", "created_at", "updated_at"}
 }
 
 func userRow(u models.User) *sqlmock.Rows {
 	return sqlmock.NewRows(userColumns()).
-		AddRow(u.ID, u.Username, u.PasswordHash, string(u.Role), u.IsActive, time.Now(), time.Now(), nil)
+		AddRow(u.ID, u.Username, u.PasswordHash, string(u.Role), u.IsActive, time.Now(), time.Now())
 }
 
 // TestLogin_WrongPassword verifies that a correct username but bad password returns 401.

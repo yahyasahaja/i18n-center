@@ -2,40 +2,47 @@ package handlers
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	"github.com/your-org/i18n-center/auth"
 	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/models"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/apikey"
+	"github.com/your-org/i18n-center/repository/application"
 	"github.com/your-org/i18n-center/services"
 )
 
 const keySegmentLen = 32 // 32 bytes = 64 hex chars after sk_
 
-func hashKey(key string) string {
-	h := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(h[:])
-}
-
 type APIKeyHandler struct {
 	auditService services.AuditServicer
+	keys         apikey.Repository
+	apps         application.Repository
 }
 
 func NewAPIKeyHandler() *APIKeyHandler {
-	return &APIKeyHandler{auditService: services.NewAuditService()}
+	return &APIKeyHandler{
+		auditService: services.NewAuditService(),
+		keys:         apikey.New(),
+		apps:         application.New(),
+	}
 }
 
-// generateKey returns a new key in the form sk_<64 hex chars>
+// generateKey returns a new key in the form sk_<64 hex chars>.
+// Same shape as the previous GORM-era implementation — clients that stored
+// a key under the old format continue to validate against the same hash.
 func generateKey() (string, error) {
 	b := make([]byte, keySegmentLen)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	return models.APIKeyPrefix + hex.EncodeToString(b), nil
+	return auth.APIKeyPrefix + hex.EncodeToString(b), nil
 }
 
 // Create creates a new API key for the application. The full key is returned only in this response.
@@ -60,9 +67,13 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 		return
 	}
 
-	var app models.Application
-	if err := database.DB.First(&app, "id = ?", applicationID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+	// Verify the application exists (and is not soft-deleted) before issuing a key.
+	if _, err := h.apps.GetByID(c.Request.Context(), database.SQLX, applicationID); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -82,27 +93,27 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 		prefix = prefix[:12]
 	}
 
-	apiKey := models.ApplicationAPIKey{
+	row := apikey.APIKey{
 		ApplicationID: applicationID,
-		KeyHash:       hashKey(key),
+		KeyHash:       auth.HashKey(key),
 		KeyPrefix:     prefix,
 		Name:          strings.TrimSpace(body.Name),
 	}
-	if err := database.DB.Create(&apiKey).Error; err != nil {
+	if err := h.keys.Create(c.Request.Context(), database.SQLX, &row); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save key"})
 		return
 	}
 
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
-	h.auditService.LogCreate(userID, username, "application_api_key", apiKey.ID, apiKey.KeyPrefix, apiKey, ipAddress, userAgent)
+	h.auditService.LogCreate(userID, username, "application_api_key", row.ID, row.KeyPrefix, row, ipAddress, userAgent)
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":         apiKey.ID,
+		"id":         row.ID,
 		"key":        key,
-		"key_prefix": apiKey.KeyPrefix,
-		"name":       apiKey.Name,
-		"created_at": apiKey.CreatedAt,
+		"key_prefix": row.KeyPrefix,
+		"name":       row.Name,
+		"created_at": row.CreatedAt,
 	})
 }
 
@@ -121,12 +132,11 @@ func (h *APIKeyHandler) List(c *gin.Context) {
 		return
 	}
 
-	var keys []models.ApplicationAPIKey
-	if err := database.DB.Where("application_id = ?", applicationID).Order("created_at DESC").Find(&keys).Error; err != nil {
+	keys, err := h.keys.ListByApp(c.Request.Context(), database.SQLX, applicationID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list keys"})
 		return
 	}
-
 	c.JSON(http.StatusOK, keys)
 }
 
@@ -152,20 +162,25 @@ func (h *APIKeyHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	var apiKey models.ApplicationAPIKey
-	if err := database.DB.First(&apiKey, "id = ? AND application_id = ?", keyID, applicationID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "API key not found"})
+	// Fetch first so we can audit-log the actual row state before deletion.
+	row, err := h.keys.GetByIDForApp(c.Request.Context(), database.SQLX, keyID, applicationID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "API key not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := database.DB.Delete(&apiKey).Error; err != nil {
+	if err := h.keys.SoftDelete(c.Request.Context(), database.SQLX, keyID, applicationID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete key"})
 		return
 	}
 
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
-	h.auditService.LogDelete(userID, username, "application_api_key", apiKey.ID, apiKey.KeyPrefix, apiKey, ipAddress, userAgent)
+	h.auditService.LogDelete(userID, username, "application_api_key", row.ID, row.KeyPrefix, row, ipAddress, userAgent)
 
 	c.JSON(http.StatusOK, gin.H{"message": "API key deleted"})
 }

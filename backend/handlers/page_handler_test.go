@@ -15,8 +15,8 @@ import (
 )
 
 func setupPageHandler(t *testing.T) (*PageHandler, sqlmock.Sqlmock) {
-	db, mock := newMockDB(t)
-	withMockDB(t, db)
+	db, xdb, mock := newMockDB(t)
+	withMockDB(t, db, xdb)
 	return &PageHandler{auditService: newMockAuditService()}, mock
 }
 

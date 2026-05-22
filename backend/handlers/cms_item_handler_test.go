@@ -42,8 +42,8 @@ func cmsTranslateJobCols() []string {
 // ── setup helper ─────────────────────────────────────────────────────────────
 
 func setupCmsItemHandler(t *testing.T) (*CmsItemHandler, sqlmock.Sqlmock, *mocks.MockAuditServicer) {
-	db, mock := newMockDB(t)
-	withMockDB(t, db)
+	db, xdb, mock := newMockDB(t)
+	withMockDB(t, db, xdb)
 	auditMock := newMockAuditService()
 	return &CmsItemHandler{auditService: auditMock}, mock, auditMock
 }
@@ -829,8 +829,8 @@ func TestCmsItemHandler_GetCmsTranslateJobStatus(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestGetCmsItemByIdentifier(t *testing.T) {
-	db, mock := newMockDB(t)
-	withMockDB(t, db)
+	db, xdb, mock := newMockDB(t)
+	withMockDB(t, db, xdb)
 
 	r := gin.New()
 	r.GET("/applications/:id/cms/:identifier", GetCmsItemByIdentifier)

@@ -1,27 +1,33 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
+
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/jobs"
 	"github.com/your-org/i18n-center/models"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/application"
 	"github.com/your-org/i18n-center/services"
-	"gorm.io/gorm"
 )
 
 type ApplicationHandler struct {
 	auditService services.AuditServicer
+	apps         application.Repository
 }
 
 func NewApplicationHandler() *ApplicationHandler {
 	return &ApplicationHandler{
 		auditService: services.NewAuditService(),
+		apps:         application.New(),
 	}
 }
 
@@ -64,47 +70,60 @@ func (h *ApplicationHandler) getClientInfo(c *gin.Context) (ipAddress, userAgent
 // @Failure      401  {object}  map[string]string
 // @Router       /applications [get]
 func (h *ApplicationHandler) GetApplications(c *gin.Context) {
-	var applications []models.Application
-	if err := database.DB.Find(&applications).Error; err != nil {
+	apps, err := h.apps.List(c.Request.Context(), database.SQLX)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	// Set HasOpenAIKey for each application
-	for i := range applications {
-		applications[i].HasOpenAIKey = applications[i].OpenAIKey != ""
+	for i := range apps {
+		apps[i].PopulateComputed()
 	}
-
-	c.JSON(http.StatusOK, applications)
+	c.JSON(http.StatusOK, apps)
 }
 
-// GetApplication gets a single application (by ID or code)
+// GetApplication gets a single application (by ID or code).
+// Cache hits short-circuit the DB lookup. Tries UUID-shape first; falls back
+// to GetByCode when the param doesn't parse as UUID, so the same endpoint
+// serves both `/applications/{uuid}` and `/applications/{code}`.
 func (h *ApplicationHandler) GetApplication(c *gin.Context) {
 	identifier := c.Param("id")
 
-	// Try cache (by ID)
 	cacheKey := cache.ApplicationKey(identifier)
-	var cached models.Application
+	var cached application.Application
 	if err := cache.Get(cacheKey, &cached); err == nil {
 		c.JSON(http.StatusOK, cached)
 		return
 	}
 
-	var application models.Application
-	// Try by ID first, then by code
-	if err := database.DB.First(&application, "id = ?", identifier).Error; err != nil {
-		if err := database.DB.First(&application, "code = ?", identifier).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+	ctx := c.Request.Context()
+	var app *application.Application
+	if id, parseErr := uuid.Parse(identifier); parseErr == nil {
+		a, err := h.apps.GetByID(ctx, database.SQLX, id)
+		if err == nil {
+			app = a
+		} else if !errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 	}
+	if app == nil {
+		a, err := h.apps.GetByCode(ctx, database.SQLX, identifier)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		app = a
+	}
 
-	// Set HasOpenAIKey
-	application.HasOpenAIKey = application.OpenAIKey != ""
+	app.PopulateComputed()
 
-	// Cache for 1 hour
-	cache.Set(cacheKey, application, 3600*1000000000)
-	c.JSON(http.StatusOK, application)
+	// Cache for 1 hour — same TTL as the legacy GORM path.
+	cache.Set(cacheKey, *app, 3600*1000000000)
+	c.JSON(http.StatusOK, app)
 }
 
 // ApplicationRequest represents the request payload for creating applications
@@ -147,50 +166,57 @@ func (h *ApplicationHandler) CreateApplication(c *gin.Context) {
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
 
-	application := models.Application{
+	app := application.Application{
 		Name:             req.Name,
 		Code:             req.Code,
 		Description:      req.Description,
-		EnabledLanguages: models.StringArray(req.EnabledLanguages),
+		EnabledLanguages: req.EnabledLanguages,
 		OpenAIKey:        req.OpenAIKey,
 		CreatedBy:        userID,
 		UpdatedBy:        userID,
 	}
 
-	if err := database.DB.Create(&application).Error; err != nil {
-		// Check if it's a unique constraint violation
-		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+	if err := h.apps.Create(c.Request.Context(), database.SQLX, &app); err != nil {
+		if errors.Is(err, repository.ErrConflict) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Application code already exists"})
-		} else {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
 		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Log audit
 	h.auditService.LogCreate(
 		userID,
 		username,
 		"application",
-		application.ID,
-		application.Code,
-		application,
+		app.ID,
+		app.Code,
+		app,
 		ipAddress,
 		userAgent,
 	)
 
-	// Set HasOpenAIKey
-	application.HasOpenAIKey = application.OpenAIKey != ""
-	c.JSON(http.StatusCreated, application)
+	app.PopulateComputed()
+	c.JSON(http.StatusCreated, app)
 }
 
 // UpdateApplication updates an application
 func (h *ApplicationHandler) UpdateApplication(c *gin.Context) {
-	id := c.Param("id")
-	var application models.Application
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid application ID"})
+		return
+	}
 
-	if err := database.DB.First(&application, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+	ctx := c.Request.Context()
+	app, err := h.apps.GetByID(ctx, database.SQLX, id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -203,94 +229,101 @@ func (h *ApplicationHandler) UpdateApplication(c *gin.Context) {
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
 
-	// Store before values for audit
-	before := models.Application{
-		Name:             application.Name,
-		Code:             application.Code,
-		Description:      application.Description,
-		EnabledLanguages: application.EnabledLanguages,
-		// Don't log OpenAIKey for security
+	// Snapshot before-state for the audit log. OpenAIKey intentionally omitted
+	// — never include secrets in audit payloads.
+	before := application.Application{
+		Name:             app.Name,
+		Code:             app.Code,
+		Description:      app.Description,
+		EnabledLanguages: app.EnabledLanguages,
 	}
 
-	// Update fields; keep existing code if not provided
-	application.Name = req.Name
+	// Apply patch. Code stays unchanged if blank in the request (preserves the
+	// legacy GORM behavior that a missing/empty code didn't clobber the existing one).
+	app.Name = req.Name
 	if req.Code != "" {
-		application.Code = req.Code
+		app.Code = req.Code
 	}
-	application.Description = req.Description
-	application.EnabledLanguages = models.StringArray(req.EnabledLanguages)
-	application.UpdatedBy = userID
-	// Only update OpenAIKey if provided (not empty)
+	app.Description = req.Description
+	app.EnabledLanguages = req.EnabledLanguages
+	app.UpdatedBy = userID
 	if req.OpenAIKey != "" {
-		application.OpenAIKey = req.OpenAIKey
+		app.OpenAIKey = req.OpenAIKey
 	}
 
-	if err := database.DB.Save(&application).Error; err != nil {
+	if err := h.apps.Update(ctx, database.SQLX, app); err != nil {
+		if errors.Is(err, repository.ErrConflict) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Application code already exists"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Store after values for audit
-	after := models.Application{
-		Name:             application.Name,
-		Code:             application.Code,
-		Description:      application.Description,
-		EnabledLanguages: application.EnabledLanguages,
+	after := application.Application{
+		Name:             app.Name,
+		Code:             app.Code,
+		Description:      app.Description,
+		EnabledLanguages: app.EnabledLanguages,
 	}
 
-	// Log audit
 	h.auditService.LogUpdate(
 		userID,
 		username,
 		"application",
-		application.ID,
-		application.Code,
+		app.ID,
+		app.Code,
 		before,
 		after,
 		ipAddress,
 		userAgent,
 	)
 
-	// Set HasOpenAIKey
-	application.HasOpenAIKey = application.OpenAIKey != ""
-
-	// Invalidate cache
-	cache.Delete(cache.ApplicationKey(id))
-	c.JSON(http.StatusOK, application)
+	app.PopulateComputed()
+	cache.Delete(cache.ApplicationKey(idStr))
+	c.JSON(http.StatusOK, app)
 }
 
-// DeleteApplication deletes an application
+// DeleteApplication soft-deletes an application.
 func (h *ApplicationHandler) DeleteApplication(c *gin.Context) {
-	id := c.Param("id")
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid application ID"})
+		return
+	}
 
-	var application models.Application
-	if err := database.DB.First(&application, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+	ctx := c.Request.Context()
+	app, err := h.apps.GetByID(ctx, database.SQLX, id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
 
-	if err := database.DB.Delete(&application).Error; err != nil {
+	if err := h.apps.SoftDelete(ctx, database.SQLX, id, userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Log audit
 	h.auditService.LogDelete(
 		userID,
 		username,
 		"application",
-		application.ID,
-		application.Code,
-		application,
+		app.ID,
+		app.Code,
+		app,
 		ipAddress,
 		userAgent,
 	)
 
-	// Invalidate cache
-	cache.Delete(cache.ApplicationKey(id))
+	cache.Delete(cache.ApplicationKey(idStr))
 	c.JSON(http.StatusOK, gin.H{"message": "Application deleted"})
 }
 
@@ -323,15 +356,20 @@ func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 	}
 
 	userID, _ := h.getCurrentUser(c)
+	ctx := c.Request.Context()
 
-	var application models.Application
-	if err := database.DB.First(&application, "id = ?", appID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+	app, err := h.apps.GetByID(ctx, database.SQLX, appID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Check locale not already enabled
-	for _, l := range application.EnabledLanguages {
+	// Reject duplicates before we touch any state.
+	for _, l := range app.EnabledLanguages {
 		if strings.EqualFold(l, req.Locale) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Locale is already enabled"})
 			return
@@ -339,10 +377,8 @@ func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 	}
 
 	if req.AutoTranslate {
-		// Idempotency: reject if a pending or running job already exists for this (application, locale).
-		// This prevents double-submission from UI retries or concurrent operator actions.
-		// The worker itself is also protected by FOR UPDATE SKIP LOCKED, but this gives
-		// the caller an explicit 409 with the existing job_id they can poll instead.
+		// Idempotency check (jobs still on GORM until Commit H — uses models.AddLanguageJob).
+		// Reject if a pending/running job already exists; surface its job_id so the caller can poll.
 		var existingJob models.AddLanguageJob
 		if err := database.DB.Where(
 			"application_id = ? AND locale = ? AND status IN ? AND deleted_at IS NULL",
@@ -357,9 +393,10 @@ func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 			return
 		}
 
-		// Validate OpenAI key exists before creating job
-		openAIService := services.NewOpenAIService(application.OpenAIKey)
-		if application.OpenAIKey == "" {
+		// Validate an OpenAI key is available before queuing — failing fast here
+		// beats a worker run that 500s mid-translate.
+		openAIService := services.NewOpenAIService(app.OpenAIKey)
+		if app.OpenAIKey == "" {
 			openAIService = services.NewOpenAIService(services.GetDefaultOpenAIKey())
 		}
 		if openAIService.APIKey == "" {
@@ -367,14 +404,14 @@ func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 			return
 		}
 
-		// Add locale first so it exists even if job fails later
-		application.EnabledLanguages = append(application.EnabledLanguages, req.Locale)
-		if err := database.DB.Save(&application).Error; err != nil {
+		// Add locale first so it exists even if job creation fails — the locale itself
+		// is the source of truth for "language enabled", the job is separate state.
+		newLangs := append(app.EnabledLanguages, req.Locale)
+		if err := h.apps.UpdateEnabledLanguages(ctx, database.SQLX, appID, newLangs, userID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update application: " + err.Error()})
 			return
 		}
 
-		// Create job; worker will do the translate work (no in-memory state, K8s-safe)
 		job := models.AddLanguageJob{
 			ApplicationID: appID,
 			Locale:        req.Locale,
@@ -399,9 +436,9 @@ func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 		return
 	}
 
-	// Sync path: add locale only, no translate
-	application.EnabledLanguages = append(application.EnabledLanguages, req.Locale)
-	if err := database.DB.Save(&application).Error; err != nil {
+	// Sync path: add locale only, no translation queued.
+	newLangs := append(app.EnabledLanguages, req.Locale)
+	if err := h.apps.UpdateEnabledLanguages(ctx, database.SQLX, appID, newLangs, userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update application: " + err.Error()})
 		return
 	}
@@ -673,14 +710,19 @@ func (h *ApplicationHandler) DeleteLanguage(c *gin.Context) {
 		return
 	}
 
-	var application models.Application
-	if err := database.DB.First(&application, "id = ?", appID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+	ctx := c.Request.Context()
+	app, err := h.apps.GetByID(ctx, database.SQLX, appID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	found := false
-	for _, l := range application.EnabledLanguages {
+	for _, l := range app.EnabledLanguages {
 		if strings.EqualFold(l, locale) {
 			found = true
 			break
@@ -710,6 +752,17 @@ func (h *ApplicationHandler) DeleteLanguage(c *gin.Context) {
 		componentIDs = append(componentIDs, comp.ID)
 	}
 
+	// Cascade-delete still uses GORM for translation_versions + application_locale_deploys
+	// (those repositories ship in commits F and H). The application row's enabled_languages
+	// update goes through the new repo on a non-tx Queryer — see comment below for why
+	// that split is acceptable for this transitional commit.
+	userIDForUpdate, _ := h.getCurrentUser(c)
+	newLangs := make([]string, 0, len(app.EnabledLanguages))
+	for _, l := range app.EnabledLanguages {
+		if !strings.EqualFold(l, locale) {
+			newLangs = append(newLangs, l)
+		}
+	}
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
 		if len(componentIDs) > 0 {
 			if err := tx.Where("component_id IN ? AND locale = ?", componentIDs, locale).Delete(&models.TranslationVersion{}).Error; err != nil {
@@ -719,14 +772,11 @@ func (h *ApplicationHandler) DeleteLanguage(c *gin.Context) {
 		if err := tx.Where("application_id = ? AND locale = ?", appID, locale).Delete(&models.ApplicationLocaleDeploy{}).Error; err != nil {
 			return err
 		}
-		newLangs := make([]string, 0, len(application.EnabledLanguages))
-		for _, l := range application.EnabledLanguages {
-			if !strings.EqualFold(l, locale) {
-				newLangs = append(newLangs, l)
-			}
-		}
-		application.EnabledLanguages = newLangs
-		return tx.Save(&application).Error
+		// Update enabled_languages inside the tx via raw SQL so the locale removal
+		// and cascade deletes commit atomically. Goes back to h.apps.UpdateEnabledLanguages
+		// once we have a unified Queryer-based path post-Commit I.
+		return tx.Exec(`UPDATE applications SET enabled_languages = ?, updated_by = ?, updated_at = NOW() WHERE id = ? AND deleted_at IS NULL`,
+			models.StringArray(newLangs), userIDForUpdate, appID).Error
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete language: " + err.Error()})
 		return
