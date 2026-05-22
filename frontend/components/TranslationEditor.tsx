@@ -4,12 +4,27 @@ import React, { useState, useEffect } from 'react'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { Button } from './ui/Button'
 import { Card } from './ui/Card'
+import { Input } from './ui/Input'
 import { Modal } from './ui/Modal'
 import { CodeEditor } from './CodeEditor'
 import { DiffView } from './DiffView'
-import { Save, RotateCcw, Download, Upload, Languages, Zap, GitCompare, History, ChevronRight } from 'lucide-react'
+import {
+  Save,
+  RotateCcw,
+  Download,
+  Upload,
+  Languages,
+  Zap,
+  GitCompare,
+  History,
+  ChevronRight,
+  Plus,
+  Trash2,
+  Sparkles,
+  HelpCircle,
+} from 'lucide-react'
 import toast from 'react-hot-toast'
-import { translationApi, exportApi, importApi } from '@/services/api'
+import { translationApi, exportApi, importApi, componentApi } from '@/services/api'
 
 interface TranslationEditorProps {
   componentId: string
@@ -18,9 +33,61 @@ interface TranslationEditorProps {
   enabledLanguages: string[]
   defaultLocale: string
   keyContexts?: Record<string, string> | null
+  // Fired after a successful key-context save so the parent can refetch the
+  // component (its `key_contexts` field is what we just edited). Optional —
+  // when omitted the editor still saves but the parent's view of
+  // keyContexts won't refresh until next mount.
+  onKeyContextsUpdated?: () => void
 }
 
 const STAGE_VALUES = ['draft', 'staging', 'production']
+
+// ── Key-context editing helpers ──────────────────────────────────────────────
+
+// flattenLeafPaths walks a translation object and returns every leaf key path
+// in dot notation. Arrays are treated as leaves (we don't recurse into
+// indices — translation files rarely use array indexing as a meaningful path).
+// Empty/invalid input → empty array.
+function flattenLeafPaths(data: unknown, prefix = ''): string[] {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return prefix ? [prefix] : []
+  }
+  const out: string[] = []
+  for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
+    const path = prefix ? `${prefix}.${k}` : k
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      out.push(...flattenLeafPaths(v, path))
+    } else {
+      out.push(path)
+    }
+  }
+  return out
+}
+
+// keyContextRowsFromMap re-shapes the API map back into ordered editable rows.
+// We sort by path so the UI is stable across reloads.
+type KeyContextRow = { path: string; context: string }
+function keyContextRowsFromMap(kc: Record<string, string> | null | undefined): KeyContextRow[] {
+  if (!kc) return []
+  return Object.entries(kc)
+    .filter(([path, ctx]) => path && ctx)
+    .map(([path, context]) => ({ path, context: String(context ?? '') }))
+    .sort((a, b) => a.path.localeCompare(b.path))
+}
+
+// rowsToKeyContextsMap drops blank rows and collapses the array back into the
+// {path: context} map the API stores. Mirrors the helper in
+// ComponentFormModal so a row that's half-typed never gets persisted.
+function rowsToKeyContextsMap(rows: KeyContextRow[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const row of rows) {
+    const path = row.path.trim()
+    const context = row.context.trim()
+    if (!path || !context) continue
+    out[path] = context
+  }
+  return out
+}
 
 export const TranslationEditor: React.FC<TranslationEditorProps> = ({
   componentId,
@@ -29,10 +96,22 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
   enabledLanguages,
   defaultLocale,
   keyContexts,
+  onKeyContextsUpdated,
 }) => {
-  const keyContextEntries = keyContexts
-    ? Object.entries(keyContexts).filter(([path, ctx]) => path && ctx)
-    : []
+  // ── Key Contexts (AI translation hints) ──
+  // Source-of-truth lives in component.key_contexts (server-side). Local
+  // `keyContextRows` holds the in-flight edits; we PUT the component when the
+  // user clicks "Save contexts" and call onKeyContextsUpdated to bubble the
+  // refetch up.
+  const [keyContextRows, setKeyContextRows] = useState<KeyContextRow[]>(
+    keyContextRowsFromMap(keyContexts),
+  )
+  const [savingKeyContexts, setSavingKeyContexts] = useState(false)
+  const [showKeyContextHelp, setShowKeyContextHelp] = useState(false)
+  // Re-seed local rows when the parent prop changes (component refetched).
+  useEffect(() => {
+    setKeyContextRows(keyContextRowsFromMap(keyContexts))
+  }, [keyContexts])
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
@@ -915,33 +994,233 @@ export const TranslationEditor: React.FC<TranslationEditorProps> = ({
         )}
       </Card>
 
-      {keyContextEntries.length > 0 && (
-        <Card title="Key Contexts (AI translation hints)">
-          <p className="text-xs text-gray-500 mb-3">
-            Authoring notes attached to specific keys on this component. Read-only here —
-            edit them under <em>Edit component</em>. These hints are passed to the AI
-            translator to disambiguate meaning and are NOT included in translation output.
-          </p>
-          <div className="overflow-hidden border border-gray-200 rounded-md">
-            <table className="min-w-full divide-y divide-gray-200 text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium text-gray-700 w-1/3">Key path</th>
-                  <th className="px-3 py-2 text-left font-medium text-gray-700">Context</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 bg-white">
-                {keyContextEntries.map(([path, ctx]) => (
-                  <tr key={path}>
-                    <td className="px-3 py-2 font-mono text-gray-800">{path}</td>
-                    <td className="px-3 py-2 text-gray-700">{ctx}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
+      {/* Key Contexts — always rendered (even empty) so the feature is
+          discoverable. The Card sits between the JSON editor and the rest of
+          the page so authors trip over it while they're editing keys. */}
+      {(() => {
+        // Leaf-path suggestions for the autocomplete come from the live editor
+        // text first (most up-to-date with what the user is typing) and fall
+        // back to the parsed translationData. JSON parse failures during typing
+        // are common — we ignore them and keep showing the last good suggestions.
+        let pathSuggestions: string[] = []
+        try {
+          const parsed = JSON.parse(jsonText) as unknown
+          pathSuggestions = flattenLeafPaths(parsed)
+        } catch {
+          pathSuggestions = flattenLeafPaths(translationData)
+        }
+        const listId = `key-paths-${componentId}`
+
+        const dirty = (() => {
+          const a = JSON.stringify(rowsToKeyContextsMap(keyContextRows))
+          const b = JSON.stringify(keyContexts || {})
+          return a !== b
+        })()
+
+        const saveContexts = async () => {
+          try {
+            setSavingKeyContexts(true)
+            const map = rowsToKeyContextsMap(keyContextRows)
+            // Server expects the full component payload; fetch then patch to
+            // avoid stomping unrelated fields (name, code, default_locale, etc).
+            // The handler accepts a partial-shaped object but enforces required
+            // fields, so we re-send what we read.
+            const current = await componentApi.getById(componentId)
+            await componentApi.update(componentId, {
+              application_id: current.application_id,
+              name: current.name,
+              code: current.code,
+              description: current.description || '',
+              default_locale: current.default_locale,
+              key_contexts: map,
+              tag_ids: (current.tags || []).map((t: { id: string }) => t.id),
+              page_ids: (current.pages || []).map((p: { id: string }) => p.id),
+            })
+            toast.success('Key contexts saved')
+            onKeyContextsUpdated?.()
+          } catch (err: unknown) {
+            const e = err as { response?: { data?: { error?: string } } }
+            toast.error(e.response?.data?.error || 'Failed to save key contexts')
+          } finally {
+            setSavingKeyContexts(false)
+          }
+        }
+
+        return (
+          <Card>
+            <div className="flex items-start justify-between gap-2 mb-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-amber-500" />
+                <div>
+                  <h3 className="text-base font-semibold text-gray-900">
+                    Key Contexts <span className="text-xs font-normal text-gray-500">(AI translation hints)</span>
+                  </h3>
+                  <p className="text-xs text-gray-500">
+                    Short notes that disambiguate a key for the AI translator. Skipped at runtime.
+                  </p>
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setShowKeyContextHelp((s) => !s)}
+                title="When to use key contexts"
+              >
+                <HelpCircle className="w-4 h-4 mr-1" />
+                {showKeyContextHelp ? 'Hide help' : 'How does this work?'}
+              </Button>
+            </div>
+
+            {showKeyContextHelp && (
+              <div className="mb-3 rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900 space-y-1.5">
+                <p>
+                  <strong>What it does:</strong> When you trigger an AI translation, the AI sees the source
+                  text <em>and</em> any context note you've attached to that key. Use it for words that
+                  change meaning in different UI placements (e.g. <code className="font-mono">"buy"</code>
+                  as a CTA button vs. <code className="font-mono">"buy"</code> as a verb in a sentence).
+                </p>
+                <p>
+                  <strong>Path format:</strong> Dot-notation into the translation JSON below. For{' '}
+                  <code className="font-mono">{'{ "checkout": { "cta": "Buy" } }'}</code> the path is{' '}
+                  <code className="font-mono">checkout.cta</code>. Pick from the dropdown so you can't typo it.
+                </p>
+                <p>
+                  <strong>Not returned at runtime:</strong> The SDK's <code className="font-mono">getTranslation</code> response
+                  never contains these — they're authoring-time metadata only.
+                </p>
+              </div>
+            )}
+
+            {/* Datalist powers the per-row autocomplete. Same list is shared
+                by every row; the browser handles the filtering. */}
+            <datalist id={listId}>
+              {pathSuggestions.map((p) => (
+                <option key={p} value={p} />
+              ))}
+            </datalist>
+
+            {keyContextRows.length === 0 ? (
+              <div className="rounded-md border border-dashed border-gray-300 p-4 text-center">
+                <p className="text-sm text-gray-600 mb-2">
+                  No key contexts yet for this component.
+                </p>
+                <p className="text-xs text-gray-500 mb-3">
+                  Tip: add a context for ambiguous keys (CTAs, single-word labels, anything that
+                  needs the AI to know <em>where</em> it appears).
+                </p>
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  onClick={() =>
+                    setKeyContextRows([{ path: '', context: '' }])
+                  }
+                >
+                  <Plus className="w-4 h-4 mr-1" />
+                  Add first context
+                </Button>
+              </div>
+            ) : (
+              <div className="overflow-hidden border border-gray-200 rounded-md">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium text-gray-700 w-1/3">
+                        Key path
+                      </th>
+                      <th className="px-3 py-2 text-left font-medium text-gray-700">
+                        Context for the AI
+                      </th>
+                      <th className="px-3 py-2 w-12" aria-label="actions" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 bg-white">
+                    {keyContextRows.map((row, idx) => (
+                      <tr key={idx}>
+                        <td className="px-2 py-1.5 align-top">
+                          <Input
+                            placeholder="e.g. checkout.cta"
+                            value={row.path}
+                            onChange={(e) =>
+                              setKeyContextRows((rows) =>
+                                rows.map((r, i) =>
+                                  i === idx ? { ...r, path: e.target.value } : r,
+                                ),
+                              )
+                            }
+                            list={listId}
+                            className="font-mono text-sm"
+                          />
+                        </td>
+                        <td className="px-2 py-1.5 align-top">
+                          <Input
+                            placeholder='e.g. "primary CTA button on the cart page"'
+                            value={row.context}
+                            onChange={(e) =>
+                              setKeyContextRows((rows) =>
+                                rows.map((r, i) =>
+                                  i === idx ? { ...r, context: e.target.value } : r,
+                                ),
+                              )
+                            }
+                            className="text-sm"
+                          />
+                        </td>
+                        <td className="px-2 py-1.5 align-top text-right">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                              setKeyContextRows((rows) =>
+                                rows.filter((_, i) => i !== idx),
+                              )
+                            }
+                            aria-label="Remove key context"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="mt-3 flex items-center justify-between">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  setKeyContextRows((rows) => [...rows, { path: '', context: '' }])
+                }
+                disabled={keyContextRows.length === 0}
+              >
+                <Plus className="w-4 h-4 mr-1" />
+                Add row
+              </Button>
+              <div className="flex items-center gap-2">
+                {dirty && (
+                  <span className="text-xs text-amber-700">Unsaved changes</span>
+                )}
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  onClick={saveContexts}
+                  disabled={!dirty || savingKeyContexts}
+                >
+                  <Save className="w-4 h-4 mr-1" />
+                  {savingKeyContexts ? 'Saving…' : 'Save contexts'}
+                </Button>
+              </div>
+            </div>
+          </Card>
+        )
+      })()}
 
       {/* Version Comparison Modal (current vs previous) */}
       <Modal

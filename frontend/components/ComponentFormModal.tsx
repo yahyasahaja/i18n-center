@@ -9,7 +9,6 @@ import { Select } from '@/components/ui/Select'
 import { Badge } from '@/components/ui/Badge'
 import { componentApi, tagApi, pageApi, type Tag, type Page } from '@/services/api'
 import toast from 'react-hot-toast'
-import { Plus, Trash2 } from 'lucide-react'
 
 type Application = { id: string; name: string }
 type ComponentForEdit = {
@@ -25,23 +24,9 @@ type ComponentForEdit = {
   pages?: Page[]
 }
 
-type KeyContextRow = { path: string; context: string }
-
-const keyContextsToRows = (kc: Record<string, string> | null | undefined): KeyContextRow[] => {
-  if (!kc) return []
-  return Object.entries(kc).map(([path, context]) => ({ path, context: String(context ?? '') }))
-}
-
-const rowsToKeyContexts = (rows: KeyContextRow[]): Record<string, string> => {
-  const out: Record<string, string> = {}
-  for (const row of rows) {
-    const path = row.path.trim()
-    const context = row.context.trim()
-    if (!path || !context) continue
-    out[path] = context
-  }
-  return out
-}
+// Key-context row helpers used to live here; the editor moved to the
+// Translation page (see TranslationEditor.tsx) and the modal now just
+// preserves whatever key_contexts the component already has.
 
 interface ComponentFormModalProps {
   isOpen: boolean
@@ -70,7 +55,9 @@ export function ComponentFormModal({
     tag_ids: [] as string[],
     page_ids: [] as string[],
   })
-  const [keyContextRows, setKeyContextRows] = useState<KeyContextRow[]>([])
+  // Preserved verbatim from the component being edited; this modal no longer
+  // edits it — the Translation page owns Key Contexts UX.
+  const [preservedKeyContexts, setPreservedKeyContexts] = useState<Record<string, string> | null | undefined>(null)
   const [appTags, setAppTags] = useState<Tag[]>([])
   const [appPages, setAppPages] = useState<Page[]>([])
   const [newTagCode, setNewTagCode] = useState('')
@@ -92,7 +79,7 @@ export function ComponentFormModal({
         tag_ids: (component.tags || []).map((t) => t.id),
         page_ids: (component.pages || []).map((p) => p.id),
       })
-      setKeyContextRows(keyContextsToRows(component.key_contexts))
+      setPreservedKeyContexts(component.key_contexts)
     } else {
       setFormData({
         application_id: defaultApplicationId,
@@ -104,7 +91,7 @@ export function ComponentFormModal({
         tag_ids: [],
         page_ids: [],
       })
-      setKeyContextRows([])
+      setPreservedKeyContexts(null)
     }
     setNewTagCode('')
     setNewPageCode('')
@@ -165,9 +152,12 @@ export function ComponentFormModal({
     e.preventDefault()
     setSubmitting(true)
     try {
+      // Round-trip whatever key_contexts the component already had. The
+      // Translation page is the canonical editor for that field — this modal
+      // just passes the value through unchanged so we don't silently wipe it.
       const payload = {
         ...formData,
-        key_contexts: rowsToKeyContexts(keyContextRows),
+        key_contexts: preservedKeyContexts || {},
       }
       if (component) {
         await componentApi.update(component.id, payload)
@@ -263,66 +253,18 @@ export function ComponentFormModal({
           helperText="Default language for this component (e.g., en, id, es)"
         />
 
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Key Contexts</label>
-          <p className="text-xs text-gray-500 mb-2">
-            Optional authoring notes for specific keys. Used as hints during AI translation to
-            disambiguate meaning — never returned in translation responses. Use dot-notation
-            paths into the translation JSON (e.g. <code className="font-mono">greeting.welcome</code>).
-          </p>
-          <div className="border border-gray-200 rounded-md p-2 space-y-2 text-gray-900">
-            {keyContextRows.length === 0 ? (
-              <p className="text-sm text-gray-500 px-1">No key contexts yet. Add one below.</p>
-            ) : (
-              <div className="space-y-2">
-                {keyContextRows.map((row, idx) => (
-                  <div key={idx} className="flex gap-2 items-start">
-                    <Input
-                      placeholder="key.path (e.g. greeting.welcome)"
-                      value={row.path}
-                      onChange={(e) =>
-                        setKeyContextRows((rows) =>
-                          rows.map((r, i) => (i === idx ? { ...r, path: e.target.value } : r))
-                        )
-                      }
-                      className="font-mono text-sm flex-1"
-                    />
-                    <Input
-                      placeholder="Context hint (e.g. user greeting on landing page)"
-                      value={row.context}
-                      onChange={(e) =>
-                        setKeyContextRows((rows) =>
-                          rows.map((r, i) => (i === idx ? { ...r, context: e.target.value } : r))
-                        )
-                      }
-                      className="text-sm flex-1"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        setKeyContextRows((rows) => rows.filter((_, i) => i !== idx))
-                      }
-                      aria-label="Remove key context"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setKeyContextRows((rows) => [...rows, { path: '', context: '' }])}
-            >
-              <Plus className="w-4 h-4 mr-1" />
-              Add key context
-            </Button>
+        {/* Key Contexts moved out of this modal — the canonical home is now
+            the translation editor page, where it sits next to the JSON being
+            described (and where the path autocomplete can pull leaf keys from
+            the live JSON). We keep a breadcrumb here so authors who land on
+            this modal still find their way. */}
+        {component && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+            <strong className="font-semibold">Looking for Key Contexts?</strong>{' '}
+            Edit them on the component&apos;s Translation page — you&apos;ll get inline
+            autocomplete against the live keys.
           </div>
-        </div>
+        )}
 
         {formData.application_id && (
           <>

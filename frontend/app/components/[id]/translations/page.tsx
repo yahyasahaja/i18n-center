@@ -149,6 +149,12 @@ export default function ComponentTranslationsPage() {
           enabledLanguages={currentApplication?.enabled_languages || ['en']}
           defaultLocale={currentComponent.default_locale}
           keyContexts={currentComponent.key_contexts}
+          // Refetch so the editor's `keyContexts` prop re-syncs with the
+          // freshly persisted value (and any other component fields the
+          // server might have touched).
+          onKeyContextsUpdated={() => {
+            dispatch(fetchComponent(componentId))
+          }}
         />
       </div>
 
