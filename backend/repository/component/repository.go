@@ -65,8 +65,20 @@ type Repository interface {
 	// GetByIDWithRelations is GetByID + one round-trip each to populate Tags and Pages.
 	GetByIDWithRelations(ctx context.Context, q repository.Queryer, id uuid.UUID) (*Component, error)
 
-	// GetByCode looks up a component by its application-scoped code.
+	// GetByCode looks up a component by its code alone. NOT application-scoped:
+	// codes are unique per application (idx_component_app_code), so the same
+	// code can exist across multiple apps and this method returns whichever
+	// Postgres picks. Prefer GetByAppCode when you know the application ID;
+	// reserve GetByCode for the legacy "ambiguous global lookup" path used by
+	// the public component handler.
 	GetByCode(ctx context.Context, q repository.Queryer, code string) (*Component, error)
+
+	// GetByAppCode looks up a component by (applicationID, code). This is the
+	// correct lookup for any flow that already knows which application it's
+	// operating in — bootstrap, in-app component management, etc. Returns
+	// ErrNotFound when no row matches; never returns a component owned by a
+	// different application.
+	GetByAppCode(ctx context.Context, q repository.Queryer, appID uuid.UUID, code string) (*Component, error)
 
 	// ListByIDs returns the components whose IDs are in the provided set
 	// (no tags/pages preloaded). Used by the by-tag / by-page handlers that

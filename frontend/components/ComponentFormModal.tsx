@@ -201,24 +201,44 @@ export function ComponentFormModal({
       }
     >
       <form id="component-form-modal" onSubmit={handleSubmit} className="space-y-4">
-        <Select
-          label="Application"
-          required
-          value={formData.application_id}
-          onChange={(e) =>
-            setFormData({
-              ...formData,
-              application_id: e.target.value,
-            })
-          }
-          options={[
-            { value: '', label: 'Select application' },
-            ...applications.map((app) => ({
-              value: app.id,
-              label: app.name,
-            })),
-          ]}
-        />
+        {/* The Application picker is only useful when the caller could
+            plausibly mean a different app than the one currently selected.
+            That's almost never the case in this app: opens from the per-app
+            page (one application option, fixed) and edits naturally carry
+            their own application_id. We surface the read-only badge so the
+            user still sees which app they're editing inside, but no
+            cross-app reassignment from this form. */}
+        {applications.length > 1 && !component ? (
+          <Select
+            label="Application"
+            required
+            value={formData.application_id}
+            onChange={(e) =>
+              setFormData({
+                ...formData,
+                application_id: e.target.value,
+              })
+            }
+            options={[
+              { value: '', label: 'Select application' },
+              ...applications.map((app) => ({
+                value: app.id,
+                label: app.name,
+              })),
+            ]}
+          />
+        ) : (
+          (() => {
+            const appName =
+              applications.find((a) => a.id === formData.application_id)?.name ?? '—'
+            return (
+              <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                <span className="font-medium text-gray-700">Application:</span>{' '}
+                {appName}
+              </div>
+            )
+          })()
+        )}
         <Input
           label="Name"
           required

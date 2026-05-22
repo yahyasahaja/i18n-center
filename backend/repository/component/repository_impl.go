@@ -177,6 +177,29 @@ func (r *Impl) GetByCode(ctx context.Context, q repository.Queryer, code string)
 	return &c, nil
 }
 
+// queryGetByAppCode hits the (application_id, code) partial unique index head
+// directly. Single-row by definition — no LIMIT needed but kept for clarity.
+const queryGetByAppCode = `
+	SELECT id, application_id, name, code, description,
+	       key_contexts, default_locale, created_by, updated_by,
+	       created_at, updated_at
+	FROM components
+	WHERE application_id = $1 AND code = $2
+	  AND deleted_at IS NULL
+	LIMIT 1
+`
+
+func (r *Impl) GetByAppCode(ctx context.Context, q repository.Queryer, appID uuid.UUID, code string) (*Component, error) {
+	var c Component
+	if err := q.GetContext(ctx, &c, queryGetByAppCode, appID, code); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, repository.ErrNotFound
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
 // ListByIDs returns the components whose IDs are in the provided set. Order
 // of results is unspecified — callers wanting a specific order should sort
 // the returned slice themselves. Empty input → empty result, no query.

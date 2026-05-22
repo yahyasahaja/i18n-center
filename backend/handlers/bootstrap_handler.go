@@ -155,15 +155,32 @@ func (h *BootstrapHandler) BootstrapApplication(c *gin.Context) {
 		code := strings.TrimSpace(strings.ToLower(rawCode))
 
 		var compID uuid.UUID
-		existing, lookupErr := h.components.GetByCode(ctx, database.SQLX, code)
+		// Application-scoped lookup. The previous version used
+		// h.components.GetByCode(code) — which is NOT app-scoped — and on a
+		// shared DB where multiple apps own the same component code
+		// (e.g. `affiliate`, `cashback`), the lookup returned some other
+		// app's component, the case-match failed, we fell through to Create,
+		// hit a unique-violation, re-looked-up against the wrong index again,
+		// and stored the translation under the OTHER app's component ID.
+		// Net effect: 35-component imports saved only 1 row (whichever code
+		// happened to belong to this app in the global index).
+		existing, lookupErr := h.components.GetByAppCode(ctx, database.SQLX, applicationID, code)
 		switch {
-		case lookupErr == nil && existing != nil && existing.ApplicationID == applicationID:
+		case lookupErr == nil && existing != nil:
 			compID = existing.ID
 			result.ComponentsUpdated++
 		default:
+			// Default Name = code. Bootstrap doesn't get a human-friendly
+			// display name from the JSON (the keys are programmatic codes
+			// like `paymentpage`, `pdp`), so we use the code itself. The
+			// user can rename later via Edit Component if they want
+			// "Payment Page" instead of `paymentpage`. Without this the
+			// component renders with an empty <h1> on the translations page.
 			newComp := &component.Component{
 				ApplicationID: applicationID,
+				Name:          code,
 				Code:          code,
+				DefaultLocale: locale,
 				CreatedBy:     userID,
 			}
 			createErr := h.components.Create(ctx, database.SQLX, newComp)
@@ -173,9 +190,10 @@ func (h *BootstrapHandler) BootstrapApplication(c *gin.Context) {
 				break
 			}
 			// Race: another bootstrap request created the same component
-			// between our lookup and our insert. Re-fetch and proceed.
+			// between our lookup and our insert. Re-fetch — now app-scoped
+			// so we can't pick up a sibling app's row.
 			if errors.Is(createErr, repository.ErrConflict) {
-				if again, err := h.components.GetByCode(ctx, database.SQLX, code); err == nil && again != nil {
+				if again, err := h.components.GetByAppCode(ctx, database.SQLX, applicationID, code); err == nil && again != nil {
 					compID = again.ID
 					result.ComponentsUpdated++
 					break

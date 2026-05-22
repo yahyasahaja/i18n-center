@@ -132,17 +132,38 @@ export default function ComponentTranslationsPage() {
             </Button>
             <div>
               <h1 className="text-3xl font-bold text-gray-900">
-                {currentComponent.name}
+                {/* Bootstrap-imported components don't carry a human display
+                    name — the JSON keys are programmatic codes. Fall back to
+                    code so the header never renders empty. */}
+                {currentComponent.name || currentComponent.code}
               </h1>
-              <p className="text-sm text-gray-500 mt-1">
-                {currentApplication?.name} • {currentComponent.description || 'No description'}
-                {' · '}
+              <p className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
+                {currentApplication?.name && (
+                  <span>{currentApplication.name}</span>
+                )}
+                {/* Show the code separately when we already used it as the
+                    display name above — keeps both pieces of info visible. */}
+                {currentComponent.name && currentComponent.name !== currentComponent.code && (
+                  <>
+                    <span className="text-gray-300">•</span>
+                    <code className="font-mono text-xs bg-gray-100 px-1.5 py-0.5 rounded">
+                      {currentComponent.code}
+                    </code>
+                  </>
+                )}
+                {currentComponent.description && (
+                  <>
+                    <span className="text-gray-300">•</span>
+                    <span>{currentComponent.description}</span>
+                  </>
+                )}
+                <span className="text-gray-300">·</span>
                 <button
                   type="button"
                   onClick={() => setShowEditModal(true)}
                   className="text-primary-600 hover:underline font-normal"
                 >
-                  Edit component (tags & pages)
+                  Edit component (tags &amp; pages)
                 </button>
               </p>
             </div>
