@@ -31,16 +31,11 @@ func (h *HealthHandler) HealthCheck(c *gin.Context) {
 		"version":   getVersion(),
 	}
 
-	// Check database connection
+	// Check database connection — pings the underlying *sql.DB through sqlx.
 	dbHealthy := true
-	if database.DB != nil {
-		sqlDB, err := database.DB.DB()
-		if err != nil {
+	if database.SQLX != nil {
+		if err := database.SQLX.PingContext(c.Request.Context()); err != nil {
 			dbHealthy = false
-		} else {
-			if err := sqlDB.Ping(); err != nil {
-				dbHealthy = false
-			}
 		}
 	} else {
 		dbHealthy = false
@@ -73,15 +68,10 @@ func (h *HealthHandler) HealthCheck(c *gin.Context) {
 func (h *HealthHandler) ReadinessCheck(c *gin.Context) {
 	ready := true
 
-	// Check database
-	if database.DB != nil {
-		sqlDB, err := database.DB.DB()
-		if err != nil {
+	// Check database — pings the underlying *sql.DB through sqlx.
+	if database.SQLX != nil {
+		if err := database.SQLX.PingContext(c.Request.Context()); err != nil {
 			ready = false
-		} else {
-			if err := sqlDB.Ping(); err != nil {
-				ready = false
-			}
 		}
 	} else {
 		ready = false

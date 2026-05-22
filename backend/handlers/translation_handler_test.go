@@ -16,15 +16,15 @@ import (
 
 func setupTranslationHandler(t *testing.T) *TranslationHandler {
 	t.Helper()
-	db, xdb, _ := newMockDB(t)
-	withMockDB(t, db, xdb)
+	xdb, _ := newMockDB(t)
+	withMockDB(t, xdb)
 	return NewTranslationHandler()
 }
 
 func setupTranslationHandlerWithMock(t *testing.T) (*TranslationHandler, sqlmock.Sqlmock) {
 	t.Helper()
-	db, xdb, mock := newMockDB(t)
-	withMockDB(t, db, xdb)
+	xdb, mock := newMockDB(t)
+	withMockDB(t, xdb)
 	return NewTranslationHandler(), mock
 }
 

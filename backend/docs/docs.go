@@ -3223,7 +3223,6 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "code": {
-                    "description": "Unique identifier for API access",
                     "type": "string"
                 },
                 "created_at": {
@@ -3242,7 +3241,6 @@ const docTemplate = `{
                     }
                 },
                 "has_openai_key": {
-                    "description": "Computed field",
                     "type": "boolean"
                 },
                 "id": {
@@ -3263,16 +3261,10 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "action": {
-                    "description": "CREATE, UPDATE, DELETE",
                     "type": "string"
                 },
                 "changes": {
-                    "description": "Before/after values",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/models.JSONB"
-                        }
-                    ]
+                    "$ref": "#/definitions/models.JSONB"
                 },
                 "created_at": {
                     "type": "string"
@@ -3281,18 +3273,15 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "ip_address": {
-                    "description": "IPv6 compatible",
                     "type": "string"
                 },
                 "resource_code": {
-                    "description": "For applications/components, store code for easier lookup",
                     "type": "string"
                 },
                 "resource_id": {
                     "type": "string"
                 },
                 "resource_type": {
-                    "description": "application, component, translation, user",
                     "type": "string"
                 },
                 "user_agent": {
@@ -3338,18 +3327,15 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "job_type": {
-                    "description": "auto_translate | backfill",
                     "type": "string"
                 },
                 "source_locale": {
                     "type": "string"
                 },
                 "status": {
-                    "description": "pending, running, completed, failed",
                     "type": "string"
                 },
                 "target_locales": {
-                    "description": "one or more locales",
                     "type": "array",
                     "items": {
                         "type": "string"

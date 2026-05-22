@@ -50,8 +50,8 @@ func cmsTranslateJobCols() []string {
 // TODO(commit I) at the top of each function. They'll be rewritten as
 // targeted repository tests once GORM is fully stripped.
 func setupCmsItemHandler(t *testing.T) (*CmsItemHandler, sqlmock.Sqlmock, *mocks.MockAuditServicer) {
-	db, xdb, mock := newMockDB(t)
-	withMockDB(t, db, xdb)
+	xdb, mock := newMockDB(t)
+	withMockDB(t, xdb)
 	auditMock := newMockAuditService()
 	h := NewCmsItemHandler()
 	h.auditService = auditMock
@@ -858,8 +858,8 @@ func TestCmsItemHandler_GetCmsTranslateJobStatus(t *testing.T) {
 
 func TestGetCmsItemByIdentifier(t *testing.T) {
 	skipUntilCommitI(t)
-	db, xdb, mock := newMockDB(t)
-	withMockDB(t, db, xdb)
+	xdb, mock := newMockDB(t)
+	withMockDB(t, xdb)
 
 	r := gin.New()
 	r.GET("/applications/:id/cms/:identifier", GetCmsItemByIdentifier)

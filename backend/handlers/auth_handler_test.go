@@ -12,16 +12,16 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+
 	"github.com/your-org/i18n-center/models"
-	"gorm.io/gorm"
 )
 
 // setupAuthHandler uses the real constructor so h.users (the sqlx-backed user
 // repository) is non-nil and dispatches against the sqlmock-wired database.SQLX.
 // auditService is then swapped for a mock so tests can assert audit calls.
 func setupAuthHandler(t *testing.T) (*AuthHandler, sqlmock.Sqlmock) {
-	db, xdb, mock := newMockDB(t)
-	withMockDB(t, db, xdb)
+	xdb, mock := newMockDB(t)
+	withMockDB(t, xdb)
 	audit := newMockAuditService()
 	h := NewAuthHandler()
 	h.auditService = audit
@@ -225,11 +225,8 @@ func TestGetCurrentUser_ReturnsUser(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/me", nil)
 	r.ServeHTTP(w, req)
 
-	// Depending on whether gorm needs a RETURNING scan or extra queries the
-	// mock may not fully satisfy. Accept 200 or 404 here; the important thing
-	// is no panic and a sensible HTTP response.
+	// Mock expectations may not perfectly satisfy depending on driver scans;
+	// accept 200 or 404 here. The point is no panic and a sensible response.
 	assert.True(t, w.Code == http.StatusOK || w.Code == http.StatusNotFound,
 		"unexpected status: %d", w.Code)
-
-	_ = gorm.ErrRecordNotFound // ensure import used
 }

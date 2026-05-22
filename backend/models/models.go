@@ -1,3 +1,15 @@
+// Package models holds the legacy struct definitions that were GORM-tagged.
+// As of Commit I they are no longer the persistence layer — the repository
+// packages (`repository/...`) own the database I/O. These types stick around
+// because:
+//
+//   - Swagger annotations across the handlers still reference `models.X`.
+//   - The legacy AuditServicer interface returns `[]models.AuditLog` for
+//     backwards compatibility with the mock implementation. New code should
+//     prefer the repository types directly (`audit.Log`, `application.Application`).
+//
+// GORM imports and hooks have been removed; struct tags now only carry
+// `json` and `db` annotations.
 package models
 
 import (
@@ -9,10 +21,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
-// JSONB type for PostgreSQL JSONB columns
+// JSONB type for PostgreSQL JSONB columns.
 type JSONB map[string]interface{}
 
 func (j JSONB) Value() (driver.Value, error) {
@@ -34,7 +45,9 @@ func (j *JSONB) Scan(value interface{}) error {
 	return json.Unmarshal(bytes, j)
 }
 
-// StringArray type for PostgreSQL text[] columns
+// StringArray type for PostgreSQL text[] columns. lib/pq has its own
+// StringArray now — prefer that in new code; this one is kept because
+// some Swagger annotations and legacy types still reference it.
 type StringArray []string
 
 func (a StringArray) Value() (driver.Value, error) {
@@ -44,10 +57,8 @@ func (a StringArray) Value() (driver.Value, error) {
 	if len(a) == 0 {
 		return "{}", nil
 	}
-	// Format as PostgreSQL array: {"value1","value2"}
 	values := make([]string, len(a))
 	for i, v := range a {
-		// Escape quotes and backslashes
 		v = strings.ReplaceAll(v, `\`, `\\`)
 		v = strings.ReplaceAll(v, `"`, `\"`)
 		values[i] = `"` + v + `"`
@@ -71,31 +82,25 @@ func (a *StringArray) Scan(value interface{}) error {
 		return fmt.Errorf("cannot scan %T into StringArray", value)
 	}
 
-	// Parse PostgreSQL array format: {value1,value2} or {"value1","value2"}
 	str = strings.TrimSpace(str)
 	if str == "{}" {
 		*a = []string{}
 		return nil
 	}
 
-	// Remove curly braces
 	str = strings.TrimPrefix(str, "{")
 	str = strings.TrimSuffix(str, "}")
-
 	if str == "" {
 		*a = []string{}
 		return nil
 	}
 
-	// Split by comma and trim quotes
 	parts := strings.Split(str, ",")
 	result := make([]string, 0, len(parts))
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
-		// Remove surrounding quotes if present
 		if len(part) >= 2 && part[0] == '"' && part[len(part)-1] == '"' {
 			part = part[1 : len(part)-1]
-			// Unescape
 			part = strings.ReplaceAll(part, `\"`, `"`)
 			part = strings.ReplaceAll(part, `\\`, `\`)
 		}
@@ -108,7 +113,8 @@ func (a *StringArray) Scan(value interface{}) error {
 	return nil
 }
 
-// UserRole represents user roles
+// UserRole represents user roles. Mirrored in `user.Role*` constants — both
+// point at the same string values.
 type UserRole string
 
 const (
@@ -117,61 +123,61 @@ const (
 	RoleUserManager UserRole = "user_manager"
 )
 
-// User represents a user in the system
+// User represents a user in the system. See `repository/user.User` for the
+// canonical type.
 type User struct {
-	ID           uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	Username     string         `gorm:"uniqueIndex;not null" json:"username"`
-	PasswordHash string         `gorm:"not null" json:"-"`
-	Role         UserRole       `gorm:"type:varchar(50);not null" json:"role"`
-	IsActive     bool           `gorm:"default:true" json:"is_active"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
-	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
+	ID           uuid.UUID `db:"id"            json:"id"`
+	Username     string    `db:"username"      json:"username"`
+	PasswordHash string    `db:"password_hash" json:"-"`
+	Role         UserRole  `db:"role"          json:"role"`
+	IsActive     bool      `db:"is_active"     json:"is_active"`
+	CreatedAt    time.Time `db:"created_at"    json:"created_at"`
+	UpdatedAt    time.Time `db:"updated_at"    json:"updated_at"`
 }
 
-// Application represents an application (e.g., whatsapp)
+// Application — see `repository/application.Application` for the canonical type.
 type Application struct {
-	ID               uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	Name             string         `gorm:"not null" json:"name"`
-	Code             string         `gorm:"uniqueIndex;not null" json:"code"` // Unique identifier for API access
-	Description      string         `json:"description"`
-	OpenAIKey        string         `gorm:"type:text;column:openai_key" json:"-"` // Encrypted in production
-	HasOpenAIKey     bool           `gorm:"-" json:"has_openai_key"`              // Computed field
-	EnabledLanguages StringArray    `gorm:"type:text[]" json:"enabled_languages"`
-	CreatedBy        uuid.UUID      `gorm:"type:uuid;index" json:"created_by"`
-	UpdatedBy        uuid.UUID      `gorm:"type:uuid;index" json:"updated_by"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	DeletedAt        gorm.DeletedAt `gorm:"index" json:"-"`
+	ID               uuid.UUID   `db:"id"                json:"id"`
+	Name             string      `db:"name"              json:"name"`
+	Code             string      `db:"code"              json:"code"`
+	Description      string      `db:"description"       json:"description"`
+	OpenAIKey        string      `db:"openai_key"        json:"-"`
+	HasOpenAIKey     bool        `db:"-"                 json:"has_openai_key"`
+	EnabledLanguages StringArray `db:"enabled_languages" json:"enabled_languages"`
+	CreatedBy        uuid.UUID   `db:"created_by"        json:"created_by"`
+	UpdatedBy        uuid.UUID   `db:"updated_by"        json:"updated_by"`
+	CreatedAt        time.Time   `db:"created_at"        json:"created_at"`
+	UpdatedAt        time.Time   `db:"updated_at"        json:"updated_at"`
 }
 
-// ApplicationAPIKey is a secret key for an application (used by client apps to access translations API).
-// Only the key prefix is stored for display; the full key is shown once on create.
+// ApplicationAPIKey is a secret key for an application (used by client apps
+// to access translations API). Only the key prefix is stored for display;
+// the full key is shown once on create.
 const APIKeyPrefix = "sk_"
 
 type ApplicationAPIKey struct {
-	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	ApplicationID uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
-	Application   Application    `gorm:"foreignKey:ApplicationID" json:"-"`
-	KeyHash       string         `gorm:"type:varchar(64);uniqueIndex;not null" json:"-"`    // SHA-256 hex of the full key
-	KeyPrefix     string         `gorm:"type:varchar(20);not null;index" json:"key_prefix"` // First 12 chars for display (e.g. sk_abc12345)
-	Name          string         `gorm:"type:varchar(255)" json:"name"`                     // Optional label
-	CreatedAt     time.Time      `json:"created_at"`
-	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	ID            uuid.UUID `db:"id"             json:"id"`
+	ApplicationID uuid.UUID `db:"application_id" json:"application_id"`
+	KeyHash       string    `db:"key_hash"       json:"-"`
+	KeyPrefix     string    `db:"key_prefix"     json:"key_prefix"`
+	Name          string    `db:"name"           json:"name"`
+	CreatedAt     time.Time `db:"created_at"     json:"created_at"`
 }
 
-// ApplicationLocaleDeploy tracks a locale added to an application and its deploy progress (draft -> staging -> production)
+// ApplicationLocaleDeploy tracks a locale added to an application and its
+// deploy progress (draft -> staging -> production). See
+// `repository/localedeploy.Deploy` for the canonical type.
 type ApplicationLocaleDeploy struct {
-	ID             uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	ApplicationID  uuid.UUID      `gorm:"type:uuid;not null;uniqueIndex:idx_app_locale" json:"application_id"`
-	Locale         string         `gorm:"type:varchar(20);not null;uniqueIndex:idx_app_locale" json:"locale"`
-	StageCompleted string         `gorm:"type:varchar(50);not null;default:draft" json:"stage_completed"` // draft, staging, production
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
-	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
+	ID             uuid.UUID `db:"id"              json:"id"`
+	ApplicationID  uuid.UUID `db:"application_id"  json:"application_id"`
+	Locale         string    `db:"locale"          json:"locale"`
+	StageCompleted string    `db:"stage_completed" json:"stage_completed"`
+	CreatedAt      time.Time `db:"created_at"      json:"created_at"`
+	UpdatedAt      time.Time `db:"updated_at"      json:"updated_at"`
 }
 
-// AddLanguageJob is a DB-backed job for "add language + auto-translate". No in-memory state; safe for K8s scaling.
+// AddLanguageJob status constants. Kept here for backward compatibility;
+// new code should use `job.Status*` from `repository/job`.
 const (
 	JobStatusPending   = "pending"
 	JobStatusRunning   = "running"
@@ -180,103 +186,83 @@ const (
 )
 
 type AddLanguageJob struct {
-	ID                  uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	ApplicationID       uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
-	Locale              string         `gorm:"type:varchar(20);not null" json:"locale"`
-	AutoTranslate       bool           `gorm:"not null" json:"auto_translate"`
-	Status              string         `gorm:"type:varchar(50);not null;default:pending;index" json:"status"` // pending, running, completed, failed
-	TotalComponents     int            `gorm:"not null;default:0" json:"total_components"`
-	CompletedComponents int            `gorm:"not null;default:0" json:"completed_components"`
-	ErrorMessage        string         `gorm:"type:text" json:"error_message,omitempty"`
-	ErrorDetail         string         `gorm:"type:text" json:"error_detail,omitempty"`
-	ClaimedBy           string         `gorm:"type:varchar(255)" json:"claimed_by,omitempty"` // pod/instance id for debugging (K8s HOSTNAME)
-	CreatedBy           uuid.UUID      `gorm:"type:uuid;index" json:"created_by"`
-	CreatedAt           time.Time      `json:"created_at"`
-	UpdatedAt           time.Time      `json:"updated_at"`
-	DeletedAt           gorm.DeletedAt `gorm:"index" json:"-"`
+	ID                  uuid.UUID `db:"id"                   json:"id"`
+	ApplicationID       uuid.UUID `db:"application_id"       json:"application_id"`
+	Locale              string    `db:"locale"               json:"locale"`
+	AutoTranslate       bool      `db:"auto_translate"       json:"auto_translate"`
+	Status              string    `db:"status"               json:"status"`
+	TotalComponents     int       `db:"total_components"     json:"total_components"`
+	CompletedComponents int       `db:"completed_components" json:"completed_components"`
+	ErrorMessage        string    `db:"error_message"        json:"error_message,omitempty"`
+	ErrorDetail         string    `db:"error_detail"         json:"error_detail,omitempty"`
+	ClaimedBy           string    `db:"claimed_by"           json:"claimed_by,omitempty"`
+	CreatedBy           uuid.UUID `db:"created_by"           json:"created_by"`
+	CreatedAt           time.Time `db:"created_at"           json:"created_at"`
+	UpdatedAt           time.Time `db:"updated_at"           json:"updated_at"`
 }
 
-func (AddLanguageJob) TableName() string {
-	return "add_language_jobs"
-}
-
-// TranslateJob is a DB-backed job for async per-component translation (auto_translate or backfill).
-// Job types:
-//   - "auto_translate"  : translate a single component into a single target locale
-//   - "backfill"        : translate a single component into multiple target locales
+// TranslateJob type constants. See `repository/job.TranslateType*` for the
+// canonical home.
 const (
 	TranslateJobTypeAutoTranslate = "auto_translate"
 	TranslateJobTypeBackfill      = "backfill"
 )
 
 type TranslateJob struct {
-	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	ApplicationID uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
-	ComponentID   uuid.UUID      `gorm:"type:uuid;not null;index" json:"component_id"`
-	JobType       string         `gorm:"type:varchar(50);not null" json:"job_type"` // auto_translate | backfill
-	SourceLocale  string         `gorm:"type:varchar(20);not null" json:"source_locale"`
-	TargetLocales StringArray    `gorm:"type:text[]" json:"target_locales"`                             // one or more locales
-	Status        string         `gorm:"type:varchar(50);not null;default:pending;index" json:"status"` // pending, running, completed, failed
-	ErrorMessage  string         `gorm:"type:text" json:"error_message,omitempty"`
-	ErrorDetail   string         `gorm:"type:text" json:"error_detail,omitempty"`
-	ClaimedBy     string         `gorm:"type:varchar(255)" json:"claimed_by,omitempty"`
-	CreatedBy     uuid.UUID      `gorm:"type:uuid;index" json:"created_by"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	ID            uuid.UUID   `db:"id"             json:"id"`
+	ApplicationID uuid.UUID   `db:"application_id" json:"application_id"`
+	ComponentID   uuid.UUID   `db:"component_id"   json:"component_id"`
+	JobType       string      `db:"job_type"       json:"job_type"`
+	SourceLocale  string      `db:"source_locale"  json:"source_locale"`
+	TargetLocales StringArray `db:"target_locales" json:"target_locales"`
+	Status        string      `db:"status"         json:"status"`
+	ErrorMessage  string      `db:"error_message"  json:"error_message,omitempty"`
+	ErrorDetail   string      `db:"error_detail"   json:"error_detail,omitempty"`
+	ClaimedBy     string      `db:"claimed_by"     json:"claimed_by,omitempty"`
+	CreatedBy     uuid.UUID   `db:"created_by"     json:"created_by"`
+	CreatedAt     time.Time   `db:"created_at"     json:"created_at"`
+	UpdatedAt     time.Time   `db:"updated_at"     json:"updated_at"`
 }
 
-func (TranslateJob) TableName() string {
-	return "translate_jobs"
-}
-
-// Tag is a label that can be attached to components (scoped per application). Identified by code only.
+// Tag — see `repository/tag.Tag` for the canonical type.
 type Tag struct {
-	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	ApplicationID uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
-	Application   Application    `gorm:"foreignKey:ApplicationID" json:"application,omitempty"`
-	Code          string         `gorm:"type:varchar(100);not null;uniqueIndex:idx_tag_app_code" json:"code"` // Unique per application
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	ID            uuid.UUID `db:"id"             json:"id"`
+	ApplicationID uuid.UUID `db:"application_id" json:"application_id"`
+	Code          string    `db:"code"           json:"code"`
+	CreatedAt     time.Time `db:"created_at"     json:"created_at"`
+	UpdatedAt     time.Time `db:"updated_at"     json:"updated_at"`
 }
 
-// Page is a grouping that can be attached to components (scoped per application). Identified by code only.
+// Page — see `repository/page.Page` for the canonical type.
 type Page struct {
-	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	ApplicationID uuid.UUID      `gorm:"type:uuid;not null;index" json:"application_id"`
-	Application   Application    `gorm:"foreignKey:ApplicationID" json:"application,omitempty"`
-	Code          string         `gorm:"type:varchar(100);not null;uniqueIndex:idx_page_app_code" json:"code"` // Unique per application
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	ID            uuid.UUID `db:"id"             json:"id"`
+	ApplicationID uuid.UUID `db:"application_id" json:"application_id"`
+	Code          string    `db:"code"           json:"code"`
+	CreatedAt     time.Time `db:"created_at"     json:"created_at"`
+	UpdatedAt     time.Time `db:"updated_at"     json:"updated_at"`
 }
 
-// Component represents a component within an application (e.g., pdp_form)
+// Component represents a component within an application (e.g., pdp_form).
+// See `repository/component.Component` for the canonical type.
 type Component struct {
-	ID            uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	ApplicationID uuid.UUID      `gorm:"type:uuid;not null;uniqueIndex:idx_component_app_code" json:"application_id"`
-	Application   Application    `gorm:"foreignKey:ApplicationID" json:"application,omitempty"`
-	Name          string         `gorm:"not null" json:"name"`
-	Code          string         `gorm:"uniqueIndex:idx_component_app_code;not null" json:"code"` // Unique per application (composite with application_id)
-	Description   string         `json:"description"`
-	Structure     JSONB          `gorm:"type:jsonb" json:"structure"` // The JSON structure template
-	// KeyContexts holds optional per-key context hints used as authoring notes for
-	// AI translation. Keys use dot-notation paths into the translation tree
-	// (e.g. "greeting.welcome"); values are short human-readable descriptions.
-	// Never returned by public translation read endpoints — UI-only metadata.
-	KeyContexts   JSONB          `gorm:"type:jsonb" json:"key_contexts"`
-	DefaultLocale string         `gorm:"not null" json:"default_locale"`
-	Tags          []Tag          `gorm:"many2many:component_tags;" json:"tags,omitempty"`
-	Pages         []Page         `gorm:"many2many:component_pages;" json:"pages,omitempty"`
-	CreatedBy     uuid.UUID      `gorm:"type:uuid;index" json:"created_by"`
-	UpdatedBy     uuid.UUID      `gorm:"type:uuid;index" json:"updated_by"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	ID            uuid.UUID `db:"id"             json:"id"`
+	ApplicationID uuid.UUID `db:"application_id" json:"application_id"`
+	Name          string    `db:"name"           json:"name"`
+	Code          string    `db:"code"           json:"code"`
+	Description   string    `db:"description"    json:"description"`
+	Structure     JSONB     `db:"structure"      json:"structure"`
+	KeyContexts   JSONB     `db:"key_contexts"   json:"key_contexts"`
+	DefaultLocale string    `db:"default_locale" json:"default_locale"`
+	Tags          []Tag     `db:"-"              json:"tags,omitempty"`
+	Pages         []Page    `db:"-"              json:"pages,omitempty"`
+	CreatedBy     uuid.UUID `db:"created_by"     json:"created_by"`
+	UpdatedBy     uuid.UUID `db:"updated_by"     json:"updated_by"`
+	CreatedAt     time.Time `db:"created_at"     json:"created_at"`
+	UpdatedAt     time.Time `db:"updated_at"     json:"updated_at"`
 }
 
-// DeploymentStage represents deployment stages
+// DeploymentStage represents deployment stages. Mirrored by
+// `translation.Stage` in the repository layer.
 type DeploymentStage string
 
 const (
@@ -285,85 +271,20 @@ const (
 	StageProduction DeploymentStage = "production"
 )
 
-// TranslationVersion represents a version of translations
+// TranslationVersion — see `repository/translation.Version` for the canonical
+// type.
 type TranslationVersion struct {
-	ID           uuid.UUID       `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	ComponentID  uuid.UUID       `gorm:"type:uuid;not null;index" json:"component_id"`
-	Component    Component       `gorm:"foreignKey:ComponentID" json:"component,omitempty"`
-	Locale       string          `gorm:"not null;index" json:"locale"`
-	Stage        DeploymentStage `gorm:"type:varchar(50);not null;index" json:"stage"`
-	Version      int             `gorm:"not null;default:1" json:"version"` // 1, 2, 3, ... current = latest
-	Data         JSONB           `gorm:"type:jsonb;not null" json:"data"`   // The translation data
-	SourceLocale string          `gorm:"type:varchar(10)" json:"source_locale,omitempty"` // locale translated FROM (empty for manual edits)
-	SourceData   JSONB           `gorm:"type:jsonb" json:"source_data,omitempty"`          // snapshot of source at translate time
-	IsActive     bool            `gorm:"default:true" json:"is_active"`
-	CreatedBy    uuid.UUID       `gorm:"type:uuid;index" json:"created_by"`
-	UpdatedBy    uuid.UUID       `gorm:"type:uuid;index" json:"updated_by"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
-	DeletedAt    gorm.DeletedAt  `gorm:"index" json:"-"`
-}
-
-// BeforeCreate hooks
-func (u *User) BeforeCreate(tx *gorm.DB) error {
-	if u.ID == uuid.Nil {
-		u.ID = uuid.New()
-	}
-	return nil
-}
-
-func (a *Application) BeforeCreate(tx *gorm.DB) error {
-	if a.ID == uuid.Nil {
-		a.ID = uuid.New()
-	}
-	return nil
-}
-
-func (c *Component) BeforeCreate(tx *gorm.DB) error {
-	if c.ID == uuid.Nil {
-		c.ID = uuid.New()
-	}
-	return nil
-}
-
-func (t *Tag) BeforeCreate(tx *gorm.DB) error {
-	if t.ID == uuid.Nil {
-		t.ID = uuid.New()
-	}
-	return nil
-}
-
-func (p *Page) BeforeCreate(tx *gorm.DB) error {
-	if p.ID == uuid.Nil {
-		p.ID = uuid.New()
-	}
-	return nil
-}
-
-func (tv *TranslationVersion) BeforeCreate(tx *gorm.DB) error {
-	if tv.ID == uuid.Nil {
-		tv.ID = uuid.New()
-	}
-	return nil
-}
-
-func (a *ApplicationLocaleDeploy) BeforeCreate(tx *gorm.DB) error {
-	if a.ID == uuid.Nil {
-		a.ID = uuid.New()
-	}
-	return nil
-}
-
-func (j *AddLanguageJob) BeforeCreate(tx *gorm.DB) error {
-	if j.ID == uuid.Nil {
-		j.ID = uuid.New()
-	}
-	return nil
-}
-
-func (j *TranslateJob) BeforeCreate(tx *gorm.DB) error {
-	if j.ID == uuid.Nil {
-		j.ID = uuid.New()
-	}
-	return nil
+	ID           uuid.UUID       `db:"id"            json:"id"`
+	ComponentID  uuid.UUID       `db:"component_id"  json:"component_id"`
+	Locale       string          `db:"locale"        json:"locale"`
+	Stage        DeploymentStage `db:"stage"         json:"stage"`
+	Version      int             `db:"version"       json:"version"`
+	Data         JSONB           `db:"data"          json:"data"`
+	SourceLocale string          `db:"source_locale" json:"source_locale,omitempty"`
+	SourceData   JSONB           `db:"source_data"   json:"source_data,omitempty"`
+	IsActive     bool            `db:"is_active"     json:"is_active"`
+	CreatedBy    uuid.UUID       `db:"created_by"    json:"created_by"`
+	UpdatedBy    uuid.UUID       `db:"updated_by"    json:"updated_by"`
+	CreatedAt    time.Time       `db:"created_at"    json:"created_at"`
+	UpdatedAt    time.Time       `db:"updated_at"    json:"updated_at"`
 }

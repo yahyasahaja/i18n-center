@@ -86,4 +86,9 @@ type Repository interface {
 	// DeleteByComponentLocale hard-deletes every version for (componentID, locale)
 	// across all stages. Used by the DeleteLanguage cascade.
 	DeleteByComponentLocale(ctx context.Context, q repository.Queryer, componentID uuid.UUID, locale string) error
+
+	// ListLatestLocales returns the highest-versioned active row for each locale
+	// at (componentID, stage). Drives the all-locale export endpoint —
+	// "give me the current translation in every language I have".
+	ListLatestLocales(ctx context.Context, q repository.Queryer, componentID uuid.UUID, stage Stage) ([]Version, error)
 }

@@ -68,6 +68,11 @@ type Repository interface {
 	// GetByCode looks up a component by its application-scoped code.
 	GetByCode(ctx context.Context, q repository.Queryer, code string) (*Component, error)
 
+	// ListByIDs returns the components whose IDs are in the provided set
+	// (no tags/pages preloaded). Used by the by-tag / by-page handlers that
+	// resolve a code→data map for a list of component IDs.
+	ListByIDs(ctx context.Context, q repository.Queryer, ids []uuid.UUID) ([]Component, error)
+
 	// List returns one page of components matching the filter, plus the total
 	// count for pagination. The two queries run sequentially against the
 	// same Queryer; callers can wrap in WithTx if they need a snapshot view.

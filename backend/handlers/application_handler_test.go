@@ -20,8 +20,8 @@ import (
 // the sqlmock-backed database.SQLX), and overrides the audit service with a mock
 // so tests can assert audit-log calls without a real DB.
 func setupApplicationHandler(t *testing.T) (*ApplicationHandler, sqlmock.Sqlmock) {
-	db, xdb, mock := newMockDB(t)
-	withMockDB(t, db, xdb)
+	xdb, mock := newMockDB(t)
+	withMockDB(t, xdb)
 	audit := newMockAuditService()
 	h := NewApplicationHandler()
 	h.auditService = audit

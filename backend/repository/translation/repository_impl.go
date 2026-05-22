@@ -119,6 +119,19 @@ const (
 		DELETE FROM translation_versions
 		WHERE component_id = $1 AND locale = $2
 	`
+
+	// ListLatestLocales: one row per locale, highest-versioned, for a single
+	// (component, stage). DISTINCT ON does the per-locale selection without
+	// a self-join; the ORDER BY clause picks the winner.
+	queryListLatestLocales = `
+		SELECT DISTINCT ON (locale)
+		       id, component_id, locale, stage, version, data,
+		       source_locale, source_data, is_active, created_by, updated_by,
+		       created_at, updated_at
+		FROM translation_versions
+		WHERE component_id = $1 AND stage = $2 AND is_active = TRUE
+		ORDER BY locale, version DESC
+	`
 )
 
 type Impl struct{}
@@ -245,6 +258,14 @@ func (r *Impl) DeleteOldVersions(ctx context.Context, q repository.Queryer, keep
 func (r *Impl) DeleteByComponentLocale(ctx context.Context, q repository.Queryer, componentID uuid.UUID, locale string) error {
 	_, err := q.ExecContext(ctx, queryDeleteByComponentLocale, componentID, locale)
 	return err
+}
+
+func (r *Impl) ListLatestLocales(ctx context.Context, q repository.Queryer, componentID uuid.UUID, stage Stage) ([]Version, error) {
+	rows := []Version{}
+	if err := q.SelectContext(ctx, &rows, queryListLatestLocales, componentID, stage); err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // keep sqlx referenced in case future helpers grow here.

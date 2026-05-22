@@ -374,7 +374,6 @@ definitions:
   models.Application:
     properties:
       code:
-        description: Unique identifier for API access
         type: string
       created_at:
         type: string
@@ -387,7 +386,6 @@ definitions:
           type: string
         type: array
       has_openai_key:
-        description: Computed field
         type: boolean
       id:
         type: string
@@ -401,26 +399,20 @@ definitions:
   models.AuditLog:
     properties:
       action:
-        description: CREATE, UPDATE, DELETE
         type: string
       changes:
-        allOf:
-        - $ref: '#/definitions/models.JSONB'
-        description: Before/after values
+        $ref: '#/definitions/models.JSONB'
       created_at:
         type: string
       id:
         type: string
       ip_address:
-        description: IPv6 compatible
         type: string
       resource_code:
-        description: For applications/components, store code for easier lookup
         type: string
       resource_id:
         type: string
       resource_type:
-        description: application, component, translation, user
         type: string
       user_agent:
         type: string
@@ -451,15 +443,12 @@ definitions:
       id:
         type: string
       job_type:
-        description: auto_translate | backfill
         type: string
       source_locale:
         type: string
       status:
-        description: pending, running, completed, failed
         type: string
       target_locales:
-        description: one or more locales
         items:
           type: string
         type: array

@@ -1,6 +1,16 @@
+// Package database owns the connection lifecycle for the shared Cloud SQL
+// Postgres pool. As of Commit I the whole repository layer is sqlx-backed —
+// GORM is gone. The package exports a single handle:
+//
+//   - SQLX (*sqlx.DB) — used by every repository under backend/repository/*.
+//
+// No schema mutation happens here: migrations are applied manually via the
+// `i18n-center-migrate` CLI, so a fresh pod boots cleanly even if the schema
+// is up-to-date (or 500s every query if it isn't).
 package database
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -9,32 +19,17 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	"github.com/your-org/i18n-center/observability"
-	"go.uber.org/zap"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	_ "github.com/lib/pq" // sql driver registration
 )
 
-// Two handles share the same underlying connection pool:
-//
-//   - DB (*gorm.DB)   — used by handlers/services that still go through the
-//                       legacy ORM path. Will be removed once every package
-//                       has migrated to the repository layer (Commit I).
-//   - SQLX (*sqlx.DB) — used by the new raw-SQL repositories. Lives in
-//                       backend/repository/*.
-//
-// Both pull connections from the same *sql.DB so we don't double-budget the
-// shared-with-Hydra Cloud SQL pool.
-var (
-	DB   *gorm.DB
-	SQLX *sqlx.DB
-)
+// SQLX is the single application-wide DB handle. Repositories accept a
+// `repository.Queryer` (satisfied by both *sqlx.DB and *sqlx.Tx) so they can
+// run inside or outside a transaction without two code paths.
+var SQLX *sqlx.DB
 
-// InitDatabase opens the database connection, sizes the pool, and prepares
-// both the GORM and sqlx handles. It does NOT migrate the schema — that's
-// the job of the `i18n-center-migrate` binary, run manually before each
-// deploy that includes a schema change.
+// InitDatabase opens the database connection and sizes the pool. It does NOT
+// migrate the schema — that's the job of the `i18n-center-migrate` binary,
+// run manually before each deploy that includes a schema change.
 //
 // If the schema is missing entirely, the server will boot fine but every
 // query will fail with `relation "..." does not exist`. The fix is to exec
@@ -50,18 +45,10 @@ func InitDatabase() error {
 		os.Getenv("DB_SSLMODE"),
 	)
 
-	// GORM SQL logging: silent by default; set LOG_SQL=true to enable.
-	gormLogLevel := logger.Silent
-	if os.Getenv("LOG_SQL") == "true" {
-		gormLogLevel = logger.Info
-	}
-
-	var err error
-	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(gormLogLevel),
-	})
+	// Open with database/sql so we can size the pool before wrapping in sqlx.
+	sqlDB, err := sql.Open("postgres", dsn)
 	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
+		return fmt.Errorf("failed to open database: %w", err)
 	}
 
 	// Connection pool sizing. The Cloud SQL Postgres is shared with Hydra
@@ -74,98 +61,21 @@ func InitDatabase() error {
 	//       with Cloud SQL's idle-disconnect window. Default 30.
 	//
 	// Budget: 3 replicas × 20 = 60 of Cloud SQL's default max_connections=100.
-	sqlDB, dbErr := DB.DB()
-	if dbErr != nil {
-		return fmt.Errorf("failed to get underlying sql.DB: %w", dbErr)
-	}
 	sqlDB.SetMaxOpenConns(envIntOr("DB_MAX_OPEN_CONNS", 20))
 	sqlDB.SetMaxIdleConns(envIntOr("DB_MAX_IDLE_CONNS", 5))
 	sqlDB.SetConnMaxLifetime(time.Duration(envIntOr("DB_CONN_MAX_LIFETIME_MIN", 30)) * time.Minute)
 
-	// Wrap the same *sql.DB in sqlx so the new repository layer shares the
-	// pool with the legacy GORM path. Connections are pooled once, not twice.
-	SQLX = sqlx.NewDb(sqlDB, "postgres")
+	// Confirm the pool can actually reach the server. Without this, a wrong
+	// host/credentials surfaces as a per-request error later — boot-time
+	// failure is loud and obvious.
+	if err := sqlDB.Ping(); err != nil {
+		return fmt.Errorf("failed to ping database: %w", err)
+	}
 
-	setupObservabilityCallbacks()
+	SQLX = sqlx.NewDb(sqlDB, "postgres")
 
 	log.Println("Database connected. Reminder: schema is NOT migrated automatically — run `i18n-center-migrate up` in the pod before sending traffic on a fresh deploy.")
 	return nil
-}
-
-// setupObservabilityCallbacks adds callbacks to track database operations
-func setupObservabilityCallbacks() {
-	if DB == nil {
-		return
-	}
-
-	// Track query execution time and errors
-	DB.Callback().Query().Before("gorm:query").Register("observability:before_query", func(db *gorm.DB) {
-		db.InstanceSet("start_time", time.Now())
-	})
-
-	DB.Callback().Query().After("gorm:query").Register("observability:after_query", func(db *gorm.DB) {
-		startTime, ok := db.InstanceGet("start_time")
-		if !ok {
-			return
-		}
-
-		duration := time.Since(startTime.(time.Time))
-		operation := "query"
-
-		if db.Error != nil {
-			observability.LogError(db.Error, "Database query error",
-				zap.String("operation", operation),
-				zap.Duration("duration", duration),
-			)
-		}
-
-		observability.RecordDatabaseMetrics(operation, duration, db.Error)
-	})
-
-	// Track create operations
-	DB.Callback().Create().Before("gorm:create").Register("observability:before_create", func(db *gorm.DB) {
-		db.InstanceSet("start_time", time.Now())
-	})
-
-	DB.Callback().Create().After("gorm:create").Register("observability:after_create", func(db *gorm.DB) {
-		startTime, ok := db.InstanceGet("start_time")
-		if !ok {
-			return
-		}
-
-		duration := time.Since(startTime.(time.Time))
-		observability.RecordDatabaseMetrics("create", duration, db.Error)
-	})
-
-	// Track update operations
-	DB.Callback().Update().Before("gorm:update").Register("observability:before_update", func(db *gorm.DB) {
-		db.InstanceSet("start_time", time.Now())
-	})
-
-	DB.Callback().Update().After("gorm:update").Register("observability:after_update", func(db *gorm.DB) {
-		startTime, ok := db.InstanceGet("start_time")
-		if !ok {
-			return
-		}
-
-		duration := time.Since(startTime.(time.Time))
-		observability.RecordDatabaseMetrics("update", duration, db.Error)
-	})
-
-	// Track delete operations
-	DB.Callback().Delete().Before("gorm:delete").Register("observability:before_delete", func(db *gorm.DB) {
-		db.InstanceSet("start_time", time.Now())
-	})
-
-	DB.Callback().Delete().After("gorm:delete").Register("observability:after_delete", func(db *gorm.DB) {
-		startTime, ok := db.InstanceGet("start_time")
-		if !ok {
-			return
-		}
-
-		duration := time.Since(startTime.(time.Time))
-		observability.RecordDatabaseMetrics("delete", duration, db.Error)
-	})
 }
 
 // envIntOr reads an env var as int, falling back to dflt if unset or unparseable.
@@ -181,23 +91,4 @@ func envIntOr(key string, dflt int) int {
 		return dflt
 	}
 	return n
-}
-
-// CleanupOldVersions keeps only the last 50 versions per component-locale-stage
-func CleanupOldVersions() error {
-	// Delete rows that are beyond the 50 most recent per (component_id, locale, stage)
-	result := DB.Exec(`
-		DELETE FROM translation_versions
-		WHERE id IN (
-			SELECT id FROM (
-				SELECT id, ROW_NUMBER() OVER (PARTITION BY component_id, locale, stage ORDER BY version DESC) as rn
-				FROM translation_versions
-			) sub
-			WHERE rn > 50
-		)
-	`)
-	if result.Error != nil {
-		return result.Error
-	}
-	return nil
 }

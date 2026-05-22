@@ -15,8 +15,8 @@ import (
 )
 
 func TestTagPageAndUtilityHandlers_ValidationPaths(t *testing.T) {
-	db, xdb, mock := newMockDB(t)
-	withMockDB(t, db, xdb)
+	xdb, mock := newMockDB(t)
+	withMockDB(t, xdb)
 
 	tagH := NewTagHandler()
 	pageH := NewPageHandler()
@@ -83,16 +83,15 @@ func TestTagPageAndUtilityHandlers_ValidationPaths(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).WillReturnRows(sqlmock.NewRows([]string{"id"})) // tag get
 	mock.ExpectQuery(`SELECT`).WillReturnRows(sqlmock.NewRows([]string{"id"})) // page get
 
-	origDB := database.DB
-	database.DB = nil
-	t.Cleanup(func() { database.DB = origDB })
+	origSQLX := database.SQLX
+	t.Cleanup(func() { database.SQLX = origSQLX })
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.name == "Health_NoDB_Degraded" || tc.name == "Readiness_NoDB_NotReady" || tc.name == "Liveness_Alive" {
-				database.DB = nil
+				database.SQLX = nil
 			} else {
-				database.DB = db
+				database.SQLX = xdb
 			}
 			var payload []byte
 			if tc.body != nil {

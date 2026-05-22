@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -8,8 +9,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/application"
+	"github.com/your-org/i18n-center/repository/component"
 	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
@@ -18,12 +20,16 @@ import (
 type BootstrapHandler struct {
 	translationService *services.TranslationService
 	auditService       services.AuditServicer
+	apps               application.Repository
+	components         component.Repository
 }
 
 func NewBootstrapHandler() *BootstrapHandler {
 	return &BootstrapHandler{
 		translationService: services.NewTranslationService(),
 		auditService:       services.NewAuditService(),
+		apps:               application.New(),
+		components:         component.New(),
 	}
 }
 
@@ -86,10 +92,16 @@ func (h *BootstrapHandler) BootstrapApplication(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
+
 	// Verify application exists.
-	var app models.Application
-	if err := database.DB.First(&app, "id = ?", applicationID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+	app, err := h.apps.GetByID(ctx, database.SQLX, applicationID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -130,35 +142,47 @@ func (h *BootstrapHandler) BootstrapApplication(c *gin.Context) {
 		result.FlatKeysInCommon = len(flatKeys)
 	}
 
-	// Upsert each component and append a new translation version.
+	// Upsert each component and append a new translation version. The lookup
+	// uses GetByCode which is application-scoped on the unique index. New
+	// components are persisted via component.Repository.Create.
 	for rawCode, data := range objectComponents {
 		code := strings.TrimSpace(strings.ToLower(rawCode))
 
-		var component models.Component
-		lookupErr := database.DB.
-			Where("application_id = ? AND code = ?", applicationID, code).
-			First(&component).Error
-
-		if lookupErr != nil {
-			// Component does not exist — create it.
-			component = models.Component{
+		var compID uuid.UUID
+		existing, lookupErr := h.components.GetByCode(ctx, database.SQLX, code)
+		switch {
+		case lookupErr == nil && existing != nil && existing.ApplicationID == applicationID:
+			compID = existing.ID
+			result.ComponentsUpdated++
+		default:
+			newComp := &component.Component{
 				ApplicationID: applicationID,
 				Code:          code,
 				CreatedBy:     userID,
 			}
-			if createErr := database.DB.Create(&component).Error; createErr != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "failed to create component '" + code + "': " + createErr.Error(),
-				})
-				return
+			createErr := h.components.Create(ctx, database.SQLX, newComp)
+			if createErr == nil {
+				compID = newComp.ID
+				result.ComponentsCreated++
+				break
 			}
-			result.ComponentsCreated++
-		} else {
-			result.ComponentsUpdated++
+			// Race: another bootstrap request created the same component
+			// between our lookup and our insert. Re-fetch and proceed.
+			if errors.Is(createErr, repository.ErrConflict) {
+				if again, err := h.components.GetByCode(ctx, database.SQLX, code); err == nil && again != nil {
+					compID = again.ID
+					result.ComponentsUpdated++
+					break
+				}
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "failed to create component '" + code + "': " + createErr.Error(),
+			})
+			return
 		}
 
 		jsonData := repository.JSONB(data)
-		if _, saveErr := h.translationService.SaveTranslation(component.ID, locale, stage, jsonData, userID); saveErr != nil {
+		if _, saveErr := h.translationService.SaveTranslation(compID, locale, stage, jsonData, userID); saveErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "failed to save translation for '" + code + "': " + saveErr.Error(),
 			})

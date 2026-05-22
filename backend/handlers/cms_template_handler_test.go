@@ -28,8 +28,8 @@ func cmsTemplateFieldCols() []string {
 // setupCmsTemplateHandler uses the proper constructor so the repository field
 // (h.templates) is initialised. sqlmock wired into both *gorm.DB and *sqlx.DB.
 func setupCmsTemplateHandler(t *testing.T) (*CmsTemplateHandler, sqlmock.Sqlmock, *mocks.MockAuditServicer) {
-	db, xdb, mock := newMockDB(t)
-	withMockDB(t, db, xdb)
+	xdb, mock := newMockDB(t)
+	withMockDB(t, xdb)
 	auditMock := newMockAuditService()
 	h := NewCmsTemplateHandler()
 	h.auditService = auditMock

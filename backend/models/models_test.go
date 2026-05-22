@@ -3,10 +3,14 @@ package models
 import (
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// JSONB and StringArray are still real types in this package — exercise their
+// sql.Scanner / driver.Valuer interfaces. The BeforeCreate / TableName tests
+// were tied to the now-removed GORM hooks; UUID generation is the repository
+// layer's responsibility under Commit I, so those tests are gone.
 
 func TestJSONB_Value(t *testing.T) {
 	tests := []struct {
@@ -84,34 +88,6 @@ func TestJSONB_Scan(t *testing.T) {
 	}
 }
 
-func TestUser_BeforeCreate(t *testing.T) {
-	user := &User{}
-	err := user.BeforeCreate(nil)
-	assert.NoError(t, err)
-	assert.NotEqual(t, uuid.Nil, user.ID)
-}
-
-func TestApplication_BeforeCreate(t *testing.T) {
-	app := &Application{}
-	err := app.BeforeCreate(nil)
-	assert.NoError(t, err)
-	assert.NotEqual(t, uuid.Nil, app.ID)
-}
-
-func TestComponent_BeforeCreate(t *testing.T) {
-	component := &Component{}
-	err := component.BeforeCreate(nil)
-	assert.NoError(t, err)
-	assert.NotEqual(t, uuid.Nil, component.ID)
-}
-
-func TestTranslationVersion_BeforeCreate(t *testing.T) {
-	tv := &TranslationVersion{}
-	err := tv.BeforeCreate(nil)
-	assert.NoError(t, err)
-	assert.NotEqual(t, uuid.Nil, tv.ID)
-}
-
 func TestStringArray_ValueAndScan(t *testing.T) {
 	arr := StringArray{"en", "id"}
 	v, err := arr.Value()
@@ -128,38 +104,4 @@ func TestStringArray_ValueAndScan(t *testing.T) {
 
 	err = scanned.Scan(42)
 	assert.Error(t, err)
-}
-
-func TestMoreBeforeCreateHooks(t *testing.T) {
-	tag := &Tag{}
-	require.NoError(t, tag.BeforeCreate(nil))
-	assert.NotEqual(t, uuid.Nil, tag.ID)
-
-	page := &Page{}
-	require.NoError(t, page.BeforeCreate(nil))
-	assert.NotEqual(t, uuid.Nil, page.ID)
-
-	deploy := &ApplicationLocaleDeploy{}
-	require.NoError(t, deploy.BeforeCreate(nil))
-	assert.NotEqual(t, uuid.Nil, deploy.ID)
-
-	addJob := &AddLanguageJob{}
-	require.NoError(t, addJob.BeforeCreate(nil))
-	assert.NotEqual(t, uuid.Nil, addJob.ID)
-
-	translateJob := &TranslateJob{}
-	require.NoError(t, translateJob.BeforeCreate(nil))
-	assert.NotEqual(t, uuid.Nil, translateJob.ID)
-}
-
-func TestTableNames(t *testing.T) {
-	assert.Equal(t, "add_language_jobs", AddLanguageJob{}.TableName())
-	assert.Equal(t, "translate_jobs", TranslateJob{}.TableName())
-	assert.Equal(t, "audit_logs", AuditLog{}.TableName())
-}
-
-func TestAuditLogBeforeCreate(t *testing.T) {
-	a := &AuditLog{}
-	require.NoError(t, a.BeforeCreate(nil))
-	assert.NotEqual(t, uuid.Nil, a.ID)
 }

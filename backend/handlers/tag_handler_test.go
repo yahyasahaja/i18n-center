@@ -17,8 +17,8 @@ import (
 // setupTagHandler uses the proper constructor so repository fields are
 // initialised; sqlmock is wired into both *gorm.DB and *sqlx.DB.
 func setupTagHandler(t *testing.T) (*TagHandler, sqlmock.Sqlmock) {
-	db, xdb, mock := newMockDB(t)
-	withMockDB(t, db, xdb)
+	xdb, mock := newMockDB(t)
+	withMockDB(t, xdb)
 	h := NewTagHandler()
 	h.auditService = newMockAuditService()
 	return h, mock

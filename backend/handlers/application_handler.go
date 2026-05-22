@@ -13,9 +13,9 @@ import (
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/jobs"
-	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/repository"
 	"github.com/your-org/i18n-center/repository/application"
+	"github.com/your-org/i18n-center/repository/component"
 	"github.com/your-org/i18n-center/repository/job"
 	"github.com/your-org/i18n-center/repository/localedeploy"
 	"github.com/your-org/i18n-center/repository/translation"
@@ -29,6 +29,7 @@ type pqStringArray = pq.StringArray
 type ApplicationHandler struct {
 	auditService  services.AuditServicer
 	apps          application.Repository
+	components    component.Repository
 	addLangJobs   job.AddLanguageRepository
 	translateJobs job.TranslateRepository
 	deploys       localedeploy.Repository
@@ -38,6 +39,7 @@ func NewApplicationHandler() *ApplicationHandler {
 	return &ApplicationHandler{
 		auditService:  services.NewAuditService(),
 		apps:          application.New(),
+		components:    component.New(),
 		addLangJobs:   job.NewAddLanguageRepository(),
 		translateJobs: job.NewTranslateRepository(),
 		deploys:       localedeploy.New(),
@@ -536,8 +538,8 @@ func (h *ApplicationHandler) DeployLocale(c *gin.Context) {
 		return
 	}
 
-	var components []models.Component
-	if err := database.DB.Where("application_id = ?", appID).Find(&components).Error; err != nil {
+	components, _, err := h.components.List(ctx, database.SQLX, component.ListFilter{ApplicationID: appID})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -746,8 +748,8 @@ func (h *ApplicationHandler) DeleteLanguage(c *gin.Context) {
 		return
 	}
 
-	var components []models.Component
-	if err := database.DB.Where("application_id = ?", appID).Find(&components).Error; err != nil {
+	components, _, err := h.components.List(ctx, database.SQLX, component.ListFilter{ApplicationID: appID})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

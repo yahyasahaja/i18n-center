@@ -177,6 +177,27 @@ func (r *Impl) GetByCode(ctx context.Context, q repository.Queryer, code string)
 	return &c, nil
 }
 
+// ListByIDs returns the components whose IDs are in the provided set. Order
+// of results is unspecified — callers wanting a specific order should sort
+// the returned slice themselves. Empty input → empty result, no query.
+func (r *Impl) ListByIDs(ctx context.Context, q repository.Queryer, ids []uuid.UUID) ([]Component, error) {
+	if len(ids) == 0 {
+		return []Component{}, nil
+	}
+	const query = `
+		SELECT id, application_id, name, code, description,
+		       key_contexts, default_locale, created_by, updated_by,
+		       created_at, updated_at
+		FROM components
+		WHERE id = ANY($1) AND deleted_at IS NULL
+	`
+	rows := []Component{}
+	if err := q.SelectContext(ctx, &rows, query, pq.Array(ids)); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 func (r *Impl) List(ctx context.Context, q repository.Queryer, f ListFilter) ([]Component, int, error) {
 	// Build the WHERE additions dynamically. Static prefix comes from the const
 	// so the query plan is stable across most call patterns; the conditional

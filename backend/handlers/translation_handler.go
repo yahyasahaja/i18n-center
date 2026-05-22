@@ -15,9 +15,12 @@ import (
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/middleware"
-	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/application"
+	"github.com/your-org/i18n-center/repository/component"
 	"github.com/your-org/i18n-center/repository/job"
+	"github.com/your-org/i18n-center/repository/page"
+	"github.com/your-org/i18n-center/repository/tag"
 	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
@@ -26,6 +29,10 @@ type TranslationHandler struct {
 	translationService *services.TranslationService
 	auditService       services.AuditServicer
 	translateJobs      job.TranslateRepository
+	apps               application.Repository
+	components         component.Repository
+	tags               tag.Repository
+	pages              page.Repository
 }
 
 func NewTranslationHandler() *TranslationHandler {
@@ -33,6 +40,10 @@ func NewTranslationHandler() *TranslationHandler {
 		translationService: services.NewTranslationService(),
 		auditService:       services.NewAuditService(),
 		translateJobs:      job.NewTranslateRepository(),
+		apps:               application.New(),
+		components:         component.New(),
+		tags:               tag.New(),
+		pages:              page.New(),
 	}
 }
 
@@ -177,8 +188,8 @@ func (h *TranslationHandler) GetMultipleTranslations(c *gin.Context) {
 
 		// When authenticated via API key, restrict to that application
 		if apiKeyAppID := middleware.GetAPIKeyApplicationID(c); apiKeyAppID != uuid.Nil {
-			var app models.Application
-			if err := database.DB.Where("code = ?", applicationCode).First(&app).Error; err != nil {
+			app, err := h.apps.GetByCode(c.Request.Context(), database.SQLX, applicationCode)
+			if err != nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "Application not found"})
 				return
 			}
@@ -317,14 +328,15 @@ func (h *TranslationHandler) GetTranslationsByTag(c *gin.Context) {
 		return
 	}
 
-	var tag models.Tag
-	if err := database.DB.First(&tag, "application_id = ? AND code = ?", applicationID, tagCode).Error; err != nil {
+	ctx := c.Request.Context()
+	tagRow, err := h.tags.GetByAppCode(ctx, database.SQLX, applicationID, tagCode)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Tag not found"})
 		return
 	}
 
-	var componentIDs []uuid.UUID
-	if err := database.DB.Table("component_tags").Where("tag_id = ?", tag.ID).Pluck("component_id", &componentIDs).Error; err != nil || len(componentIDs) == 0 {
+	componentIDs, err := h.tags.GetComponentIDs(ctx, database.SQLX, tagRow.ID)
+	if err != nil || len(componentIDs) == 0 {
 		empty := gin.H{}
 		_ = cache.Set(cacheKey, empty, time.Hour)
 		c.JSON(http.StatusOK, empty)
@@ -337,8 +349,8 @@ func (h *TranslationHandler) GetTranslationsByTag(c *gin.Context) {
 		return
 	}
 
-	var components []models.Component
-	if err := database.DB.Where("id IN ?", componentIDs).Find(&components).Error; err != nil {
+	components, err := h.components.ListByIDs(ctx, database.SQLX, componentIDs)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -410,14 +422,15 @@ func (h *TranslationHandler) GetTranslationsByPage(c *gin.Context) {
 		return
 	}
 
-	var page models.Page
-	if err := database.DB.First(&page, "application_id = ? AND code = ?", applicationID, pageCode).Error; err != nil {
+	ctx := c.Request.Context()
+	pageRow, err := h.pages.GetByAppCode(ctx, database.SQLX, applicationID, pageCode)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Page not found"})
 		return
 	}
 
-	var componentIDs []uuid.UUID
-	if err := database.DB.Table("component_pages").Where("page_id = ?", page.ID).Pluck("component_id", &componentIDs).Error; err != nil || len(componentIDs) == 0 {
+	componentIDs, err := h.pages.GetComponentIDs(ctx, database.SQLX, pageRow.ID)
+	if err != nil || len(componentIDs) == 0 {
 		empty := gin.H{}
 		_ = cache.Set(cacheKey, empty, time.Hour)
 		c.JSON(http.StatusOK, empty)
@@ -430,8 +443,8 @@ func (h *TranslationHandler) GetTranslationsByPage(c *gin.Context) {
 		return
 	}
 
-	var components []models.Component
-	if err := database.DB.Where("id IN ?", componentIDs).Find(&components).Error; err != nil {
+	components, err := h.components.ListByIDs(ctx, database.SQLX, componentIDs)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -489,8 +502,8 @@ func (h *TranslationHandler) SaveTranslation(c *gin.Context) {
 	ipAddress, userAgent := h.getClientInfo(c)
 
 	// Get component for audit logging
-	var component models.Component
-	if err := database.DB.First(&component, "id = ?", componentID).Error; err != nil {
+	comp, err := h.components.GetByID(c.Request.Context(), database.SQLX, componentID)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
 		return
 	}
@@ -514,7 +527,7 @@ func (h *TranslationHandler) SaveTranslation(c *gin.Context) {
 		username,
 		"translation",
 		v.ID,
-		component.Code,
+		comp.Code,
 		map[string]interface{}{
 			"component_id": componentID.String(),
 			"locale":       req.Locale,
@@ -593,8 +606,8 @@ func (h *TranslationHandler) DeployTranslation(c *gin.Context) {
 	ipAddress, userAgent := h.getClientInfo(c)
 
 	// Get component for audit logging
-	var component models.Component
-	if err := database.DB.First(&component, "id = ?", componentID).Error; err != nil {
+	comp, err := h.components.GetByID(c.Request.Context(), database.SQLX, componentID)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
 		return
 	}
@@ -618,7 +631,7 @@ func (h *TranslationHandler) DeployTranslation(c *gin.Context) {
 			"DEPLOY",
 			"translation",
 			deployedTranslation.ID,
-			component.Code,
+			comp.Code,
 			map[string]interface{}{
 				"action":       "DEPLOY",
 				"component_id": componentID.String(),

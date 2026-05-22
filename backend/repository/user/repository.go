@@ -16,6 +16,14 @@ import (
 	"github.com/your-org/i18n-center/repository"
 )
 
+// Role constants for User.Role. Stored as TEXT — Postgres has no enum here
+// so the application is the source of truth for the allowed set.
+const (
+	RoleSuperAdmin  = "super_admin"
+	RoleOperator    = "operator"
+	RoleUserManager = "user_manager"
+)
+
 // User is the in-memory representation of a row from the `users` table.
 // JSON tags match what the public API has historically returned, so callers
 // migrating off the GORM model don't have to update their consumers.

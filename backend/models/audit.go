@@ -1,36 +1,36 @@
+// Package models holds the legacy struct definitions that were GORM-tagged.
+// As of Commit I they are no longer the persistence layer — the repository
+// packages (`repository/...`) own the database I/O. These types stick around
+// because:
+//
+//   - Swagger annotations across the handlers still reference `models.X`.
+//   - The legacy AuditServicer interface returns `[]models.AuditLog` for
+//     backwards compatibility with the mock implementation. New code should
+//     prefer the repository types directly (`audit.Log`, `application.Application`).
+//
+// GORM imports and hooks have been removed; struct tags now only carry
+// `json` and `db` annotations.
 package models
 
 import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
-// AuditLog represents audit trail for all database changes
+// AuditLog represents an audit-trail row. The repository layer (`repository/audit`)
+// owns the canonical type; this struct is preserved for callers that still
+// consume the legacy shape.
 type AuditLog struct {
-	ID           uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	UserID       uuid.UUID `gorm:"type:uuid;not null;index" json:"user_id"`
-	Username     string    `gorm:"not null" json:"username"`
-	Action       string    `gorm:"type:varchar(50);not null;index" json:"action"`        // CREATE, UPDATE, DELETE
-	ResourceType string    `gorm:"type:varchar(50);not null;index" json:"resource_type"` // application, component, translation, user
-	ResourceID   uuid.UUID `gorm:"type:uuid;not null;index" json:"resource_id"`
-	ResourceCode string    `gorm:"index" json:"resource_code"`         // For applications/components, store code for easier lookup
-	Changes      JSONB     `gorm:"type:jsonb" json:"changes"`          // Before/after values
-	IPAddress    string    `gorm:"type:varchar(45)" json:"ip_address"` // IPv6 compatible
-	UserAgent    string    `gorm:"type:text" json:"user_agent"`
-	CreatedAt    time.Time `json:"created_at"`
-}
-
-// TableName specifies the table name for AuditLog
-func (AuditLog) TableName() string {
-	return "audit_logs"
-}
-
-// BeforeCreate hook
-func (a *AuditLog) BeforeCreate(tx *gorm.DB) error {
-	if a.ID == uuid.Nil {
-		a.ID = uuid.New()
-	}
-	return nil
+	ID           uuid.UUID `db:"id"            json:"id"`
+	UserID       uuid.UUID `db:"user_id"       json:"user_id"`
+	Username     string    `db:"username"      json:"username"`
+	Action       string    `db:"action"        json:"action"`
+	ResourceType string    `db:"resource_type" json:"resource_type"`
+	ResourceID   uuid.UUID `db:"resource_id"   json:"resource_id"`
+	ResourceCode string    `db:"resource_code" json:"resource_code"`
+	Changes      JSONB     `db:"changes"       json:"changes"`
+	IPAddress    string    `db:"ip_address"    json:"ip_address"`
+	UserAgent    string    `db:"user_agent"    json:"user_agent"`
+	CreatedAt    time.Time `db:"created_at"    json:"created_at"`
 }

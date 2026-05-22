@@ -17,8 +17,8 @@ import (
 // setupPageHandler uses the proper constructor so repository fields are
 // initialised. The sqlmock is wired into both *gorm.DB and *sqlx.DB.
 func setupPageHandler(t *testing.T) (*PageHandler, sqlmock.Sqlmock) {
-	db, xdb, mock := newMockDB(t)
-	withMockDB(t, db, xdb)
+	xdb, mock := newMockDB(t)
+	withMockDB(t, xdb)
 	h := NewPageHandler()
 	h.auditService = newMockAuditService()
 	return h, mock

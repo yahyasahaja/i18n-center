@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 
 	"github.com/joho/godotenv"
+
 	"github.com/your-org/i18n-center/auth"
 	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/models"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/user"
 )
 
 func main() {
@@ -34,12 +38,15 @@ func main() {
 		log.Println("Warning: Using default password. Please change it!")
 	}
 
+	ctx := context.Background()
+	users := user.New()
+
 	// Check if admin already exists
-	var existingUser models.User
-	result := database.DB.Where("username = ?", username).First(&existingUser)
-	if result.Error == nil {
+	if existing, err := users.GetActiveByUsername(ctx, database.SQLX, username); err == nil && existing != nil {
 		log.Printf("User %s already exists. Skipping creation.", username)
 		return
+	} else if err != nil && !errors.Is(err, repository.ErrNotFound) {
+		log.Fatalf("Failed to look up user: %v", err)
 	}
 
 	// Hash password
@@ -49,19 +56,19 @@ func main() {
 	}
 
 	// Create admin user
-	admin := models.User{
+	admin := &user.User{
 		Username:     username,
 		PasswordHash: hashedPassword,
-		Role:         models.RoleSuperAdmin,
+		Role:         user.RoleSuperAdmin,
 		IsActive:     true,
 	}
 
-	if err := database.DB.Create(&admin).Error; err != nil {
+	if err := users.Create(ctx, database.SQLX, admin); err != nil {
 		log.Fatalf("Failed to create admin user: %v", err)
 	}
 
 	fmt.Printf("Admin user created successfully!\n")
 	fmt.Printf("Username: %s\n", username)
 	fmt.Printf("Password: %s\n", password)
-	fmt.Printf("Role: %s\n", models.RoleSuperAdmin)
+	fmt.Printf("Role: %s\n", user.RoleSuperAdmin)
 }

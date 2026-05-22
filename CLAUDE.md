@@ -22,7 +22,7 @@
 
 ### Framework & patterns
 - **Router**: Gin (not Echo, not chi — only Gin in this repo)
-- **ORM**: GORM with PostgreSQL (CloudSQL in production)
+- **DB**: Raw SQL via sqlx + PostgreSQL (CloudSQL in production). GORM is gone — see `repository/` for the data layer.
 - **Auth**: JWT (`Authorization: Bearer <token>`) + application-scoped API keys (`X-API-Key`)
 - **Money**: not applicable here (no monetary values)
 - **UUIDs**: `github.com/google/uuid`, all primary keys are UUID v4 (`gen_random_uuid()`)
@@ -93,7 +93,7 @@ REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, REDIS_DB
 JWT_SECRET, JWT_EXPIRY
 OPENAI_API_KEY           # per-application key overrides this global default
 CORS_ORIGIN              # MUST be an explicit origin when ENV=production (boot fails on '*' or empty)
-LOG_SQL=false            # set true to log GORM queries
+LOG_SQL=false            # legacy GORM-era knob, ignored after Commit I (no-op)
 DD_ENABLED, DD_AGENT_HOST, DD_DOGSTATSD_PORT   # Datadog (production only)
 # GCS — optional, required only for CMS image upload:
 GCS_BUCKET, GCS_CREDENTIALS_BASE64, GCS_CMS_IMAGE_PREFIX, PIXELSHIFT_BASE_URL
@@ -313,7 +313,9 @@ The data layer is being moved off GORM onto raw SQL. New code MUST follow this p
 
 See `backend/repository/types.go` for the base abstractions and `backend/repository/<resource>/` for example impls.
 
-### Migration status (Commit H landed)
+### Migration status (Commit I landed — GORM stripped)
+GORM is no longer in `go.mod`. Every persistence path now goes through `repository/...` over sqlx. `models/` is preserved as a passive type package referenced by Swagger annotations; new code should depend on the repository types directly (`application.Application`, `audit.Log`, etc.) — `models.X` is a transitional shim.
+
 | Resource | Repository | Handlers wired |
 |---|---|---|
 | User | `repository/user` | ✅ |
@@ -332,7 +334,7 @@ See `backend/repository/types.go` for the base abstractions and `backend/reposit
 | CmsTranslateJob | `repository/job` | ✅ (worker + CMS translate/backfill/status handlers) |
 | ApplicationLocaleDeploy | `repository/localedeploy` | ✅ (DeployLocale wraps deploy + locale-state in a single WithTx) |
 
-GORM stays loaded in `database.DB` until Commit I — a handful of read-only handlers (export, bootstrap, by-tag/by-page lookups in translation_handler) still call it. Commit I strips both the import and the legacy models.
+All `database.DB` references are gone. The single application handle is `database.SQLX` (`*sqlx.DB`). Repositories take `repository.Queryer` so they work uniformly inside `repository.WithTx` or directly against `database.SQLX`.
 
 ### Worker (`backend/jobs/worker.go`)
 Fully sqlx-backed after Commit H. Three job-table claim loops share the same shape:

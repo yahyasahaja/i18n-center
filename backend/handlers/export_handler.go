@@ -8,18 +8,22 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/models"
+	"github.com/your-org/i18n-center/repository/component"
 	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
 
 type ExportHandler struct {
 	translationService *services.TranslationService
+	components         component.Repository
+	translations       translation.Repository
 }
 
 func NewExportHandler() *ExportHandler {
 	return &ExportHandler{
 		translationService: services.NewTranslationService(),
+		components:         component.New(),
+		translations:       translation.New(),
 	}
 }
 
@@ -40,9 +44,9 @@ func (h *ExportHandler) ExportApplication(c *gin.Context) {
 		stage = translation.StageProduction
 	}
 
-	// Get all components for this application
-	var components []models.Component
-	if err := database.DB.Where("application_id = ?", applicationID).Find(&components).Error; err != nil {
+	ctx := c.Request.Context()
+	components, _, err := h.components.List(ctx, database.SQLX, component.ListFilter{ApplicationID: applicationID})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -50,32 +54,32 @@ func (h *ExportHandler) ExportApplication(c *gin.Context) {
 	exportData := make(map[string]interface{})
 
 	if locale != "" {
-		// Export specific locale
-		for _, component := range components {
-			v, err := h.translationService.GetTranslation(component.ID, locale, stage)
+		// Export specific locale — one entry per component.
+		for _, comp := range components {
+			v, err := h.translationService.GetTranslation(comp.ID, locale, stage)
 			if err == nil {
-				exportData[component.Name] = v.Data
+				exportData[comp.Name] = v.Data
 			}
 		}
 	} else {
-		// Export all locales
-		exportData["components"] = make(map[string]interface{})
-		for _, component := range components {
-			var translations []models.TranslationVersion
-			database.DB.Where("component_id = ? AND stage = ? AND is_active = ? AND version = ?",
-				component.ID, stage, true, 2).Find(&translations)
-
-			componentData := make(map[string]interface{})
-			for _, trans := range translations {
-				componentData[trans.Locale] = trans.Data
+		// Export all locales — per component, one entry per locale.
+		for _, comp := range components {
+			versions, err := h.translations.ListLatestLocales(ctx, database.SQLX, comp.ID, stage)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
 			}
-			exportData[component.Name] = componentData
+			componentData := make(map[string]interface{}, len(versions))
+			for _, v := range versions {
+				componentData[v.Locale] = v.Data
+			}
+			exportData[comp.Name] = componentData
 		}
 	}
 
 	c.Header("Content-Type", "application/json")
 	c.Header("Content-Disposition", "attachment; filename=export.json")
-	json.NewEncoder(c.Writer).Encode(exportData)
+	_ = json.NewEncoder(c.Writer).Encode(exportData)
 }
 
 // ExportComponent exports translations for a specific component
@@ -109,6 +113,7 @@ func (h *ExportHandler) ExportComponent(c *gin.Context) {
 		stage = translation.StageProduction
 	}
 
+	ctx := c.Request.Context()
 	if locale != "" {
 		// Export specific locale
 		v, err := h.translationService.GetTranslation(componentID, locale, stage)
@@ -119,23 +124,23 @@ func (h *ExportHandler) ExportComponent(c *gin.Context) {
 
 		c.Header("Content-Type", "application/json")
 		c.Header("Content-Disposition", "attachment; filename=component_"+locale+".json")
-		json.NewEncoder(c.Writer).Encode(v.Data)
-	} else {
-		// Export all locales
-		var translations []models.TranslationVersion
-		if err := database.DB.Where("component_id = ? AND stage = ? AND is_active = ? AND version = ?",
-			componentID, stage, true, 2).Find(&translations).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
-		exportData := make(map[string]interface{})
-		for _, trans := range translations {
-			exportData[trans.Locale] = trans.Data
-		}
-
-		c.Header("Content-Type", "application/json")
-		c.Header("Content-Disposition", "attachment; filename=component_all.json")
-		json.NewEncoder(c.Writer).Encode(exportData)
+		_ = json.NewEncoder(c.Writer).Encode(v.Data)
+		return
 	}
+
+	// Export all locales — one entry per locale at the requested stage.
+	versions, err := h.translations.ListLatestLocales(ctx, database.SQLX, componentID, stage)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	exportData := make(map[string]interface{}, len(versions))
+	for _, v := range versions {
+		exportData[v.Locale] = v.Data
+	}
+
+	c.Header("Content-Type", "application/json")
+	c.Header("Content-Disposition", "attachment; filename=component_all.json")
+	_ = json.NewEncoder(c.Writer).Encode(exportData)
 }

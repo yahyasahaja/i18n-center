@@ -18,8 +18,8 @@ import (
 // (h.components) are initialised. The sqlmock is wired into both *gorm.DB and
 // *sqlx.DB so legacy and new query paths share one expectation stream.
 func setupComponentHandler(t *testing.T) (*ComponentHandler, sqlmock.Sqlmock) {
-	db, xdb, mock := newMockDB(t)
-	withMockDB(t, db, xdb)
+	xdb, mock := newMockDB(t)
+	withMockDB(t, xdb)
 	audit := newMockAuditService()
 	h := NewComponentHandler()
 	h.auditService = audit
