@@ -769,30 +769,57 @@ export default function ApplicationDetailPage() {
             entry into a modal that groups by locale and supports bulk deploy.
             The button is visible even when the list is empty so authors can
             confirm "yes, everything is shipped to production". */}
-        <div className="flex items-center justify-between rounded-md border border-gray-200 bg-white px-4 py-3">
-          <div>
-            <div className="text-sm font-medium text-gray-900">
-              Pending deployments
-              {pendingDeploys.length > 0 && (
-                <Badge variant="warning" size="sm" className="ml-2">
-                  {pendingDeploys.length} locale{pendingDeploys.length === 1 ? '' : 's'} ready
-                </Badge>
-              )}
-              {pendingDeploys.length === 0 && (
-                <Badge variant="success" size="sm" className="ml-2">All on production</Badge>
-              )}
+        {(() => {
+          // Mirror the modal's scoping rule: only locales whose
+          // stage_completed matches the sidebar's current Environment count
+          // as "ready to promote." Without this scope the rollup row would
+          // claim "1 locale ready" when in staging env even if that locale is
+          // actually at draft (which can only promote draft→staging, not
+          // staging→production).
+          const nextStage = appStage === 'draft' ? 'staging' : appStage === 'staging' ? 'production' : null
+          const scopedCount = nextStage
+            ? pendingDeploys.filter((p) => p.stage_completed === appStage).length
+            : 0
+          return (
+            <div className="flex items-center justify-between rounded-md border border-gray-200 bg-white px-4 py-3">
+              <div>
+                <div className="text-sm font-medium text-gray-900">
+                  Pending deployments
+                  {nextStage && scopedCount > 0 && (
+                    <Badge variant="warning" size="sm" className="ml-2">
+                      {scopedCount} locale{scopedCount === 1 ? '' : 's'} ready → {nextStage}
+                    </Badge>
+                  )}
+                  {nextStage && scopedCount === 0 && (
+                    <Badge variant="success" size="sm" className="ml-2">
+                      Nothing at {appStage}
+                    </Badge>
+                  )}
+                  {!nextStage && (
+                    <Badge variant="info" size="sm" className="ml-2">
+                      Production is terminal
+                    </Badge>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500">
+                  {nextStage && scopedCount > 0
+                    ? `Promote ${appStage} → ${nextStage}. Atomic per locale.`
+                    : nextStage
+                      ? `Nothing sitting at ${appStage} to promote. Saves on this stage will show up here.`
+                      : 'Switch the sidebar Environment to Draft or Staging to see what could be promoted.'}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowPendingDeploysModal(true)}
+              >
+                <Rocket className="w-4 h-4 mr-2" />
+                View pending deployments
+              </Button>
             </div>
-            <p className="text-xs text-gray-500">
-              {pendingDeploys.length > 0
-                ? 'Promote draft/staging translations to the next stage. Atomic per locale.'
-                : 'Nothing to promote. New draft saves will show up here.'}
-            </p>
-          </div>
-          <Button variant="outline" size="sm" onClick={() => setShowPendingDeploysModal(true)}>
-            <Rocket className="w-4 h-4 mr-2" />
-            View pending deployments
-          </Button>
-        </div>
+          )
+        })()}
 
         <Card
           title="Components"

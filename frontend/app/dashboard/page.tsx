@@ -13,7 +13,12 @@ import { Button } from '@/components/ui/Button'
 
 export default function DashboardPage() {
   const dispatch = useAppDispatch()
-  const { push } = useAppContext()
+  const { push, applicationId } = useAppContext()
+  // The standalone /components page is gone — Components live under their
+  // application now. When the user has an app selected, link straight to its
+  // detail page (which IS the Components view); otherwise nudge them to pick
+  // an app from the Applications list first.
+  const componentsHref = applicationId ? `/applications/${applicationId}` : '/applications'
   const { isAuthenticated, user, loading } = useAuth()
   const { applications } = useAppSelector((state) => state.applications)
   const { components } = useAppSelector((state) => state.components)
@@ -87,7 +92,7 @@ export default function DashboardPage() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => push('/components')}
+                onClick={() => push(componentsHref)}
               >
                 View all <ArrowRight className="ml-2 h-4 w-4" />
               </Button>

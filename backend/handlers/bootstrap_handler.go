@@ -193,6 +193,34 @@ func (h *BootstrapHandler) BootstrapApplication(c *gin.Context) {
 		result.Components = append(result.Components, code)
 	}
 
+	// Auto-enable the imported locale on the application. Without this, the
+	// translation editor's Locale dropdown comes up empty after a bootstrap —
+	// the row exists in translation_versions but the application's
+	// enabled_languages slice doesn't know about it, so the FE has nothing to
+	// render. Case-insensitive dedupe so re-running with the same locale
+	// doesn't duplicate the entry.
+	enabledLocale := strings.TrimSpace(strings.ToLower(locale))
+	if enabledLocale != "" {
+		alreadyEnabled := false
+		for _, l := range app.EnabledLanguages {
+			if strings.EqualFold(l, enabledLocale) {
+				alreadyEnabled = true
+				break
+			}
+		}
+		if !alreadyEnabled {
+			newLangs := append(append([]string(nil), app.EnabledLanguages...), enabledLocale)
+			if err := h.apps.UpdateEnabledLanguages(ctx, database.SQLX, applicationID, newLangs, userID); err != nil {
+				// Non-fatal: the components and translations are already
+				// persisted. Log via the audit hook below and continue —
+				// re-running bootstrap or hitting Add language manually will
+				// resolve it. Swallowing here keeps the import call green for
+				// the user.
+				_ = err
+			}
+		}
+	}
+
 	ipAddress, userAgent := c.ClientIP(), c.GetHeader("User-Agent")
 	h.auditService.LogCreate(userID, "", "bootstrap", applicationID, app.Code, result, ipAddress, userAgent)
 

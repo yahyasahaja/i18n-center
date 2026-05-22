@@ -99,17 +99,24 @@ export default function ComponentTranslationsPage() {
             <p className="text-gray-500">Component not found</p>
             <Button
               variant="outline"
-              onClick={() => push('/components')}
+              onClick={() => push('/applications')}
               className="mt-4"
             >
               <ArrowLeft className="w-4 h-4 mr-2" />
-              Back to Components
+              Back to Applications
             </Button>
           </div>
         </Card>
       </Layout>
     )
   }
+
+  // Back navigation lands on the parent application's detail page (the
+  // canonical Components view). The old standalone /components page is gone.
+  const backHref =
+    currentApplication?.id ?? currentComponent.application_id
+      ? `/applications/${currentApplication?.id ?? currentComponent.application_id}`
+      : '/applications'
 
   return (
     <Layout>
@@ -118,7 +125,7 @@ export default function ComponentTranslationsPage() {
           <div className="flex items-center space-x-4">
             <Button
               variant="outline"
-              onClick={() => push('/components')}
+              onClick={() => push(backHref)}
             >
               <ArrowLeft className="w-4 h-4 mr-2" />
               Back

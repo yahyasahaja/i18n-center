@@ -13,6 +13,19 @@ import { applicationApi, componentApi } from '@/services/api'
 // Narrow shape — the modal only displays id + code; not worth importing the
 // full Component type from the store.
 type ComponentRow = { id: string; code: string }
+
+// What "pending" means depends on which environment the sidebar is set to:
+//   draft       → rows where stage_completed == 'draft' (ready to promote to staging)
+//   staging     → rows where stage_completed == 'staging' (ready to promote to production)
+//   production  → nothing — already at the terminal stage
+//
+// Keeping the rule data-driven so the modal copy and the filter both read
+// from one source.
+const PROMOTION_TARGET: Record<string, string | null> = {
+  draft: 'staging',
+  staging: 'production',
+  production: null,
+}
 import { useAppContext } from '@/context/AppContext'
 
 interface PendingDeploymentsModalProps {
@@ -52,7 +65,12 @@ export function PendingDeploymentsModal({
   onDeployed,
 }: PendingDeploymentsModalProps) {
   const router = useRouter()
-  const { buildHref } = useAppContext()
+  const { buildHref, stage: sidebarStage } = useAppContext()
+  // What stage do we promote *from*? When the sidebar Environment is `draft`,
+  // the user expects the modal to show "what's still in draft that I could
+  // ship to staging." When the sidebar is `production`, there's nothing to
+  // promote past production, so the modal renders an empty-state.
+  const promotionTargetStage = PROMOTION_TARGET[sidebarStage] // 'staging' | 'production' | null
   const [pending, setPending] = useState<PendingDeploy[]>([])
   const [components, setComponents] = useState<ComponentRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -126,32 +144,66 @@ export function PendingDeploymentsModal({
         </Button>
       }
     >
-      {loading ? (
-        <div className="flex items-center justify-center py-12 text-gray-500">
-          <Loader2 className="w-5 h-5 animate-spin mr-2" />
-          Loading pending deployments…
-        </div>
-      ) : pending.length === 0 ? (
-        <div className="rounded-md border border-dashed border-gray-300 p-8 text-center">
-          <Inbox className="mx-auto h-10 w-10 text-gray-400" />
-          <p className="mt-2 text-sm font-medium text-gray-700">
-            All locales are deployed to production
-          </p>
-          <p className="mt-1 text-xs text-gray-500">
-            Nothing to push forward. New draft saves will show up here once
-            they&apos;re ready to promote.
-          </p>
-        </div>
-      ) : (
+      {(() => {
+        // Filter by sidebar stage: only locales whose stage_completed matches
+        // the current sidebar Environment are eligible for promotion. The
+        // server returns every non-production row; we narrow client-side.
+        const scoped = promotionTargetStage
+          ? pending.filter((p) => p.stage_completed === sidebarStage)
+          : []
+
+        if (loading) {
+          return (
+            <div className="flex items-center justify-center py-12 text-gray-500">
+              <Loader2 className="w-5 h-5 animate-spin mr-2" />
+              Loading pending deployments…
+            </div>
+          )
+        }
+
+        if (!promotionTargetStage) {
+          // Sidebar is on Production. Nothing further to promote.
+          return (
+            <div className="rounded-md border border-dashed border-gray-300 p-8 text-center">
+              <Inbox className="mx-auto h-10 w-10 text-gray-400" />
+              <p className="mt-2 text-sm font-medium text-gray-700">
+                Production is the terminal stage
+              </p>
+              <p className="mt-1 text-xs text-gray-500">
+                Switch the Environment selector in the sidebar to <strong>Draft</strong> or{' '}
+                <strong>Staging</strong> to see what could be promoted next.
+              </p>
+            </div>
+          )
+        }
+
+        if (scoped.length === 0) {
+          return (
+            <div className="rounded-md border border-dashed border-gray-300 p-8 text-center">
+              <Inbox className="mx-auto h-10 w-10 text-gray-400" />
+              <p className="mt-2 text-sm font-medium text-gray-700">
+                No locales sitting at <strong>{sidebarStage}</strong>
+              </p>
+              <p className="mt-1 text-xs text-gray-500">
+                Nothing to promote to {promotionTargetStage}. Saves on the{' '}
+                {sidebarStage} stage will show up here once they&apos;re ready.
+              </p>
+            </div>
+          )
+        }
+
+        return (
         <div className="space-y-4">
           <p className="text-sm text-gray-600">
-            Each row is a locale with translations sitting at draft or staging.
-            Deploy promotes <em>every component</em> for that locale in one
-            atomic transaction — perfect for "ship the {pending[0]?.next_stage}{' '}
-            cut for {pending[0]?.locale.toUpperCase()}" releases.
+            Each row is a locale sitting at <strong>{sidebarStage}</strong>.
+            Deploy promotes <em>every component</em> for that locale to{' '}
+            <strong>{promotionTargetStage}</strong> in one atomic transaction —
+            perfect for "ship the {promotionTargetStage} cut for{' '}
+            {scoped[0]?.locale.toUpperCase()}" releases. Switch the sidebar
+            Environment to see promotions for a different stage.
           </p>
 
-          {pending.map((p) => (
+          {scoped.map((p) => (
             <Card key={p.locale}>
               <div className="flex items-start justify-between gap-3 mb-3">
                 <div>
@@ -220,7 +272,8 @@ export function PendingDeploymentsModal({
             </Card>
           ))}
         </div>
-      )}
+        )
+      })()}
     </Modal>
   )
 }
