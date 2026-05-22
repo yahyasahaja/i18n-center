@@ -37,5 +37,5 @@ func TestResolveOpenAIService(t *testing.T) {
 }
 
 func TestWorkerRepoHelpers_TODO(t *testing.T) {
-	t.Skip("TODO(commit I): rewrite worker tests for sqlx repository layer (claim/process/reset paths)")
+	t.Skip("TODO(post-refactor): rewrite worker tests for sqlx repository layer (claim/process/reset paths)")
 }

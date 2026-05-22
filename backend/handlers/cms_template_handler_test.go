@@ -41,7 +41,7 @@ func setupCmsTemplateHandler(t *testing.T) (*CmsTemplateHandler, sqlmock.Sqlmock
 // sqlx repository conversion. Removed in Commit I along with the rewrites.
 func skipUntilCommitI_template(t *testing.T) {
 	t.Helper()
-	t.Skip("TODO(commit I): rewrite for sqlx repository layer; assertions encode GORM-era SQL")
+	t.Skip("TODO(post-refactor): rewrite for sqlx repository layer; assertions encode GORM-era SQL")
 }
 
 // ── shared fixtures ───────────────────────────────────────────────────────────

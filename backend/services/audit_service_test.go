@@ -69,5 +69,5 @@ func TestCompareValues_EmptyInputs(t *testing.T) {
 // is tracked under Commit I.
 
 func TestAuditServiceDBPaths_TODO(t *testing.T) {
-	t.Skip("TODO(commit I): rewrite audit-service DB tests for sqlx repository layer")
+	t.Skip("TODO(post-refactor): rewrite audit-service DB tests for sqlx repository layer")
 }

@@ -444,9 +444,8 @@ type translateCmsLocalizationBody struct {
 	Stage        string `json:"stage" binding:"required"`
 }
 
-// TranslateLocalization enqueues an async AI translation job. CmsTranslateJob
-// itself still lives on GORM until Commit H — this handler reads the item via
-// the new repo but writes the job row through the legacy ORM.
+// TranslateLocalization enqueues an async AI translation job. Both the item
+// read and the job write go through the sqlx-backed repositories.
 // @Summary      Translate localization
 // @Tags         cms
 // @Accept       json

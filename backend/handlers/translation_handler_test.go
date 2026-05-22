@@ -171,7 +171,7 @@ func TestTranslationHandler_BehavioralBranches(t *testing.T) {
 	})
 
 	t.Run("GetTranslateJobStatus_NotFound", func(t *testing.T) {
-		t.Skip("TODO(commit I): rewrite for sqlx repository layer (translate_jobs is now sqlx-backed; query shape differs)")
+		t.Skip("TODO(post-refactor): rewrite for sqlx repository layer (translate_jobs is now sqlx-backed; query shape differs)")
 	})
 }
 

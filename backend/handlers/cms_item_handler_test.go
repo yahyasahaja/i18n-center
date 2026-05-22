@@ -47,7 +47,7 @@ func cmsTranslateJobCols() []string {
 // NOTE: many test functions in this file assert GORM-era SQL (quoted
 // "cms_items" / "cms_localizations" tables, implicit LIMIT 1 args, BEGIN/
 // COMMIT around single-statement writes). Those tests get t.Skip with a
-// TODO(commit I) at the top of each function. They'll be rewritten as
+// TODO(post-refactor) at the top of each function. They'll be rewritten as
 // targeted repository tests once GORM is fully stripped.
 func setupCmsItemHandler(t *testing.T) (*CmsItemHandler, sqlmock.Sqlmock, *mocks.MockAuditServicer) {
 	xdb, mock := newMockDB(t)
@@ -62,7 +62,7 @@ func setupCmsItemHandler(t *testing.T) (*CmsItemHandler, sqlmock.Sqlmock, *mocks
 // repository conversion. Removed in Commit I along with the rewrites.
 func skipUntilCommitI(t *testing.T) {
 	t.Helper()
-	t.Skip("TODO(commit I): rewrite for sqlx repository layer; assertions encode GORM-era SQL")
+	t.Skip("TODO(post-refactor): rewrite for sqlx repository layer; assertions encode GORM-era SQL")
 }
 
 // allowAnyAudit sets up wildcard expectations so success paths don't panic.

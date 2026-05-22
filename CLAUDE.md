@@ -327,7 +327,10 @@ The data layer is being moved off GORM onto raw SQL. New code MUST follow this p
 
 See `backend/repository/types.go` for the base abstractions and `backend/repository/<resource>/` for example impls.
 
-### Migration status (Commit I landed — GORM stripped)
+### Migration status (Commits C–K all landed — refactor complete)
+The GORM → sqlx + repository-pattern refactor is done. Backend builds clean, all Go tests pass, e2e tests still list correctly against the new endpoints (run them against a live stack to verify behavior).
+
+
 GORM is no longer in `go.mod`. Every persistence path now goes through `repository/...` over sqlx. `models/` is preserved as a passive type package referenced by Swagger annotations; new code should depend on the repository types directly (`application.Application`, `audit.Log`, etc.) — `models.X` is a transitional shim.
 
 | Resource | Repository | Handlers wired |

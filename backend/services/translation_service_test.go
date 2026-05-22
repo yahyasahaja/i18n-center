@@ -123,7 +123,7 @@ func setupTranslationServiceDB(t *testing.T) sqlmock.Sqlmock {
 		_ = sqlDB.Close()
 		// Tolerate unmet expectations — some tests still encode GORM-shaped
 		// SQL expectations that the new sqlx code doesn't emit verbatim. Those
-		// tests are marked `t.Skip("TODO(commit I)...")` individually; this
+		// tests are marked `t.Skip("TODO(post-refactor)...")` individually; this
 		// guard just avoids cascading teardown failures across the package.
 		_ = mock.ExpectationsWereMet()
 	})
@@ -158,11 +158,11 @@ func translationVersionColumns() []string {
 // Skipping these en bloc until Commit I rewrites them against the repository
 // layer (where they belong — service tests should mock the repo, not the DB).
 //
-// TODO(commit I): rewrite as repository-level tests + thin service-level
+// TODO(post-refactor): rewrite as repository-level tests + thin service-level
 // integration tests using a real test Postgres.
 func skipUntilCommitI(t *testing.T) {
 	t.Helper()
-	t.Skip("TODO(commit I): rewrite for sqlx repository layer; tests use GORM-era SQL")
+	t.Skip("TODO(post-refactor): rewrite for sqlx repository layer; tests use GORM-era SQL")
 }
 
 func TestGetMultipleTranslationsByCodes_ApplicationNotFound(t *testing.T) {
