@@ -1,35 +1,67 @@
+// Package jobs hosts the in-process async worker. As of Commit H it's fully
+// off GORM and uses the new sqlx-backed repositories. Three job tables drive
+// it (AddLanguage / Translate / CmsTranslate); each polls with the same
+// claim → process → mark-completed/failed shape.
+//
+// The worker is K8s-safe: every claim goes through
+// repository/job.*Repository.ClaimNext, which is a
+// `UPDATE ... FOR UPDATE SKIP LOCKED ... RETURNING *` so multiple replicas
+// can run side-by-side without claiming the same row twice. Stuck-running
+// rows older than 15 minutes get reset to pending via ResetStuck before each
+// claim attempt — crashed pods don't orphan in-flight work for long.
 package jobs
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/observability"
 	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/application"
+	"github.com/your-org/i18n-center/repository/cms"
+	"github.com/your-org/i18n-center/repository/component"
+	"github.com/your-org/i18n-center/repository/job"
+	"github.com/your-org/i18n-center/repository/localedeploy"
 	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
 
 const (
 	pollInterval         = 5 * time.Second
-	componentConcurrency = 5 // max parallel OpenAI calls within a single AddLanguageJob
+	componentConcurrency = 5                // max parallel OpenAI calls inside a single AddLanguageJob
+	stuckJobAfter        = 15 * time.Minute // rows running longer than this get reset to pending
 )
 
-// Run starts the in-process worker loop. Claims both AddLanguageJob and TranslateJob records
-// from DB (no in-memory state); safe for multiple K8s replicas via FOR UPDATE SKIP LOCKED.
+// Package-level repository handles — instantiated once. The repos are
+// stateless (no per-instance config) so sharing is cheap and avoids
+// reallocating closures on every poll tick.
+var (
+	addLangRepo      = job.NewAddLanguageRepository()
+	translateRepo    = job.NewTranslateRepository()
+	cmsTranslateRepo = job.NewCmsTranslateRepository()
+	deployRepo       = localedeploy.New()
+	appRepo          = application.New()
+	componentRepo    = component.New()
+	templateRepo     = cms.NewTemplateRepository()
+	itemRepo         = cms.NewItemRepository(templateRepo)
+	cmsLocRepo       = cms.NewLocalizationRepository()
+)
+
+// Run starts the in-process worker loop. Claims jobs from all three job tables
+// (AddLanguage / Translate / CmsTranslate) on each tick. Safe for multiple K8s
+// replicas via FOR UPDATE SKIP LOCKED in each ClaimNext.
 func Run(ctx context.Context) {
 	instanceID := os.Getenv("HOSTNAME")
 	if instanceID == "" {
@@ -49,10 +81,9 @@ func Run(ctx context.Context) {
 		default:
 		}
 
-		// Try to claim and process one job of any type per tick
 		processed := false
 
-		if addJob, err := claimAddLanguageJob(instanceID); err != nil {
+		if addJob, err := claimAddLanguageJob(ctx, instanceID); err != nil {
 			observability.Logger.Warn("Worker claim error (AddLanguageJob)", zap.Error(err))
 		} else if addJob != nil {
 			processAddLanguageJob(ctx, addJob, translationService)
@@ -60,7 +91,7 @@ func Run(ctx context.Context) {
 		}
 
 		if !processed {
-			if trJob, err := claimTranslateJob(instanceID); err != nil {
+			if trJob, err := claimTranslateJob(ctx, instanceID); err != nil {
 				observability.Logger.Warn("Worker claim error (TranslateJob)", zap.Error(err))
 			} else if trJob != nil {
 				processTranslateJob(ctx, trJob, translationService)
@@ -69,7 +100,7 @@ func Run(ctx context.Context) {
 		}
 
 		if !processed {
-			if cmsJob, err := claimCmsTranslateJob(instanceID); err != nil {
+			if cmsJob, err := claimCmsTranslateJob(ctx, instanceID); err != nil {
 				observability.Logger.Warn("Worker claim error (CmsTranslateJob)", zap.Error(err))
 			} else if cmsJob != nil {
 				processCmsTranslateJob(ctx, cmsJob)
@@ -77,7 +108,6 @@ func Run(ctx context.Context) {
 			}
 		}
 
-		// Poll interval
 		select {
 		case <-ctx.Done():
 			return
@@ -88,80 +118,53 @@ func Run(ctx context.Context) {
 
 // ─── AddLanguageJob ──────────────────────────────────────────────────────────
 
-// claimAddLanguageJob atomically claims one pending AddLanguageJob.
-func claimAddLanguageJob(instanceID string) (*models.AddLanguageJob, error) {
-	db := silentDB()
-
-	// Reset stuck running jobs
-	_ = db.Exec(`
-		UPDATE add_language_jobs
-		SET status = $1, claimed_by = '', updated_at = NOW()
-		WHERE status = $2 AND updated_at < NOW() - INTERVAL '15 minutes'
-	`, models.JobStatusPending, models.JobStatusRunning)
-
-	var idRow struct{ ID uuid.UUID }
-	err := db.Raw(`
-		UPDATE add_language_jobs
-		SET status = $1, claimed_by = $2, updated_at = NOW()
-		WHERE id = (
-			SELECT id FROM add_language_jobs
-			WHERE status = $3
-			ORDER BY created_at ASC
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
-		)
-		RETURNING id
-	`, models.JobStatusRunning, instanceID, models.JobStatusPending).Scan(&idRow).Error
-	if err != nil {
-		return nil, err
+func claimAddLanguageJob(ctx context.Context, instanceID string) (*job.AddLanguageJob, error) {
+	if err := addLangRepo.ResetStuck(ctx, database.SQLX, stuckJobAfter); err != nil {
+		// Don't fail the whole tick — the claim below can still try without reset.
+		observability.Logger.Warn("ResetStuck failed (AddLanguageJob)", zap.Error(err))
 	}
-	if idRow.ID == uuid.Nil {
-		return nil, nil
-	}
-	var job models.AddLanguageJob
-	if err := db.First(&job, "id = ?", idRow.ID).Error; err != nil {
-		return nil, err
-	}
-	return &job, nil
+	return addLangRepo.ClaimNext(ctx, database.SQLX, instanceID)
 }
 
-// processAddLanguageJob runs the add-language auto-translate logic with a goroutine pool
-// (componentConcurrency parallel OpenAI calls). All state in DB; safe for K8s.
-func processAddLanguageJob(ctx context.Context, job *models.AddLanguageJob, translationService *services.TranslationService) {
-	appIDStr := job.ApplicationID.String()
+// processAddLanguageJob runs the add-language auto-translate logic with a
+// goroutine pool (componentConcurrency parallel OpenAI calls). All state in
+// DB; safe for K8s.
+func processAddLanguageJob(ctx context.Context, j *job.AddLanguageJob, translationService *services.TranslationService) {
+	appIDStr := j.ApplicationID.String()
 	defer func() {
 		if r := recover(); r != nil {
-			observability.Logger.Error("Worker panic (AddLanguageJob)", zap.Any("panic", r), zap.String("job_id", job.ID.String()))
-			_ = markAddJobFailed(job.ID, "Worker panic", fmt.Sprintf("%v", r))
+			observability.Logger.Error("Worker panic (AddLanguageJob)", zap.Any("panic", r), zap.String("job_id", j.ID.String()))
+			_ = addLangRepo.MarkFailed(context.Background(), database.SQLX, j.ID, "Worker panic", fmt.Sprintf("%v", r))
 		}
 	}()
 
-	var application models.Application
-	if err := database.DB.First(&application, "id = ?", job.ApplicationID).Error; err != nil {
-		_ = markAddJobFailed(job.ID, "Application not found", err.Error())
+	app, err := appRepo.GetByID(ctx, database.SQLX, j.ApplicationID)
+	if err != nil {
+		_ = addLangRepo.MarkFailed(ctx, database.SQLX, j.ID, "Application not found", err.Error())
 		return
 	}
 
-	openAIService := resolveOpenAIService(application.OpenAIKey)
+	openAIService := resolveOpenAIService(app.OpenAIKey)
 	if openAIService == nil {
-		_ = markAddJobFailed(job.ID, "OpenAI API key not configured", "Configure in Application settings")
+		_ = addLangRepo.MarkFailed(ctx, database.SQLX, j.ID, "OpenAI API key not configured", "Configure in Application settings")
 		return
 	}
 
-	var components []models.Component
-	if err := database.DB.Where("application_id = ?", job.ApplicationID).Find(&components).Error; err != nil {
-		_ = markAddJobFailed(job.ID, "Failed to load components", err.Error())
+	components, _, err := componentRepo.List(ctx, database.SQLX, component.ListFilter{
+		ApplicationID: j.ApplicationID,
+		// No limit — fan-out over every component in the app.
+	})
+	if err != nil {
+		_ = addLangRepo.MarkFailed(ctx, database.SQLX, j.ID, "Failed to load components", err.Error())
 		return
 	}
 
-	// Record total up-front so the frontend can show "X / N" immediately.
-	_ = database.DB.Model(&models.AddLanguageJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
-		"total_components":     len(components),
-		"completed_components": 0,
-		"updated_at":           time.Now(),
-	}).Error
+	// Record the total up-front so the frontend can show "X / N" immediately.
+	if err := addLangRepo.UpdateTotals(ctx, database.SQLX, j.ID, len(components), 0); err != nil {
+		observability.Logger.Warn("UpdateTotals failed", zap.Error(err))
+	}
 
-	// Goroutine pool — semaphore pattern
+	// Goroutine pool — semaphore pattern.
 	type result struct {
 		versionID uuid.UUID
 		err       error
@@ -171,57 +174,48 @@ func processAddLanguageJob(ctx context.Context, job *models.AddLanguageJob, tran
 	sem := make(chan struct{}, componentConcurrency)
 	results := make(chan result, len(components))
 	var wg sync.WaitGroup
+	var completedCount atomic.Int64
 
-	for _, comp := range components {
+	for _, c := range components {
 		wg.Add(1)
-		comp := comp      // capture loop variable
+		c := c
 		sem <- struct{}{} // acquire slot (blocks when all workers are busy)
 		go func() {
 			defer wg.Done()
-			defer func() { <-sem }() // release slot
+			defer func() { <-sem }()
 
-			// Bail early if context was cancelled while we were waiting for a slot
+			// Bail early if context was cancelled while we were waiting for a slot.
 			if err := ctx.Err(); err != nil {
-				results <- result{err: fmt.Errorf("component %s: cancelled", comp.Code), compCode: comp.Code}
+				results <- result{err: fmt.Errorf("component %s: cancelled", c.Code), compCode: c.Code}
 				return
 			}
 
-			sourceTranslation, err := translationService.GetTranslation(comp.ID, comp.DefaultLocale, translation.StageDraft)
+			sourceTranslation, err := translationService.GetTranslation(c.ID, c.DefaultLocale, translation.StageDraft)
 			if err != nil {
-				results <- result{err: fmt.Errorf("component %s: no draft translation for default locale %s", comp.Code, comp.DefaultLocale), compCode: comp.Code}
-				// Still count as "processed" so the progress bar advances even on per-component errors.
-				_ = database.DB.Exec(
-					"UPDATE add_language_jobs SET completed_components = completed_components + 1, updated_at = NOW() WHERE id = ?",
-					job.ID,
-				).Error
+				results <- result{err: fmt.Errorf("component %s: no draft translation for default locale %s", c.Code, c.DefaultLocale), compCode: c.Code}
+				_ = addLangRepo.IncrementCompleted(ctx, database.SQLX, j.ID)
+				completedCount.Add(1)
 				return
 			}
 
-			// Pass ctx so the HTTP call to OpenAI can be cancelled on SIGTERM
-			translatedData, err := openAIService.TranslateJSON(ctx, sourceTranslation.Data, jsonbToStringMap(comp.KeyContexts), comp.DefaultLocale, job.Locale)
+			translatedData, err := openAIService.TranslateJSON(ctx, sourceTranslation.Data, jsonbToStringMap(c.KeyContexts), c.DefaultLocale, j.Locale)
 			if err != nil {
-				results <- result{err: fmt.Errorf("component %s: %w", comp.Code, err), compCode: comp.Code}
-				_ = database.DB.Exec(
-					"UPDATE add_language_jobs SET completed_components = completed_components + 1, updated_at = NOW() WHERE id = ?",
-					job.ID,
-				).Error
+				results <- result{err: fmt.Errorf("component %s: %w", c.Code, err), compCode: c.Code}
+				_ = addLangRepo.IncrementCompleted(ctx, database.SQLX, j.ID)
+				completedCount.Add(1)
 				return
 			}
 
-			tr, err := translationService.SaveTranslation(comp.ID, job.Locale, translation.StageDraft, translatedData, job.CreatedBy)
+			tr, err := translationService.SaveTranslation(c.ID, j.Locale, translation.StageDraft, translatedData, j.CreatedBy)
 			if err != nil {
-				results <- result{err: fmt.Errorf("component %s: %w", comp.Code, err), compCode: comp.Code}
-				_ = database.DB.Exec(
-					"UPDATE add_language_jobs SET completed_components = completed_components + 1, updated_at = NOW() WHERE id = ?",
-					job.ID,
-				).Error
+				results <- result{err: fmt.Errorf("component %s: %w", c.Code, err), compCode: c.Code}
+				_ = addLangRepo.IncrementCompleted(ctx, database.SQLX, j.ID)
+				completedCount.Add(1)
 				return
 			}
 
-			_ = database.DB.Exec(
-				"UPDATE add_language_jobs SET completed_components = completed_components + 1, updated_at = NOW() WHERE id = ?",
-				job.ID,
-			).Error
+			_ = addLangRepo.IncrementCompleted(ctx, database.SQLX, j.ID)
+			completedCount.Add(1)
 			results <- result{versionID: tr.ID}
 		}()
 	}
@@ -229,12 +223,10 @@ func processAddLanguageJob(ctx context.Context, job *models.AddLanguageJob, tran
 	wg.Wait()
 	close(results)
 
-	// Check for context cancellation after draining goroutines
+	// Honour cancellation after draining goroutines.
 	select {
 	case <-ctx.Done():
-		// All goroutines finished — results are in the channel. We'll roll back everything below.
-		_ = markAddJobFailed(job.ID, "Worker cancelled", "Context cancelled")
-		// Drain results to collect any IDs that were saved before cancellation
+		_ = addLangRepo.MarkFailed(context.Background(), database.SQLX, j.ID, "Worker cancelled", "Context cancelled")
 		for r := range results {
 			if r.versionID != uuid.Nil {
 				_ = translationService.DeleteTranslationVersionByID(r.versionID)
@@ -244,7 +236,8 @@ func processAddLanguageJob(ctx context.Context, job *models.AddLanguageJob, tran
 	default:
 	}
 
-	// Collect ALL results before deciding — ensures full rollback even when failures are interleaved
+	// Collect all results before deciding — ensures full rollback even when
+	// failures are interleaved with successes.
 	var createdIDs []uuid.UUID
 	var firstErr error
 	for r := range results {
@@ -259,217 +252,165 @@ func processAddLanguageJob(ctx context.Context, job *models.AddLanguageJob, tran
 		for _, vid := range createdIDs {
 			_ = translationService.DeleteTranslationVersionByID(vid)
 		}
-		_ = markAddJobFailed(job.ID, "Translation process failed (rolled back)", firstErr.Error())
+		_ = addLangRepo.MarkFailed(ctx, database.SQLX, j.ID, "Translation process failed (rolled back)", firstErr.Error())
 		return
 	}
 
-	// Create/reset deploy tracking.
-	// Two cases to handle:
-	//   1. Locale was deleted while job was running → locale no longer in enabled_languages;
-	//      skip creating the deploy record to avoid ghost entries in pending deploys.
-	//   2. Locale was previously deployed to production and is being re-translated;
-	//      the record already exists so Create would fail — upsert back to 'draft' instead.
-	var currentApp models.Application
+	// Create/reset deploy tracking. Two cases to handle:
+	//   1. Locale was deleted while job was running → locale no longer in
+	//      enabled_languages; skip creating the deploy record so we don't
+	//      leave a ghost entry in pending deploys.
+	//   2. Locale was previously deployed to production and is being
+	//      re-translated; upsert back to 'draft' instead of creating.
 	localeStillEnabled := false
-	if err := database.DB.Select("enabled_languages").First(&currentApp, job.ApplicationID).Error; err == nil {
+	if currentApp, err := appRepo.GetByID(ctx, database.SQLX, j.ApplicationID); err == nil {
 		for _, l := range currentApp.EnabledLanguages {
-			if strings.EqualFold(l, job.Locale) {
+			if strings.EqualFold(l, j.Locale) {
 				localeStillEnabled = true
 				break
 			}
 		}
 	}
 	if localeStillEnabled {
-		var existingDeploy models.ApplicationLocaleDeploy
-		err := database.DB.Where("application_id = ? AND locale = ?", job.ApplicationID, job.Locale).First(&existingDeploy).Error
-		if err != nil {
-			// No record yet — create fresh
-			newDeploy := models.ApplicationLocaleDeploy{
-				ApplicationID:  job.ApplicationID,
-				Locale:         job.Locale,
-				StageCompleted: "draft",
-			}
-			if err := database.DB.Create(&newDeploy).Error; err != nil {
-				observability.Logger.Warn("Failed to create ApplicationLocaleDeploy", zap.Error(err))
-			}
-		} else {
-			// Record exists (e.g. locale was re-translated after production) — reset to draft
-			if err := database.DB.Model(&existingDeploy).Update("stage_completed", "draft").Error; err != nil {
-				observability.Logger.Warn("Failed to reset ApplicationLocaleDeploy to draft", zap.Error(err))
-			}
+		deploy := &localedeploy.Deploy{
+			ApplicationID:  j.ApplicationID,
+			Locale:         j.Locale,
+			StageCompleted: localedeploy.StageDraft,
+		}
+		if err := deployRepo.Upsert(ctx, database.SQLX, deploy); err != nil {
+			observability.Logger.Warn("Failed to upsert ApplicationLocaleDeploy", zap.Error(err))
 		}
 	} else {
 		observability.Logger.Info("Skipping deploy record: locale was removed while job ran",
-			zap.String("job_id", job.ID.String()),
-			zap.String("locale", job.Locale),
+			zap.String("job_id", j.ID.String()),
+			zap.String("locale", j.Locale),
 		)
 	}
 
 	cache.Delete(cache.ApplicationKey(appIDStr))
-	_ = database.DB.Model(&models.AddLanguageJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
-		"status":     models.JobStatusCompleted,
-		"updated_at": time.Now(),
-	}).Error
+	if err := addLangRepo.MarkCompleted(ctx, database.SQLX, j.ID); err != nil {
+		observability.Logger.Warn("MarkCompleted failed (AddLanguageJob)", zap.Error(err))
+	}
 	observability.Logger.Info("AddLanguageJob completed",
-		zap.String("job_id", job.ID.String()),
-		zap.String("locale", job.Locale),
+		zap.String("job_id", j.ID.String()),
+		zap.String("locale", j.Locale),
 		zap.Int("components", len(components)),
+		zap.Int64("processed", completedCount.Load()),
 	)
 }
 
-func markAddJobFailed(jobID uuid.UUID, msg, detail string) error {
-	return database.DB.Model(&models.AddLanguageJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
-		"status":        models.JobStatusFailed,
-		"error_message": msg,
-		"error_detail":  detail,
-		"updated_at":    time.Now(),
-	}).Error
-}
-
-// GetJobStatus returns AddLanguageJob by ID and application ID (for auth scope). Used by API handler.
-func GetJobStatus(applicationID, jobID uuid.UUID) (*models.AddLanguageJob, error) {
-	var job models.AddLanguageJob
-	err := database.DB.Where("id = ? AND application_id = ?", jobID, applicationID).First(&job).Error
+// GetJobStatus returns AddLanguageJob by ID and application ID (for auth scope).
+// Used by the API handler. Returns (nil, nil) for not-found so the handler can
+// 404 without translating sentinel errors.
+func GetJobStatus(applicationID, jobID uuid.UUID) (*job.AddLanguageJob, error) {
+	ctx := context.Background()
+	j, err := addLangRepo.GetByIDForApp(ctx, database.SQLX, jobID, applicationID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, repository.ErrNotFound) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return &job, nil
+	return j, nil
 }
 
 // ─── TranslateJob ─────────────────────────────────────────────────────────────
 
-// claimTranslateJob atomically claims one pending TranslateJob.
-func claimTranslateJob(instanceID string) (*models.TranslateJob, error) {
-	db := silentDB()
-
-	// Reset stuck running jobs
-	_ = db.Exec(`
-		UPDATE translate_jobs
-		SET status = $1, claimed_by = '', updated_at = NOW()
-		WHERE status = $2 AND updated_at < NOW() - INTERVAL '15 minutes'
-	`, models.JobStatusPending, models.JobStatusRunning)
-
-	var idRow struct{ ID uuid.UUID }
-	err := db.Raw(`
-		UPDATE translate_jobs
-		SET status = $1, claimed_by = $2, updated_at = NOW()
-		WHERE id = (
-			SELECT id FROM translate_jobs
-			WHERE status = $3
-			ORDER BY created_at ASC
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
-		)
-		RETURNING id
-	`, models.JobStatusRunning, instanceID, models.JobStatusPending).Scan(&idRow).Error
-	if err != nil {
-		return nil, err
+func claimTranslateJob(ctx context.Context, instanceID string) (*job.TranslateJob, error) {
+	if err := translateRepo.ResetStuck(ctx, database.SQLX, stuckJobAfter); err != nil {
+		observability.Logger.Warn("ResetStuck failed (TranslateJob)", zap.Error(err))
 	}
-	if idRow.ID == uuid.Nil {
-		return nil, nil
-	}
-	var job models.TranslateJob
-	if err := db.First(&job, "id = ?", idRow.ID).Error; err != nil {
-		return nil, err
-	}
-	return &job, nil
+	return translateRepo.ClaimNext(ctx, database.SQLX, instanceID)
 }
 
 // processTranslateJob handles both auto_translate and backfill job types.
-// Each TranslateJob carries exactly one target locale (backfill is fanned out by the handler).
+// Each TranslateJob carries exactly one target locale (backfill is fanned
+// out by the handler into N single-target jobs).
 //
 // Incremental translation strategy:
-//   - If the existing target translation has a source snapshot (SourceData), we diff
-//     currentSource vs snapshot to find only the changed/new keys, send those to AI,
-//     then merge back into the existing target and prune removed keys — no AI call at all
-//     if nothing changed.
-//   - If there is no snapshot (first translate, or target was manually edited), the full
-//     source is translated as before.
-func processTranslateJob(ctx context.Context, job *models.TranslateJob, translationService *services.TranslationService) {
+//   - If the existing target translation has a source snapshot (SourceData),
+//     we diff currentSource vs snapshot to find only the changed/new keys,
+//     send those to AI, then merge back into the existing target and prune
+//     removed keys. No AI call at all if nothing changed.
+//   - If there is no snapshot (first translate, or target was manually
+//     edited), the full source is translated as before.
+func processTranslateJob(ctx context.Context, j *job.TranslateJob, translationService *services.TranslationService) {
 	defer func() {
 		if r := recover(); r != nil {
-			observability.Logger.Error("Worker panic (TranslateJob)", zap.Any("panic", r), zap.String("job_id", job.ID.String()))
-			_ = markTranslateJobFailed(job.ID, "Worker panic", fmt.Sprintf("%v", r))
+			observability.Logger.Error("Worker panic (TranslateJob)", zap.Any("panic", r), zap.String("job_id", j.ID.String()))
+			_ = translateRepo.MarkFailed(context.Background(), database.SQLX, j.ID, "Worker panic", fmt.Sprintf("%v", r))
 		}
 	}()
 
-	var application models.Application
-	if err := database.DB.First(&application, "id = ?", job.ApplicationID).Error; err != nil {
-		_ = markTranslateJobFailed(job.ID, "Application not found", err.Error())
+	app, err := appRepo.GetByID(ctx, database.SQLX, j.ApplicationID)
+	if err != nil {
+		_ = translateRepo.MarkFailed(ctx, database.SQLX, j.ID, "Application not found", err.Error())
 		return
 	}
 
-	openAIService := resolveOpenAIService(application.OpenAIKey)
+	openAIService := resolveOpenAIService(app.OpenAIKey)
 	if openAIService == nil {
-		_ = markTranslateJobFailed(job.ID, "OpenAI API key not configured", "Configure in Application settings")
+		_ = translateRepo.MarkFailed(ctx, database.SQLX, j.ID, "OpenAI API key not configured", "Configure in Application settings")
 		return
 	}
 
-	if len(job.TargetLocales) == 0 {
-		_ = markTranslateJobFailed(job.ID, "No target locales specified", "")
+	if len(j.TargetLocales) == 0 {
+		_ = translateRepo.MarkFailed(ctx, database.SQLX, j.ID, "No target locales specified", "")
 		return
 	}
-	targetLocale := job.TargetLocales[0]
+	targetLocale := j.TargetLocales[0]
 
 	select {
 	case <-ctx.Done():
-		_ = markTranslateJobFailed(job.ID, "Worker cancelled", "Context cancelled")
+		_ = translateRepo.MarkFailed(context.Background(), database.SQLX, j.ID, "Worker cancelled", "Context cancelled")
 		return
 	default:
 	}
 
-	sourceTranslation, err := translationService.GetTranslation(job.ComponentID, job.SourceLocale, translation.StageDraft)
+	sourceTranslation, err := translationService.GetTranslation(j.ComponentID, j.SourceLocale, translation.StageDraft)
 	if err != nil {
-		_ = markTranslateJobFailed(job.ID, "Source translation not found",
-			fmt.Sprintf("component %s locale %s: %v", job.ComponentID, job.SourceLocale, err))
+		_ = translateRepo.MarkFailed(ctx, database.SQLX, j.ID, "Source translation not found",
+			fmt.Sprintf("component %s locale %s: %v", j.ComponentID, j.SourceLocale, err))
 		return
 	}
 
-	// Load component KeyContexts to inject as AI hints. Missing record is fine —
-	// we just translate without hints.
-	var componentForCtx models.Component
-	_ = database.DB.Select("id, key_contexts").First(&componentForCtx, "id = ?", job.ComponentID).Error
-	keyContexts := jsonbToStringMap(componentForCtx.KeyContexts)
+	// Load component KeyContexts to inject as AI hints. Missing record is
+	// fine — we just translate without hints.
+	var keyContexts map[string]string
+	if comp, err := componentRepo.GetByID(ctx, database.SQLX, j.ComponentID); err == nil {
+		keyContexts = jsonbToStringMap(comp.KeyContexts)
+	}
 
 	currentSource := map[string]interface{}(sourceTranslation.Data)
 	var finalData map[string]interface{}
 
 	// Try to load the existing target translation and its stored source snapshot.
-	existingTarget, _ := translationService.GetTranslation(job.ComponentID, targetLocale, translation.StageDraft)
+	existingTarget, _ := translationService.GetTranslation(j.ComponentID, targetLocale, translation.StageDraft)
 
 	if existingTarget != nil && len(existingTarget.SourceData) > 0 {
-		// ── Incremental path ────────────────────────────────────────────────────
+		// ── Incremental path ────────────────────────────────────────────────
 		prevSource := map[string]interface{}(existingTarget.SourceData)
-
 		changed := changedOrNewKeys(currentSource, prevSource)
 		hasRemovals := hasRemovedKeys(prevSource, currentSource)
 
 		if len(changed) == 0 && !hasRemovals {
-			// Source identical to snapshot — nothing to do.
 			observability.Logger.Info("TranslateJob skipped (source unchanged)",
-				zap.String("job_id", job.ID.String()),
+				zap.String("job_id", j.ID.String()),
 				zap.String("target_locale", targetLocale),
 			)
-			_ = markTranslateJobCompleted(job.ID)
+			_ = translateRepo.MarkCompleted(ctx, database.SQLX, j.ID)
 			return
 		}
 
 		existingTargetData := map[string]interface{}(existingTarget.Data)
-
 		if len(changed) > 0 {
-			// Send only the changed/new keys to AI.
-			translatedPartial, err := openAIService.TranslateJSON(ctx, changed, keyContexts, job.SourceLocale, targetLocale)
+			translatedPartial, err := openAIService.TranslateJSON(ctx, changed, keyContexts, j.SourceLocale, targetLocale)
 			if err != nil {
-				_ = markTranslateJobFailed(job.ID, "Translation failed", err.Error())
+				_ = translateRepo.MarkFailed(ctx, database.SQLX, j.ID, "Translation failed", err.Error())
 				return
 			}
-			// Overlay newly translated keys onto the existing target.
 			finalData = mergeTranslations(existingTargetData, translatedPartial)
 		} else {
-			// Only key removals — no AI needed.
 			finalData = existingTargetData
 		}
 
@@ -477,59 +418,134 @@ func processTranslateJob(ctx context.Context, job *models.TranslateJob, translat
 		finalData = pruneToShape(finalData, currentSource)
 
 		observability.Logger.Info("TranslateJob incremental",
-			zap.String("job_id", job.ID.String()),
+			zap.String("job_id", j.ID.String()),
 			zap.String("target_locale", targetLocale),
 			zap.Int("changed_keys", countLeaves(changed)),
 			zap.Bool("had_removals", hasRemovals),
 		)
 	} else {
-		// ── Full-translate path (first run or no snapshot) ───────────────────
-		finalData, err = openAIService.TranslateJSON(ctx, currentSource, keyContexts, job.SourceLocale, targetLocale)
+		// ── Full-translate path (first run or no snapshot) ─────────────────
+		finalData, err = openAIService.TranslateJSON(ctx, currentSource, keyContexts, j.SourceLocale, targetLocale)
 		if err != nil {
-			_ = markTranslateJobFailed(job.ID, "Translation failed", err.Error())
+			_ = translateRepo.MarkFailed(ctx, database.SQLX, j.ID, "Translation failed", err.Error())
 			return
 		}
 		observability.Logger.Info("TranslateJob full",
-			zap.String("job_id", job.ID.String()),
+			zap.String("job_id", j.ID.String()),
 			zap.String("target_locale", targetLocale),
 		)
 	}
 
 	// Save with source snapshot so future runs can diff against it.
 	if _, err := translationService.SaveTranslationWithSource(
-		job.ComponentID, targetLocale, translation.StageDraft,
+		j.ComponentID, targetLocale, translation.StageDraft,
 		repository.JSONB(finalData),
-		job.SourceLocale, repository.JSONB(currentSource),
-		job.CreatedBy,
+		j.SourceLocale, repository.JSONB(currentSource),
+		j.CreatedBy,
 	); err != nil {
-		_ = markTranslateJobFailed(job.ID, "Failed to save translation", err.Error())
+		_ = translateRepo.MarkFailed(ctx, database.SQLX, j.ID, "Failed to save translation", err.Error())
 		return
 	}
 
-	cache.Delete(cache.ApplicationKey(job.ApplicationID.String()))
-	_ = markTranslateJobCompleted(job.ID)
+	cache.Delete(cache.ApplicationKey(j.ApplicationID.String()))
+	if err := translateRepo.MarkCompleted(ctx, database.SQLX, j.ID); err != nil {
+		observability.Logger.Warn("MarkCompleted failed (TranslateJob)", zap.Error(err))
+	}
 	observability.Logger.Info("TranslateJob completed",
-		zap.String("job_id", job.ID.String()),
-		zap.String("component_id", job.ComponentID.String()),
+		zap.String("job_id", j.ID.String()),
+		zap.String("component_id", j.ComponentID.String()),
 		zap.String("target_locale", targetLocale),
-		zap.String("job_type", job.JobType),
+		zap.String("job_type", j.JobType),
 	)
 }
 
-func markTranslateJobFailed(jobID uuid.UUID, msg, detail string) error {
-	return database.DB.Model(&models.TranslateJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
-		"status":        models.JobStatusFailed,
-		"error_message": msg,
-		"error_detail":  detail,
-		"updated_at":    time.Now(),
-	}).Error
+// ─── CmsTranslateJob ─────────────────────────────────────────────────────────
+
+func claimCmsTranslateJob(ctx context.Context, instanceID string) (*job.CmsTranslateJob, error) {
+	if err := cmsTranslateRepo.ResetStuck(ctx, database.SQLX, stuckJobAfter); err != nil {
+		observability.Logger.Warn("ResetStuck failed (CmsTranslateJob)", zap.Error(err))
+	}
+	return cmsTranslateRepo.ClaimNext(ctx, database.SQLX, instanceID)
 }
 
-func markTranslateJobCompleted(jobID uuid.UUID) error {
-	return database.DB.Model(&models.TranslateJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
-		"status":     models.JobStatusCompleted,
-		"updated_at": time.Now(),
-	}).Error
+func processCmsTranslateJob(ctx context.Context, j *job.CmsTranslateJob) {
+	defer func() {
+		if r := recover(); r != nil {
+			observability.Logger.Error("Worker panic (CmsTranslateJob)", zap.Any("panic", r), zap.String("job_id", j.ID.String()))
+			_ = cmsTranslateRepo.MarkFailed(context.Background(), database.SQLX, j.ID, "Worker panic", fmt.Sprintf("%v", r))
+		}
+	}()
+
+	app, err := appRepo.GetByID(ctx, database.SQLX, j.ApplicationID)
+	if err != nil {
+		_ = cmsTranslateRepo.MarkFailed(ctx, database.SQLX, j.ID, "Application not found", err.Error())
+		return
+	}
+
+	openAIService := resolveOpenAIService(app.OpenAIKey)
+	if openAIService == nil {
+		_ = cmsTranslateRepo.MarkFailed(ctx, database.SQLX, j.ID, "OpenAI API key not configured", "Configure in Application settings")
+		return
+	}
+
+	// CMS item with template + fields preloaded.
+	item, err := itemRepo.GetByIDWithTemplate(ctx, database.SQLX, j.CmsItemID)
+	if err != nil {
+		_ = cmsTranslateRepo.MarkFailed(ctx, database.SQLX, j.ID, "CMS item not found", err.Error())
+		return
+	}
+
+	sourceLoc, err := cmsLocRepo.GetLatest(ctx, database.SQLX, j.CmsItemID, j.SourceLocale, j.Stage)
+	if err != nil {
+		_ = cmsTranslateRepo.MarkFailed(ctx, database.SQLX, j.ID, "Source localization not found",
+			fmt.Sprintf("locale %s stage %s: %v", j.SourceLocale, j.Stage, err))
+		return
+	}
+
+	fieldTypes := make(map[string]string, len(item.Template.Fields))
+	for _, f := range item.Template.Fields {
+		fieldTypes[f.Key] = f.ValueType
+	}
+
+	translatedData, err := openAIService.TranslateCMSFields(
+		ctx,
+		map[string]interface{}(sourceLoc.Data),
+		fieldTypes,
+		j.SourceLocale,
+		j.TargetLocale,
+	)
+	if err != nil {
+		_ = cmsTranslateRepo.MarkFailed(ctx, database.SQLX, j.ID, "Translation failed", err.Error())
+		return
+	}
+
+	// Insert next version with race-safe retry. SaveLocalizationVersion handles
+	// the partial unique index collision (two workers picking the same version
+	// number under concurrency) and retries up to 5 times before erroring out.
+	newLoc := &cms.Localization{
+		CmsItemID:    j.CmsItemID,
+		Locale:       j.TargetLocale,
+		Stage:        j.Stage,
+		Data:         repository.JSONB(translatedData),
+		SourceLocale: j.SourceLocale,
+		IsActive:     true,
+		CreatedBy:    j.CreatedBy,
+		UpdatedBy:    j.CreatedBy,
+	}
+	if err := cmsLocRepo.SaveLocalizationVersion(ctx, database.SQLX, newLoc); err != nil {
+		_ = cmsTranslateRepo.MarkFailed(ctx, database.SQLX, j.ID, "Failed to save localization", err.Error())
+		return
+	}
+
+	if err := cmsTranslateRepo.MarkCompleted(ctx, database.SQLX, j.ID); err != nil {
+		observability.Logger.Warn("MarkCompleted failed (CmsTranslateJob)", zap.Error(err))
+	}
+
+	observability.Logger.Info("CmsTranslateJob completed",
+		zap.String("job_id", j.ID.String()),
+		zap.String("cms_item_id", j.CmsItemID.String()),
+		zap.String("target_locale", j.TargetLocale),
+	)
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -542,22 +558,18 @@ func changedOrNewKeys(current, prev map[string]interface{}) map[string]interface
 	for k, cv := range current {
 		pv, exists := prev[k]
 		if !exists {
-			// New key — include the full subtree.
 			changed[k] = cv
 			continue
 		}
 		cvMap, cvIsMap := cv.(map[string]interface{})
 		pvMap, pvIsMap := pv.(map[string]interface{})
 		if cvIsMap && pvIsMap {
-			// Both nested objects — recurse and bubble up only the changed leaves.
 			nested := changedOrNewKeys(cvMap, pvMap)
 			if len(nested) > 0 {
 				changed[k] = nested
 			}
 			continue
 		}
-		// Type mismatch or scalar — compare by JSON representation to avoid
-		// float64/int ambiguity introduced by json.Unmarshal.
 		if !jsonEqual(cv, pv) {
 			changed[k] = cv
 		}
@@ -624,9 +636,10 @@ func mergeTranslations(base, additions map[string]interface{}) map[string]interf
 	return result
 }
 
-// jsonbToStringMap flattens a JSONB into a map[string]string, dropping non-string
-// values. Used to feed component KeyContexts into the OpenAI service.
-func jsonbToStringMap(j models.JSONB) map[string]string {
+// jsonbToStringMap flattens a repository.JSONB into a map[string]string,
+// dropping non-string values. Used to feed component KeyContexts into the
+// OpenAI service.
+func jsonbToStringMap(j repository.JSONB) map[string]string {
 	if len(j) == 0 {
 		return nil
 	}
@@ -667,138 +680,8 @@ func countLeaves(m map[string]interface{}) int {
 	return n
 }
 
-// ─── CmsTranslateJob ─────────────────────────────────────────────────────────
-
-func claimCmsTranslateJob(instanceID string) (*models.CmsTranslateJob, error) {
-	db := silentDB()
-
-	_ = db.Exec(`
-		UPDATE cms_translate_jobs
-		SET status = $1, claimed_by = '', updated_at = NOW()
-		WHERE status = $2 AND updated_at < NOW() - INTERVAL '15 minutes'
-	`, models.JobStatusPending, models.JobStatusRunning)
-
-	var idRow struct{ ID uuid.UUID }
-	err := db.Raw(`
-		UPDATE cms_translate_jobs
-		SET status = $1, claimed_by = $2, updated_at = NOW()
-		WHERE id = (
-			SELECT id FROM cms_translate_jobs
-			WHERE status = $3
-			ORDER BY created_at ASC
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
-		)
-		RETURNING id
-	`, models.JobStatusRunning, instanceID, models.JobStatusPending).Scan(&idRow).Error
-	if err != nil {
-		return nil, err
-	}
-	if idRow.ID == uuid.Nil {
-		return nil, nil
-	}
-	var job models.CmsTranslateJob
-	if err := db.First(&job, "id = ?", idRow.ID).Error; err != nil {
-		return nil, err
-	}
-	return &job, nil
-}
-
-func processCmsTranslateJob(ctx context.Context, job *models.CmsTranslateJob) {
-	defer func() {
-		if r := recover(); r != nil {
-			observability.Logger.Error("Worker panic (CmsTranslateJob)", zap.Any("panic", r), zap.String("job_id", job.ID.String()))
-			_ = markCmsTranslateJobFailed(job.ID, "Worker panic", fmt.Sprintf("%v", r))
-		}
-	}()
-
-	var application models.Application
-	if err := database.DB.First(&application, "id = ?", job.ApplicationID).Error; err != nil {
-		_ = markCmsTranslateJobFailed(job.ID, "Application not found", err.Error())
-		return
-	}
-
-	openAIService := resolveOpenAIService(application.OpenAIKey)
-	if openAIService == nil {
-		_ = markCmsTranslateJobFailed(job.ID, "OpenAI API key not configured", "Configure in Application settings")
-		return
-	}
-
-	// Load CMS item with template fields to know value types
-	var item models.CmsItem
-	if err := database.DB.Preload("Template.Fields").First(&item, "id = ?", job.CmsItemID).Error; err != nil {
-		_ = markCmsTranslateJobFailed(job.ID, "CMS item not found", err.Error())
-		return
-	}
-
-	// Load source localization
-	var sourceLoc models.CmsLocalization
-	if err := database.DB.
-		Where("cms_item_id = ? AND locale = ? AND stage = ?", job.CmsItemID, job.SourceLocale, job.Stage).
-		Order("version DESC").
-		First(&sourceLoc).Error; err != nil {
-		_ = markCmsTranslateJobFailed(job.ID, "Source localization not found",
-			fmt.Sprintf("locale %s stage %s: %v", job.SourceLocale, job.Stage, err))
-		return
-	}
-
-	// Build field type map for the translator
-	fieldTypes := make(map[string]string, len(item.Template.Fields))
-	for _, f := range item.Template.Fields {
-		fieldTypes[f.Key] = f.ValueType
-	}
-
-	translatedData, err := openAIService.TranslateCMSFields(
-		ctx,
-		map[string]interface{}(sourceLoc.Data),
-		fieldTypes,
-		job.SourceLocale,
-		job.TargetLocale,
-	)
-	if err != nil {
-		_ = markCmsTranslateJobFailed(job.ID, "Translation failed", err.Error())
-		return
-	}
-
-	// Insert next version with race-safe retry. SaveCmsLocalizationVersion handles
-	// the partial unique index collision (two workers picking the same version
-	// number under concurrency) and retries up to 5 times before erroring out.
-	if _, err := services.SaveCmsLocalizationVersion(
-		nil, job.CmsItemID, job.TargetLocale, job.Stage,
-		models.JSONB(translatedData), job.SourceLocale, job.CreatedBy,
-	); err != nil {
-		_ = markCmsTranslateJobFailed(job.ID, "Failed to save localization", err.Error())
-		return
-	}
-
-	_ = database.DB.Model(&models.CmsTranslateJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
-		"status":     models.JobStatusCompleted,
-		"updated_at": time.Now(),
-	}).Error
-
-	observability.Logger.Info("CmsTranslateJob completed",
-		zap.String("job_id", job.ID.String()),
-		zap.String("cms_item_id", job.CmsItemID.String()),
-		zap.String("target_locale", job.TargetLocale),
-	)
-}
-
-func markCmsTranslateJobFailed(jobID uuid.UUID, msg, detail string) error {
-	return database.DB.Model(&models.CmsTranslateJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
-		"status":        models.JobStatusFailed,
-		"error_message": msg,
-		"error_detail":  detail,
-		"updated_at":    time.Now(),
-	}).Error
-}
-
-// silentDB returns a gorm session with logging suppressed (idle poll queries shouldn't flood logs).
-func silentDB() *gorm.DB {
-	return database.DB.Session(&gorm.Session{Logger: database.DB.Logger.LogMode(logger.Silent)})
-}
-
-// resolveOpenAIService returns an OpenAIService using the app's key or the environment fallback.
-// Returns nil if no key is available at all.
+// resolveOpenAIService returns an OpenAIService using the app's key or the
+// environment fallback. Returns nil if no key is available at all.
 func resolveOpenAIService(appKey string) *services.OpenAIService {
 	key := appKey
 	if key == "" {

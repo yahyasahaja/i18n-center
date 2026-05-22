@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,9 +12,9 @@ import (
 
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/middleware"
-	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/repository"
 	"github.com/your-org/i18n-center/repository/cms"
+	"github.com/your-org/i18n-center/repository/job"
 	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
@@ -27,19 +28,21 @@ func normalizeIdentifier(s string) string {
 }
 
 type CmsItemHandler struct {
-	auditService  services.AuditServicer
-	templates     cms.TemplateRepository
-	items         cms.ItemRepository
-	localizations cms.LocalizationRepository
+	auditService      services.AuditServicer
+	templates         cms.TemplateRepository
+	items             cms.ItemRepository
+	localizations     cms.LocalizationRepository
+	cmsTranslateJobs  job.CmsTranslateRepository
 }
 
 func NewCmsItemHandler() *CmsItemHandler {
 	templates := cms.NewTemplateRepository()
 	return &CmsItemHandler{
-		auditService:  services.NewAuditService(),
-		templates:     templates,
-		items:         cms.NewItemRepository(templates),
-		localizations: cms.NewLocalizationRepository(),
+		auditService:     services.NewAuditService(),
+		templates:        templates,
+		items:            cms.NewItemRepository(templates),
+		localizations:    cms.NewLocalizationRepository(),
+		cmsTranslateJobs: job.NewCmsTranslateRepository(),
 	}
 }
 
@@ -493,9 +496,10 @@ func (h *CmsItemHandler) TranslateLocalization(c *gin.Context) {
 
 	userID, _ := h.currentUser(c)
 
-	// Idempotency: dedupe double-clicks. cms_translate_jobs still uses GORM
-	// in this commit; we keep the existing helper.
-	if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, body.TargetLocale, models.DeploymentStage(stage)); existing != nil {
+	// Idempotency: dedupe double-clicks. The partial unique index
+	// idx_cms_translate_jobs_dedupe enforces this at the DB level too — this
+	// lookup just gives a clean 202 response when a user double-clicks.
+	if existing := h.findActiveCmsTranslateJob(ctx, itemUUID, body.SourceLocale, body.TargetLocale, stage); existing != nil {
 		c.JSON(http.StatusAccepted, gin.H{
 			"job_id":  existing.ID.String(),
 			"status":  existing.Status,
@@ -505,17 +509,16 @@ func (h *CmsItemHandler) TranslateLocalization(c *gin.Context) {
 		return
 	}
 
-	job := models.CmsTranslateJob{
+	newJob := &job.CmsTranslateJob{
 		ApplicationID: item.ApplicationID,
 		CmsItemID:     itemUUID,
 		SourceLocale:  body.SourceLocale,
 		TargetLocale:  body.TargetLocale,
-		Stage:         models.DeploymentStage(stage),
-		Status:        models.JobStatusPending,
+		Stage:         stage,
 		CreatedBy:     userID,
 	}
-	if err := database.DB.Create(&job).Error; err != nil {
-		if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, body.TargetLocale, models.DeploymentStage(stage)); existing != nil {
+	if err := h.cmsTranslateJobs.Insert(ctx, database.SQLX, newJob); err != nil {
+		if existing := h.findActiveCmsTranslateJob(ctx, itemUUID, body.SourceLocale, body.TargetLocale, stage); existing != nil {
 			c.JSON(http.StatusAccepted, gin.H{
 				"job_id":  existing.ID.String(),
 				"status":  existing.Status,
@@ -529,26 +532,21 @@ func (h *CmsItemHandler) TranslateLocalization(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"job_id":  job.ID.String(),
-		"status":  job.Status,
-		"message": fmt.Sprintf("CMS translation job enqueued. Poll /cms/translate-jobs/%s for status.", job.ID.String()),
+		"job_id":  newJob.ID.String(),
+		"status":  job.StatusPending,
+		"message": fmt.Sprintf("CMS translation job enqueued. Poll /cms/translate-jobs/%s for status.", newJob.ID.String()),
 	})
 }
 
 // findActiveCmsTranslateJob returns the first pending/running CmsTranslateJob
-// matching the de-duplication tuple, or nil if none exists. Still GORM until
-// Commit H.
-func findActiveCmsTranslateJob(cmsItemID uuid.UUID, sourceLocale, targetLocale string, stage models.DeploymentStage) *models.CmsTranslateJob {
-	var job models.CmsTranslateJob
-	err := database.DB.Where(
-		"cms_item_id = ? AND source_locale = ? AND target_locale = ? AND stage = ? AND status IN ?",
-		cmsItemID, sourceLocale, targetLocale, stage,
-		[]string{models.JobStatusPending, models.JobStatusRunning},
-	).Order("created_at DESC").First(&job).Error
+// matching the de-duplication tuple, or nil if none exists. Errors are
+// swallowed — the caller treats nil as "no in-flight job" and proceeds.
+func (h *CmsItemHandler) findActiveCmsTranslateJob(ctx context.Context, cmsItemID uuid.UUID, sourceLocale, targetLocale string, stage translation.Stage) *job.CmsTranslateJob {
+	existing, err := h.cmsTranslateJobs.FindActive(ctx, database.SQLX, cmsItemID, sourceLocale, targetLocale, stage)
 	if err != nil {
 		return nil
 	}
-	return &job
+	return existing
 }
 
 type backfillCmsLocalizationBody struct {
@@ -614,22 +612,21 @@ func (h *CmsItemHandler) BackfillLocalizations(c *gin.Context) {
 		if targetLocale == body.SourceLocale {
 			continue
 		}
-		if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, targetLocale, models.DeploymentStage(stage)); existing != nil {
+		if existing := h.findActiveCmsTranslateJob(ctx, itemUUID, body.SourceLocale, targetLocale, stage); existing != nil {
 			jobIDs = append(jobIDs, existing.ID.String())
 			dedupedCount++
 			continue
 		}
-		job := models.CmsTranslateJob{
+		newJob := &job.CmsTranslateJob{
 			ApplicationID: item.ApplicationID,
 			CmsItemID:     itemUUID,
 			SourceLocale:  body.SourceLocale,
 			TargetLocale:  targetLocale,
-			Stage:         models.DeploymentStage(stage),
-			Status:        models.JobStatusPending,
+			Stage:         stage,
 			CreatedBy:     userID,
 		}
-		if err := database.DB.Create(&job).Error; err != nil {
-			if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, targetLocale, models.DeploymentStage(stage)); existing != nil {
+		if err := h.cmsTranslateJobs.Insert(ctx, database.SQLX, newJob); err != nil {
+			if existing := h.findActiveCmsTranslateJob(ctx, itemUUID, body.SourceLocale, targetLocale, stage); existing != nil {
 				jobIDs = append(jobIDs, existing.ID.String())
 				dedupedCount++
 				continue
@@ -637,7 +634,7 @@ func (h *CmsItemHandler) BackfillLocalizations(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue job for locale " + targetLocale})
 			return
 		}
-		jobIDs = append(jobIDs, job.ID.String())
+		jobIDs = append(jobIDs, newJob.ID.String())
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
@@ -806,23 +803,31 @@ func (h *CmsItemHandler) ListVersions(c *gin.Context) {
 }
 
 // GetCmsTranslateJobStatus returns the status of a CmsTranslateJob by ID.
-// Still GORM until Commit H.
 // @Summary      Get translate job status
 // @Tags         cms
 // @Produce      json
 // @Security     BearerAuth
 // @Param        job_id  path      string  true  "Job ID (UUID)"
-// @Success      200  {object}  models.CmsTranslateJob
+// @Success      200  {object}  job.CmsTranslateJob
 // @Failure      404  {object}  map[string]string
 // @Router       /cms/translate-jobs/{job_id} [get]
 func (h *CmsItemHandler) GetCmsTranslateJobStatus(c *gin.Context) {
-	jobID := c.Param("job_id")
-	var job models.CmsTranslateJob
-	if err := database.DB.First(&job, "id = ?", jobID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+	jobIDStr := c.Param("job_id")
+	jobID, err := uuid.Parse(jobIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid job ID"})
 		return
 	}
-	c.JSON(http.StatusOK, job)
+	j, err := h.cmsTranslateJobs.GetByID(c.Request.Context(), database.SQLX, jobID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, j)
 }
 
 // GetCmsItemByIdentifier returns the latest production localization for a CMS item.

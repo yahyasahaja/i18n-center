@@ -1,48 +1,78 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
+
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/models"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/audit"
 )
 
-type AuditService struct{}
-
-func NewAuditService() *AuditService {
-	return &AuditService{}
+// AuditService is the legacy-shaped facade in front of the new audit
+// repository. It keeps the same signatures the handlers already call
+// (LogCreate/LogUpdate/LogDelete/...) so converting it to sqlx didn't ripple
+// through 8+ handler files.
+//
+// All persistence goes through audit.Repository now — no GORM left.
+type AuditService struct {
+	repo audit.Repository
 }
 
-// LogAction logs an audit action
+func NewAuditService() *AuditService {
+	return &AuditService{repo: audit.New()}
+}
+
+// logToModel re-shapes the new audit.Log struct into the legacy models.AuditLog
+// the handlers (and Swagger annotations) still expect. Once Commit I strips
+// the models package, this collapses to the audit.Log type directly.
+func logToModel(l audit.Log) models.AuditLog {
+	return models.AuditLog{
+		ID:           l.ID,
+		UserID:       l.UserID,
+		Username:     l.Username,
+		Action:       l.Action,
+		ResourceType: l.ResourceType,
+		ResourceID:   l.ResourceID,
+		ResourceCode: l.ResourceCode,
+		Changes:      models.JSONB(l.Changes),
+		IPAddress:    l.IPAddress,
+		UserAgent:    l.UserAgent,
+		CreatedAt:    l.CreatedAt,
+	}
+}
+
+// LogAction inserts an arbitrary audit row. Best-effort — failures are
+// returned but never block the calling write (handlers log and move on).
 func (s *AuditService) LogAction(
 	userID uuid.UUID,
 	username string,
-	action string, // CREATE, UPDATE, DELETE
-	resourceType string, // application, component, translation, user
+	action string,
+	resourceType string,
 	resourceID uuid.UUID,
-	resourceCode string, // Optional: for applications/components
-	changes map[string]interface{}, // Before/after values
+	resourceCode string,
+	changes map[string]interface{},
 	ipAddress string,
 	userAgent string,
 ) error {
-	auditLog := models.AuditLog{
+	row := &audit.Log{
 		UserID:       userID,
 		Username:     username,
 		Action:       action,
 		ResourceType: resourceType,
 		ResourceID:   resourceID,
 		ResourceCode: resourceCode,
-		Changes:      models.JSONB(changes),
+		Changes:      repository.JSONB(changes),
 		IPAddress:    ipAddress,
 		UserAgent:    userAgent,
 	}
-
-	return database.DB.Create(&auditLog).Error
+	return s.repo.Insert(context.Background(), database.SQLX, row)
 }
 
-// LogCreate logs a CREATE action
 func (s *AuditService) LogCreate(
 	userID uuid.UUID,
 	username string,
@@ -60,7 +90,6 @@ func (s *AuditService) LogCreate(
 	return s.LogAction(userID, username, "CREATE", resourceType, resourceID, resourceCode, changes, ipAddress, userAgent)
 }
 
-// LogUpdate logs an UPDATE action with before/after values
 func (s *AuditService) LogUpdate(
 	userID uuid.UUID,
 	username string,
@@ -80,14 +109,13 @@ func (s *AuditService) LogUpdate(
 	return s.LogAction(userID, username, "UPDATE", resourceType, resourceID, resourceCode, changes, ipAddress, userAgent)
 }
 
-// LogDelete logs a DELETE action
 func (s *AuditService) LogDelete(
 	userID uuid.UUID,
 	username string,
 	resourceType string,
 	resourceID uuid.UUID,
 	resourceCode string,
-	data interface{}, // Data before deletion
+	data interface{},
 	ipAddress string,
 	userAgent string,
 ) error {
@@ -98,66 +126,70 @@ func (s *AuditService) LogDelete(
 	return s.LogAction(userID, username, "DELETE", resourceType, resourceID, resourceCode, changes, ipAddress, userAgent)
 }
 
-// GetAuditLogs retrieves audit logs with filters
+// GetAuditLogs returns rows matching the legacy filter shape (resourceType +
+// resourceID + limit). Caller's `limit <= 0` falls through to the repo's 50
+// default — historically this was 100 here, so we clamp explicitly.
 func (s *AuditService) GetAuditLogs(
 	resourceType string,
 	resourceID uuid.UUID,
 	limit int,
 ) ([]models.AuditLog, error) {
-	var logs []models.AuditLog
-	query := database.DB.Order("created_at DESC")
-
-	if resourceType != "" {
-		query = query.Where("resource_type = ?", resourceType)
+	if limit <= 0 {
+		limit = 100
 	}
-
-	if resourceID != uuid.Nil {
-		query = query.Where("resource_id = ?", resourceID)
-	}
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	} else {
-		query = query.Limit(100) // Default limit
-	}
-
-	if err := query.Find(&logs).Error; err != nil {
+	rows, _, err := s.repo.List(context.Background(), database.SQLX, audit.ListFilter{
+		ResourceType: resourceType,
+		ResourceID:   resourceID,
+		Limit:        limit,
+	})
+	if err != nil {
 		return nil, err
 	}
-
-	return logs, nil
+	out := make([]models.AuditLog, len(rows))
+	for i, r := range rows {
+		out[i] = logToModel(r)
+	}
+	return out, nil
 }
 
-// GetAuditLogsByUser retrieves audit logs for a specific user
 func (s *AuditService) GetAuditLogsByUser(
 	userID uuid.UUID,
 	limit int,
 ) ([]models.AuditLog, error) {
-	var logs []models.AuditLog
-	query := database.DB.Where("user_id = ?", userID).Order("created_at DESC")
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	} else {
-		query = query.Limit(100)
+	if limit <= 0 {
+		limit = 100
 	}
-
-	if err := query.Find(&logs).Error; err != nil {
+	rows, _, err := s.repo.List(context.Background(), database.SQLX, audit.ListFilter{
+		UserID: userID,
+		Limit:  limit,
+	})
+	if err != nil {
 		return nil, err
 	}
-
-	return logs, nil
+	out := make([]models.AuditLog, len(rows))
+	for i, r := range rows {
+		out[i] = logToModel(r)
+	}
+	return out, nil
 }
 
-// GetChangesForResource gets all changes for a specific resource
 func (s *AuditService) GetChangesForResource(
 	resourceType string,
 	resourceID uuid.UUID,
 ) ([]models.AuditLog, error) {
-	return s.GetAuditLogs(resourceType, resourceID, 0)
+	rows, err := s.repo.History(context.Background(), database.SQLX, resourceType, resourceID, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]models.AuditLog, len(rows))
+	for i, r := range rows {
+		out[i] = logToModel(r)
+	}
+	return out, nil
 }
 
-// CompareValues creates a diff map showing what changed
+// CompareValues creates a diff map showing what changed between two structs.
+// Kept here because both before/after handlers and a couple of tests import it.
 func CompareValues(before, after interface{}) map[string]interface{} {
 	beforeJSON, _ := json.Marshal(before)
 	afterJSON, _ := json.Marshal(after)
@@ -165,12 +197,11 @@ func CompareValues(before, after interface{}) map[string]interface{} {
 	var beforeMap map[string]interface{}
 	var afterMap map[string]interface{}
 
-	json.Unmarshal(beforeJSON, &beforeMap)
-	json.Unmarshal(afterJSON, &afterMap)
+	_ = json.Unmarshal(beforeJSON, &beforeMap)
+	_ = json.Unmarshal(afterJSON, &afterMap)
 
 	diff := make(map[string]interface{})
 
-	// Find changed fields
 	for key, afterValue := range afterMap {
 		beforeValue, exists := beforeMap[key]
 		if !exists || fmt.Sprintf("%v", beforeValue) != fmt.Sprintf("%v", afterValue) {
@@ -181,7 +212,6 @@ func CompareValues(before, after interface{}) map[string]interface{} {
 		}
 	}
 
-	// Find deleted fields
 	for key, beforeValue := range beforeMap {
 		if _, exists := afterMap[key]; !exists {
 			diff[key] = map[string]interface{}{

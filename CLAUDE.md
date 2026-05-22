@@ -313,11 +313,11 @@ The data layer is being moved off GORM onto raw SQL. New code MUST follow this p
 
 See `backend/repository/types.go` for the base abstractions and `backend/repository/<resource>/` for example impls.
 
-### Migration status (Commit G in flight)
+### Migration status (Commit H landed)
 | Resource | Repository | Handlers wired |
 |---|---|---|
 | User | `repository/user` | ✅ |
-| Application | `repository/application` | ✅ (CRUD + AddLanguage + DeleteLanguage; jobs path still on GORM) |
+| Application | `repository/application` | ✅ (CRUD + AddLanguage + DeleteLanguage now fully sqlx-tx) |
 | ApplicationAPIKey | `repository/apikey` | ✅ (also powers `auth.ValidateAPIKey`) |
 | Tag | `repository/tag` | ✅ |
 | Page | `repository/page` | ✅ |
@@ -326,15 +326,30 @@ See `backend/repository/types.go` for the base abstractions and `backend/reposit
 | CmsTemplate + CmsTemplateField | `repository/cms` | ✅ (template + child fields via ReplaceFields) |
 | CmsItem | `repository/cms` | ✅ (with normalised identifier + template preload) |
 | CmsLocalization | `repository/cms` | ✅ (preserves SaveLocalizationVersion race-retry) |
-| AuditLog, AddLanguageJob, TranslateJob, CmsTranslateJob, ApplicationLocaleDeploy | — | Commit H |
+| AuditLog | `repository/audit` | ✅ (service facade keeps legacy method names; insert/list/history) |
+| AddLanguageJob | `repository/job` | ✅ (worker + AddLanguage handler + JobStatus poll) |
+| TranslateJob | `repository/job` | ✅ (worker + AutoTranslate/Backfill/ListComponentTranslateJobs handlers) |
+| CmsTranslateJob | `repository/job` | ✅ (worker + CMS translate/backfill/status handlers) |
+| ApplicationLocaleDeploy | `repository/localedeploy` | ✅ (DeployLocale wraps deploy + locale-state in a single WithTx) |
 
-GORM stays loaded in `database.DB` until Commit I — handlers that haven't been ported yet still use it.
+GORM stays loaded in `database.DB` until Commit I — a handful of read-only handlers (export, bootstrap, by-tag/by-page lookups in translation_handler) still call it. Commit I strips both the import and the legacy models.
+
+### Worker (`backend/jobs/worker.go`)
+Fully sqlx-backed after Commit H. Three job-table claim loops share the same shape:
+
+- `ResetStuck(15m)` → bumps rows running for >15 minutes back to `pending` so a crashed pod doesn't orphan its in-flight work.
+- `ClaimNext(instanceID)` → `UPDATE ... FOR UPDATE SKIP LOCKED ... RETURNING *`; safe across multiple K8s replicas.
+- `MarkCompleted` / `MarkFailed` → terminal state transitions.
+
+`AddLanguageJob` additionally has `UpdateTotals` and `IncrementCompleted` so the dashboard progress bar moves while the fan-out runs. The retention sweep (Commit J) is what eventually hard-deletes terminal job rows.
 
 ## Patterns to reuse (NOT re-implement)
 
 When you find yourself writing one of these, use the existing helper instead:
 
-- **Insert next version with retry on race** — `services.SaveCmsLocalizationVersion` for CMS, `TranslationService.saveVersion`/`saveVersionTx` for translations. Both rely on partial unique indexes (`idx_cms_loc_unique_version`, `idx_tv_unique_version`) and retry up to 5 times on duplicate-key error. **Do NOT** roll your own MAX(version)+1 read-then-insert — concurrent writers will collide and silently produce duplicate version rows.
+- **Insert next version with retry on race** — `cms.LocalizationRepository.SaveLocalizationVersion` for CMS, `TranslationService.saveVersion`/`saveVersionTx` for translations. Both rely on partial unique indexes (`idx_cms_loc_unique_version`, `idx_tv_unique_version`) and retry up to 5 times on duplicate-key error. **Do NOT** roll your own MAX(version)+1 read-then-insert — concurrent writers will collide and silently produce duplicate version rows.
+- **Async job idempotency** — use `*Repository.FindActive*` then `Insert`, and fall back to a second `FindActive*` on the `ErrConflict` race. `job.AddLanguageRepository.FindActiveByLocale`, `job.TranslateRepository.FindActive`, and `job.CmsTranslateRepository.FindActive` all back the corresponding partial unique indexes. See `TranslationHandler.findActiveTranslateJob` and `CmsItemHandler.findActiveCmsTranslateJob` for the canonical call shape.
+- **Async job claim** — never write a custom `FOR UPDATE SKIP LOCKED` loop. Use `*Repository.ResetStuck(15m)` + `ClaimNext(instanceID)` inside the worker tick. Both are stateless and safe to call from any pod.
 - **Detect unique-key violation** — `services.IsUniqueViolation(err)`. Message-based heuristic (matches `SQLSTATE 23505`); no dependency on `jackc/pgconn`.
 - **Cache invalidation after a translation write** — `services.InvalidateAfterTranslationWrite(componentID, locale, stage)`. Scopes the by-page/by-tag pattern delete to the affected (appID, locale, stage) cell so draft writes don't touch production cache.
 - **Cache invalidation for app-wide changes** — `services.InvalidateApplicationReadCache(appID)`. Used by `DeleteLanguage` and the post-commit hook in `DeployLocale`.

@@ -363,7 +363,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Get all CMS items for an application",
                 "produces": [
                     "application/json"
                 ],
@@ -386,7 +385,7 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/models.CmsItem"
+                                "$ref": "#/definitions/cms.Item"
                             }
                         }
                     },
@@ -407,7 +406,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Create a new CMS item in an application",
                 "consumes": [
                     "application/json"
                 ],
@@ -440,20 +438,11 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.CmsItem"
+                            "$ref": "#/definitions/cms.Item"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -494,7 +483,7 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/models.CmsTemplate"
+                                "$ref": "#/definitions/cms.Template"
                             }
                         }
                     },
@@ -515,7 +504,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Create a new CMS template with its fields",
                 "consumes": [
                     "application/json"
                 ],
@@ -548,20 +536,11 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.CmsTemplate"
+                            "$ref": "#/definitions/cms.Template"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -574,7 +553,6 @@ const docTemplate = `{
         },
         "/applications/{id}/cms/{identifier}": {
             "get": {
-                "description": "Returns localized CMS content by identifier. Accessible via API key. Intended for client applications (FE, mobile)",
                 "produces": [
                     "application/json"
                 ],
@@ -1034,7 +1012,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Get a single CMS item with its template and fields",
                 "produces": [
                     "application/json"
                 ],
@@ -1055,7 +1032,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CmsItem"
+                            "$ref": "#/definitions/cms.Item"
                         }
                     },
                     "404": {
@@ -1075,7 +1052,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Update a CMS item's metadata",
                 "consumes": [
                     "application/json"
                 ],
@@ -1108,7 +1084,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CmsItem"
+                            "$ref": "#/definitions/cms.Item"
                         }
                     },
                     "400": {
@@ -1137,7 +1113,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Delete a CMS item and all its localizations",
                 "produces": [
                     "application/json"
                 ],
@@ -1183,7 +1158,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Get all localizations for a CMS item",
                 "produces": [
                     "application/json"
                 ],
@@ -1206,7 +1180,7 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/models.CmsLocalization"
+                                "$ref": "#/definitions/cms.Localization"
                             }
                         }
                     },
@@ -1227,7 +1201,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a new version of a CMS localization (non-destructive — always appends)",
                 "consumes": [
                     "application/json"
                 ],
@@ -1260,7 +1233,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.CmsLocalization"
+                            "$ref": "#/definitions/cms.Localization"
                         }
                     },
                     "400": {
@@ -1291,7 +1264,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Enqueue OpenAI translation jobs for multiple target locales. Poll each job_id for individual status.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1327,24 +1299,6 @@ const docTemplate = `{
                             "type": "object",
                             "additionalProperties": true
                         }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
                     }
                 }
             }
@@ -1356,7 +1310,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Promotes a localization from one stage to the next (draft→staging or staging→production)",
                 "consumes": [
                     "application/json"
                 ],
@@ -1389,16 +1342,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CmsLocalization"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
+                            "$ref": "#/definitions/cms.Localization"
                         }
                     },
                     "404": {
@@ -1420,7 +1364,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Get the latest localization for a CMS item by locale and stage",
                 "produces": [
                     "application/json"
                 ],
@@ -1453,7 +1396,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CmsLocalization"
+                            "$ref": "#/definitions/cms.Localization"
                         }
                     },
                     "404": {
@@ -1475,7 +1418,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a new version from an older version's data (non-destructive)",
                 "consumes": [
                     "application/json"
                 ],
@@ -1508,7 +1450,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CmsLocalization"
+                            "$ref": "#/definitions/cms.Localization"
                         }
                     },
                     "404": {
@@ -1530,7 +1472,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Enqueues an async AI translation job. Poll /cms/translate-jobs/{job_id} for status",
                 "consumes": [
                     "application/json"
                 ],
@@ -1597,7 +1538,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "List all versions of a CMS localization for a given locale and stage",
                 "produces": [
                     "application/json"
                 ],
@@ -1633,7 +1573,7 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/models.CmsLocalization"
+                                "$ref": "#/definitions/cms.Localization"
                             }
                         }
                     },
@@ -1656,7 +1596,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Get a single CMS template by ID",
                 "produces": [
                     "application/json"
                 ],
@@ -1677,7 +1616,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CmsTemplate"
+                            "$ref": "#/definitions/cms.Template"
                         }
                     },
                     "404": {
@@ -1697,7 +1636,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Replace a CMS template's metadata and fields",
                 "consumes": [
                     "application/json"
                 ],
@@ -1730,7 +1668,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CmsTemplate"
+                            "$ref": "#/definitions/cms.Template"
                         }
                     },
                     "400": {
@@ -1759,7 +1697,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Delete a CMS template and its fields",
                 "produces": [
                     "application/json"
                 ],
@@ -1814,7 +1751,6 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Get the status of a CMS translate job by ID",
                 "produces": [
                     "application/json"
                 ],
@@ -1835,7 +1771,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CmsTranslateJob"
+                            "$ref": "#/definitions/job.CmsTranslateJob"
                         }
                     },
                     "404": {
@@ -2101,7 +2037,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.TranslationVersion"
+                            "$ref": "#/definitions/translation.Version"
                         }
                     },
                     "400": {
@@ -2283,7 +2219,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.TranslationVersion"
+                            "$ref": "#/definitions/translation.Version"
                         }
                     },
                     "400": {
@@ -2728,6 +2664,155 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "cms.Item": {
+            "type": "object",
+            "properties": {
+                "application_id": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "identifier": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "template": {
+                    "$ref": "#/definitions/cms.Template"
+                },
+                "template_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "cms.Localization": {
+            "type": "object",
+            "properties": {
+                "cms_item_id": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "data": {
+                    "$ref": "#/definitions/repository.JSONB"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "locale": {
+                    "type": "string"
+                },
+                "source_locale": {
+                    "type": "string"
+                },
+                "stage": {
+                    "$ref": "#/definitions/translation.Stage"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "integer"
+                }
+            }
+        },
+        "cms.Template": {
+            "type": "object",
+            "properties": {
+                "application_id": {
+                    "type": "string"
+                },
+                "code": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/cms.TemplateField"
+                    }
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "cms.TemplateField": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "key": {
+                    "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "required": {
+                    "type": "boolean"
+                },
+                "sort_order": {
+                    "type": "integer"
+                },
+                "template_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "value_type": {
+                    "type": "string"
+                }
+            }
+        },
         "handlers.ApplicationRequest": {
             "type": "object",
             "required": [
@@ -2880,7 +2965,7 @@ const docTemplate = `{
             ],
             "properties": {
                 "data": {
-                    "$ref": "#/definitions/models.JSONB"
+                    "$ref": "#/definitions/repository.JSONB"
                 },
                 "locale": {
                     "type": "string"
@@ -3030,7 +3115,7 @@ const docTemplate = `{
             ],
             "properties": {
                 "data": {
-                    "$ref": "#/definitions/models.JSONB"
+                    "$ref": "#/definitions/repository.JSONB"
                 },
                 "locale": {
                     "type": "string"
@@ -3086,6 +3171,50 @@ const docTemplate = `{
                     }
                 },
                 "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "job.CmsTranslateJob": {
+            "type": "object",
+            "properties": {
+                "application_id": {
+                    "type": "string"
+                },
+                "claimed_by": {
+                    "type": "string"
+                },
+                "cms_item_id": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "error_detail": {
+                    "type": "string"
+                },
+                "error_message": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "source_locale": {
+                    "type": "string"
+                },
+                "stage": {
+                    "$ref": "#/definitions/translation.Stage"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "target_locale": {
+                    "type": "string"
+                },
+                "updated_at": {
                     "type": "string"
                 }
             }
@@ -3177,340 +3306,9 @@ const docTemplate = `{
                 }
             }
         },
-        "models.CmsItem": {
-            "type": "object",
-            "properties": {
-                "application": {
-                    "$ref": "#/definitions/models.Application"
-                },
-                "application_id": {
-                    "type": "string"
-                },
-                "created_at": {
-                    "type": "string"
-                },
-                "created_by": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "identifier": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "template": {
-                    "$ref": "#/definitions/models.CmsTemplate"
-                },
-                "template_id": {
-                    "type": "string"
-                },
-                "updated_at": {
-                    "type": "string"
-                },
-                "updated_by": {
-                    "type": "string"
-                }
-            }
-        },
-        "models.CmsLocalization": {
-            "type": "object",
-            "properties": {
-                "cms_item": {
-                    "$ref": "#/definitions/models.CmsItem"
-                },
-                "cms_item_id": {
-                    "type": "string"
-                },
-                "created_at": {
-                    "type": "string"
-                },
-                "created_by": {
-                    "type": "string"
-                },
-                "data": {
-                    "$ref": "#/definitions/models.JSONB"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "is_active": {
-                    "type": "boolean"
-                },
-                "locale": {
-                    "type": "string"
-                },
-                "source_locale": {
-                    "type": "string"
-                },
-                "stage": {
-                    "$ref": "#/definitions/models.DeploymentStage"
-                },
-                "updated_at": {
-                    "type": "string"
-                },
-                "updated_by": {
-                    "type": "string"
-                },
-                "version": {
-                    "type": "integer"
-                }
-            }
-        },
-        "models.CmsTemplate": {
-            "type": "object",
-            "properties": {
-                "application": {
-                    "$ref": "#/definitions/models.Application"
-                },
-                "application_id": {
-                    "type": "string"
-                },
-                "code": {
-                    "type": "string"
-                },
-                "created_at": {
-                    "type": "string"
-                },
-                "created_by": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "fields": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CmsTemplateField"
-                    }
-                },
-                "id": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "updated_at": {
-                    "type": "string"
-                },
-                "updated_by": {
-                    "type": "string"
-                }
-            }
-        },
-        "models.CmsTemplateField": {
-            "type": "object",
-            "properties": {
-                "created_at": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "key": {
-                    "type": "string"
-                },
-                "label": {
-                    "type": "string"
-                },
-                "required": {
-                    "type": "boolean"
-                },
-                "sort_order": {
-                    "type": "integer"
-                },
-                "template_id": {
-                    "type": "string"
-                },
-                "updated_at": {
-                    "type": "string"
-                },
-                "value_type": {
-                    "description": "text | textarea | rich_text | json",
-                    "type": "string"
-                }
-            }
-        },
-        "models.CmsTranslateJob": {
-            "type": "object",
-            "properties": {
-                "application_id": {
-                    "type": "string"
-                },
-                "claimed_by": {
-                    "type": "string"
-                },
-                "cms_item_id": {
-                    "type": "string"
-                },
-                "created_at": {
-                    "type": "string"
-                },
-                "created_by": {
-                    "type": "string"
-                },
-                "error_detail": {
-                    "type": "string"
-                },
-                "error_message": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "source_locale": {
-                    "type": "string"
-                },
-                "stage": {
-                    "$ref": "#/definitions/models.DeploymentStage"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "target_locale": {
-                    "type": "string"
-                },
-                "updated_at": {
-                    "type": "string"
-                }
-            }
-        },
-        "models.Component": {
-            "type": "object",
-            "properties": {
-                "application": {
-                    "$ref": "#/definitions/models.Application"
-                },
-                "application_id": {
-                    "type": "string"
-                },
-                "code": {
-                    "description": "Unique per application (composite with application_id)",
-                    "type": "string"
-                },
-                "created_at": {
-                    "type": "string"
-                },
-                "created_by": {
-                    "type": "string"
-                },
-                "default_locale": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "key_contexts": {
-                    "description": "KeyContexts holds optional per-key context hints used as authoring notes for\nAI translation. Keys use dot-notation paths into the translation tree\n(e.g. \"greeting.welcome\"); values are short human-readable descriptions.\nNever returned by public translation read endpoints — UI-only metadata.",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/models.JSONB"
-                        }
-                    ]
-                },
-                "name": {
-                    "type": "string"
-                },
-                "pages": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.Page"
-                    }
-                },
-                "structure": {
-                    "description": "The JSON structure template",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/models.JSONB"
-                        }
-                    ]
-                },
-                "tags": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.Tag"
-                    }
-                },
-                "updated_at": {
-                    "type": "string"
-                },
-                "updated_by": {
-                    "type": "string"
-                }
-            }
-        },
-        "models.DeploymentStage": {
-            "type": "string",
-            "enum": [
-                "draft",
-                "staging",
-                "production"
-            ],
-            "x-enum-varnames": [
-                "StageDraft",
-                "StageStaging",
-                "StageProduction"
-            ]
-        },
         "models.JSONB": {
             "type": "object",
             "additionalProperties": true
-        },
-        "models.Page": {
-            "type": "object",
-            "properties": {
-                "application": {
-                    "$ref": "#/definitions/models.Application"
-                },
-                "application_id": {
-                    "type": "string"
-                },
-                "code": {
-                    "description": "Unique per application",
-                    "type": "string"
-                },
-                "created_at": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "updated_at": {
-                    "type": "string"
-                }
-            }
-        },
-        "models.Tag": {
-            "type": "object",
-            "properties": {
-                "application": {
-                    "$ref": "#/definitions/models.Application"
-                },
-                "application_id": {
-                    "type": "string"
-                },
-                "code": {
-                    "description": "Unique per application",
-                    "type": "string"
-                },
-                "created_at": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "updated_at": {
-                    "type": "string"
-                }
-            }
         },
         "models.TranslateJob": {
             "type": "object",
@@ -3562,12 +3360,26 @@ const docTemplate = `{
                 }
             }
         },
-        "models.TranslationVersion": {
+        "repository.JSONB": {
+            "type": "object",
+            "additionalProperties": {}
+        },
+        "translation.Stage": {
+            "type": "string",
+            "enum": [
+                "draft",
+                "staging",
+                "production"
+            ],
+            "x-enum-varnames": [
+                "StageDraft",
+                "StageStaging",
+                "StageProduction"
+            ]
+        },
+        "translation.Version": {
             "type": "object",
             "properties": {
-                "component": {
-                    "$ref": "#/definitions/models.Component"
-                },
                 "component_id": {
                     "type": "string"
                 },
@@ -3578,12 +3390,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "data": {
-                    "description": "The translation data",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/models.JSONB"
-                        }
-                    ]
+                    "$ref": "#/definitions/repository.JSONB"
                 },
                 "id": {
                     "type": "string"
@@ -3595,19 +3402,13 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "source_data": {
-                    "description": "snapshot of source at translate time",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/models.JSONB"
-                        }
-                    ]
+                    "$ref": "#/definitions/repository.JSONB"
                 },
                 "source_locale": {
-                    "description": "locale translated FROM (empty for manual edits)",
                     "type": "string"
                 },
                 "stage": {
-                    "$ref": "#/definitions/models.DeploymentStage"
+                    "$ref": "#/definitions/translation.Stage"
                 },
                 "updated_at": {
                     "type": "string"
@@ -3616,7 +3417,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "version": {
-                    "description": "1, 2, 3, ... current = latest",
                     "type": "integer"
                 }
             }

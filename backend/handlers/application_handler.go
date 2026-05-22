@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"gorm.io/gorm"
+	"github.com/lib/pq"
 
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
@@ -16,19 +16,31 @@ import (
 	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/repository"
 	"github.com/your-org/i18n-center/repository/application"
+	"github.com/your-org/i18n-center/repository/job"
+	"github.com/your-org/i18n-center/repository/localedeploy"
 	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
 
+// pqStringArray is a local alias so the file can reference `pq.StringArray`
+// in inline struct definitions without `pq.` clutter at use-sites.
+type pqStringArray = pq.StringArray
+
 type ApplicationHandler struct {
-	auditService services.AuditServicer
-	apps         application.Repository
+	auditService  services.AuditServicer
+	apps          application.Repository
+	addLangJobs   job.AddLanguageRepository
+	translateJobs job.TranslateRepository
+	deploys       localedeploy.Repository
 }
 
 func NewApplicationHandler() *ApplicationHandler {
 	return &ApplicationHandler{
-		auditService: services.NewAuditService(),
-		apps:         application.New(),
+		auditService:  services.NewAuditService(),
+		apps:          application.New(),
+		addLangJobs:   job.NewAddLanguageRepository(),
+		translateJobs: job.NewTranslateRepository(),
+		deploys:       localedeploy.New(),
 	}
 }
 
@@ -378,18 +390,14 @@ func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 	}
 
 	if req.AutoTranslate {
-		// Idempotency check (jobs still on GORM until Commit H — uses models.AddLanguageJob).
-		// Reject if a pending/running job already exists; surface its job_id so the caller can poll.
-		var existingJob models.AddLanguageJob
-		if err := database.DB.Where(
-			"application_id = ? AND locale = ? AND status IN ? AND deleted_at IS NULL",
-			appID, req.Locale, []string{models.JobStatusPending, models.JobStatusRunning},
-		).First(&existingJob).Error; err == nil {
+		// Idempotency check: reject if a pending/running job already exists,
+		// and surface its job_id so the caller can poll.
+		if existing, err := h.addLangJobs.FindActiveByLocale(ctx, database.SQLX, appID, req.Locale); err == nil && existing != nil {
 			c.JSON(http.StatusConflict, gin.H{
 				"error":      "A translation job for this locale is already in progress",
-				"job_id":     existingJob.ID.String(),
-				"status":     existingJob.Status,
-				"status_url": fmt.Sprintf("/api/applications/%s/jobs/%s", appIDStr, existingJob.ID.String()),
+				"job_id":     existing.ID.String(),
+				"status":     existing.Status,
+				"status_url": fmt.Sprintf("/api/applications/%s/jobs/%s", appIDStr, existing.ID.String()),
 			})
 			return
 		}
@@ -413,26 +421,25 @@ func (h *ApplicationHandler) AddLanguage(c *gin.Context) {
 			return
 		}
 
-		job := models.AddLanguageJob{
+		newJob := &job.AddLanguageJob{
 			ApplicationID: appID,
 			Locale:        req.Locale,
 			AutoTranslate: true,
-			Status:        models.JobStatusPending,
 			CreatedBy:     userID,
 		}
-		if err := database.DB.Create(&job).Error; err != nil {
+		if err := h.addLangJobs.Insert(ctx, database.SQLX, newJob); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create job: " + err.Error()})
 			return
 		}
 
 		cache.Delete(cache.ApplicationKey(appIDStr))
-		c.Header("Location", fmt.Sprintf("/api/applications/%s/jobs/%s", appIDStr, job.ID.String()))
+		c.Header("Location", fmt.Sprintf("/api/applications/%s/jobs/%s", appIDStr, newJob.ID.String()))
 		c.JSON(http.StatusAccepted, gin.H{
 			"message":    "Language added. Translation job queued.",
-			"job_id":     job.ID.String(),
+			"job_id":     newJob.ID.String(),
 			"locale":     req.Locale,
-			"status":     models.JobStatusPending,
-			"status_url": fmt.Sprintf("/api/applications/%s/jobs/%s", appIDStr, job.ID.String()),
+			"status":     job.StatusPending,
+			"status_url": fmt.Sprintf("/api/applications/%s/jobs/%s", appIDStr, newJob.ID.String()),
 		})
 		return
 	}
@@ -459,8 +466,8 @@ func (h *ApplicationHandler) GetPendingDeploys(c *gin.Context) {
 		return
 	}
 
-	var deploys []models.ApplicationLocaleDeploy
-	if err := database.DB.Where("application_id = ? AND stage_completed != ?", appID, "production").Find(&deploys).Error; err != nil {
+	deploys, err := h.deploys.ListPendingByApp(c.Request.Context(), database.SQLX, appID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -504,10 +511,15 @@ func (h *ApplicationHandler) DeployLocale(c *gin.Context) {
 	req.Locale = strings.TrimSpace(strings.ToLower(req.Locale))
 
 	userID, _ := h.getCurrentUser(c)
+	ctx := c.Request.Context()
 
-	var deploy models.ApplicationLocaleDeploy
-	if err := database.DB.Where("application_id = ? AND locale = ?", appID, req.Locale).First(&deploy).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "No pending deploy found for this locale"})
+	deploy, err := h.deploys.GetByAppLocale(ctx, database.SQLX, appID, req.Locale)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "No pending deploy found for this locale"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -530,33 +542,25 @@ func (h *ApplicationHandler) DeployLocale(c *gin.Context) {
 		return
 	}
 
-	// Per-component translation deploys + the locale-deploys row update should
-	// move in lockstep. Translation versions are now sqlx-backed; locale_deploys
-	// is still GORM-backed until Commit H. Until both share one transaction
-	// system, we deploy components first (each autocommits + invalidates its
-	// own cache cell) and update the deploy state at the end.
-	//
-	// Failure mode: if a component deploy errors midway, earlier components
-	// have already been promoted. The endpoint reports the failure and the
-	// operator can retry — DeployToStage is idempotent (inserts a new version
-	// of identical data), so re-running is safe.
-	//
-	// TODO(commit H): once locale_deploys moves to sqlx, wrap both in one
-	// repository.WithTx for full atomicity.
+	// Per-component translation deploys + the locale-deploys row update move
+	// in lockstep — both are sqlx-backed now, so we wrap them in one tx via
+	// repository.WithTx. Failure rolls back the whole promotion so the user
+	// can safely retry without partial-state ambiguity.
 	translationService := services.NewTranslationService()
-	for _, comp := range components {
-		if err := translationService.DeployToStage(comp.ID, req.Locale, fromStage, toStage, userID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":  "Deploy failed (partial state — retry to complete)",
-				"detail": fmt.Sprintf("Component %s: %v", comp.Code, err),
-				"retry":  true,
-			})
-			return
+	if err := repository.WithTx(ctx, database.SQLX, func(tx repository.Queryer) error {
+		for _, comp := range components {
+			// invalidateCache=false: caller invalidates after the outer tx commits.
+			if err := translationService.DeployToStageTx(tx, comp.ID, req.Locale, fromStage, toStage, userID, false); err != nil {
+				return fmt.Errorf("component %s: %w", comp.Code, err)
+			}
 		}
-	}
-	deploy.StageCompleted = string(toStage)
-	if err := database.DB.Save(&deploy).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to record deploy state: " + err.Error()})
+		return h.deploys.SetStage(ctx, tx, appID, req.Locale, string(toStage))
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Deploy failed — no changes persisted, safe to retry",
+			"detail": err.Error(),
+			"retry":  true,
+		})
 		return
 	}
 
@@ -587,26 +591,26 @@ func (h *ApplicationHandler) GetAddLanguageJobStatus(c *gin.Context) {
 		return
 	}
 
-	job, err := jobs.GetJobStatus(appID, jobID)
+	statusJob, err := jobs.GetJobStatus(appID, jobID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if job == nil {
+	if statusJob == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
 		return
 	}
 
 	resp := gin.H{
-		"job_id":               job.ID.String(),
-		"locale":               job.Locale,
-		"status":               job.Status,
-		"total_components":     job.TotalComponents,
-		"completed_components": job.CompletedComponents,
+		"job_id":               statusJob.ID.String(),
+		"locale":               statusJob.Locale,
+		"status":               statusJob.Status,
+		"total_components":     statusJob.TotalComponents,
+		"completed_components": statusJob.CompletedComponents,
 	}
-	if job.Status == models.JobStatusFailed {
-		resp["error_message"] = job.ErrorMessage
-		resp["error_detail"] = job.ErrorDetail
+	if statusJob.Status == job.StatusFailed {
+		resp["error_message"] = statusJob.ErrorMessage
+		resp["error_detail"] = statusJob.ErrorDetail
 		resp["retry"] = true
 	}
 	c.JSON(http.StatusOK, resp)
@@ -621,17 +625,19 @@ func (h *ApplicationHandler) GetActiveJobs(c *gin.Context) {
 		return
 	}
 
-	activeStatuses := []string{models.JobStatusPending, models.JobStatusRunning}
+	ctx := c.Request.Context()
 
-	// Add-language jobs
-	var addJobs []models.AddLanguageJob
-	if err := database.DB.Where("application_id = ? AND status IN ?", appID, activeStatuses).
-		Order("created_at ASC").Find(&addJobs).Error; err != nil {
+	// Add-language jobs — repo-backed, simple list.
+	addJobs, err := h.addLangJobs.ListActiveByApp(ctx, database.SQLX, appID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Translate jobs — join component name
+	// Translate jobs — joined against components for display name/code. The
+	// join isn't covered by either repository's contract (it's a UI-shaped
+	// list), so we keep a one-off raw query inline rather than bloating the
+	// repository surface with a method only this endpoint needs.
 	type translateJobRow struct {
 		JobID         string   `json:"job_id"`
 		ComponentID   string   `json:"component_id"`
@@ -642,37 +648,44 @@ func (h *ApplicationHandler) GetActiveJobs(c *gin.Context) {
 		Status        string   `json:"status"`
 	}
 	type rawRow struct {
-		ID            uuid.UUID
-		ComponentID   uuid.UUID
-		ComponentCode string
-		ComponentName string
-		JobType       string
-		TargetLocales models.StringArray
-		Status        string
+		ID            uuid.UUID      `db:"id"`
+		ComponentID   uuid.UUID      `db:"component_id"`
+		ComponentCode string         `db:"component_code"`
+		ComponentName string         `db:"component_name"`
+		JobType       string         `db:"job_type"`
+		TargetLocales pqStringArray  `db:"target_locales"`
+		Status        string         `db:"status"`
 	}
+	const activeTranslateJobsQuery = `
+		SELECT tj.id, tj.component_id, c.code AS component_code, c.name AS component_name,
+		       tj.job_type, tj.target_locales, tj.status
+		FROM translate_jobs tj
+		JOIN components c ON c.id = tj.component_id AND c.deleted_at IS NULL
+		WHERE tj.application_id = $1
+		  AND tj.status IN ('pending', 'running')
+		  AND tj.deleted_at IS NULL
+		ORDER BY tj.created_at ASC
+	`
 	var rawRows []rawRow
-	database.DB.Table("translate_jobs tj").
-		Select("tj.id, tj.component_id, c.code AS component_code, c.name AS component_name, tj.job_type, tj.target_locales, tj.status").
-		Joins("JOIN components c ON c.id = tj.component_id AND c.deleted_at IS NULL").
-		Where("tj.application_id = ? AND tj.status IN ? AND tj.deleted_at IS NULL", appID, activeStatuses).
-		Order("tj.created_at ASC").
-		Scan(&rawRows)
+	if err := database.SQLX.SelectContext(ctx, &rawRows, activeTranslateJobsQuery, appID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	translateRows := make([]translateJobRow, 0, len(rawRows))
 	for _, r := range rawRows {
+		targets := []string{}
+		if r.TargetLocales != nil {
+			targets = []string(r.TargetLocales)
+		}
 		translateRows = append(translateRows, translateJobRow{
 			JobID:         r.ID.String(),
 			ComponentID:   r.ComponentID.String(),
 			ComponentCode: r.ComponentCode,
 			ComponentName: r.ComponentName,
 			JobType:       r.JobType,
-			TargetLocales: func() []string {
-				if r.TargetLocales == nil {
-					return []string{}
-				}
-				return []string(r.TargetLocales)
-			}(),
-			Status: r.Status,
+			TargetLocales: targets,
+			Status:        r.Status,
 		})
 	}
 
@@ -752,10 +765,8 @@ func (h *ApplicationHandler) DeleteLanguage(c *gin.Context) {
 		componentIDs = append(componentIDs, comp.ID)
 	}
 
-	// Cascade-delete still uses GORM for translation_versions + application_locale_deploys
-	// (those repositories ship in commits F and H). The application row's enabled_languages
-	// update goes through the new repo on a non-tx Queryer — see comment below for why
-	// that split is acceptable for this transitional commit.
+	// Cascade-delete across translation_versions + application_locale_deploys
+	// + applications.enabled_languages, all sqlx-backed now, in one tx.
 	userIDForUpdate, _ := h.getCurrentUser(c)
 	newLangs := make([]string, 0, len(app.EnabledLanguages))
 	for _, l := range app.EnabledLanguages {
@@ -763,20 +774,17 @@ func (h *ApplicationHandler) DeleteLanguage(c *gin.Context) {
 			newLangs = append(newLangs, l)
 		}
 	}
-	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if len(componentIDs) > 0 {
-			if err := tx.Where("component_id IN ? AND locale = ?", componentIDs, locale).Delete(&models.TranslationVersion{}).Error; err != nil {
+	translationsRepo := translation.New()
+	if err := repository.WithTx(ctx, database.SQLX, func(tx repository.Queryer) error {
+		for _, compID := range componentIDs {
+			if err := translationsRepo.DeleteByComponentLocale(ctx, tx, compID, locale); err != nil {
 				return err
 			}
 		}
-		if err := tx.Where("application_id = ? AND locale = ?", appID, locale).Delete(&models.ApplicationLocaleDeploy{}).Error; err != nil {
+		if err := h.deploys.Delete(ctx, tx, appID, locale); err != nil {
 			return err
 		}
-		// Update enabled_languages inside the tx via raw SQL so the locale removal
-		// and cascade deletes commit atomically. Goes back to h.apps.UpdateEnabledLanguages
-		// once we have a unified Queryer-based path post-Commit I.
-		return tx.Exec(`UPDATE applications SET enabled_languages = ?, updated_by = ?, updated_at = NOW() WHERE id = ? AND deleted_at IS NULL`,
-			models.StringArray(newLangs), userIDForUpdate, appID).Error
+		return h.apps.UpdateEnabledLanguages(ctx, tx, appID, newLangs, userIDForUpdate)
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete language: " + err.Error()})
 		return

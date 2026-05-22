@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -8,12 +10,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/middleware"
 	"github.com/your-org/i18n-center/models"
 	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/job"
 	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
@@ -21,12 +25,14 @@ import (
 type TranslationHandler struct {
 	translationService *services.TranslationService
 	auditService       services.AuditServicer
+	translateJobs      job.TranslateRepository
 }
 
 func NewTranslationHandler() *TranslationHandler {
 	return &TranslationHandler{
 		translationService: services.NewTranslationService(),
 		auditService:       services.NewAuditService(),
+		translateJobs:      job.NewTranslateRepository(),
 	}
 }
 
@@ -666,8 +672,10 @@ func (h *TranslationHandler) AutoTranslate(c *gin.Context) {
 	}
 
 	// Verify component + application exist before enqueuing
-	var component models.Component
-	if err := database.DB.First(&component, "id = ?", componentID).Error; err != nil {
+	ctx := c.Request.Context()
+	componentRepo := h.translationService.ComponentRepo()
+	comp, err := componentRepo.GetByID(ctx, database.SQLX, componentID)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
 		return
 	}
@@ -686,29 +694,28 @@ func (h *TranslationHandler) AutoTranslate(c *gin.Context) {
 	// creating a duplicate. The partial unique index idx_translate_jobs_dedupe
 	// enforces this at the DB level too — this lookup just gives a clean 202
 	// response when a user double-clicks, instead of bouncing back a 500.
-	if existing := findActiveTranslateJob(componentID, req.SourceLocale, req.TargetLocale, models.TranslateJobTypeAutoTranslate); existing != nil {
+	if existing := h.findActiveTranslateJob(ctx, componentID, req.SourceLocale, req.TargetLocale, job.TranslateTypeAutoTranslate); existing != nil {
 		c.JSON(http.StatusAccepted, gin.H{
-			"job_id":     existing.ID.String(),
-			"status":     existing.Status,
-			"deduped":    true,
-			"message":    "Existing translation job is still " + existing.Status + ". Poll /translate-jobs/" + existing.ID.String() + " for status.",
+			"job_id":  existing.ID.String(),
+			"status":  existing.Status,
+			"deduped": true,
+			"message": "Existing translation job is still " + existing.Status + ". Poll /translate-jobs/" + existing.ID.String() + " for status.",
 		})
 		return
 	}
 
-	job := models.TranslateJob{
-		ApplicationID: component.ApplicationID,
+	newJob := &job.TranslateJob{
+		ApplicationID: comp.ApplicationID,
 		ComponentID:   componentID,
-		JobType:       models.TranslateJobTypeAutoTranslate,
+		JobType:       job.TranslateTypeAutoTranslate,
 		SourceLocale:  req.SourceLocale,
-		TargetLocales: models.StringArray{req.TargetLocale},
-		Status:        models.JobStatusPending,
+		TargetLocales: pq.StringArray{req.TargetLocale},
 		CreatedBy:     userID,
 	}
-	if err := database.DB.Create(&job).Error; err != nil {
-		// Unique-index violation race: another request enqueued the same job between
-		// our lookup and our insert. Find and return it.
-		if existing := findActiveTranslateJob(componentID, req.SourceLocale, req.TargetLocale, models.TranslateJobTypeAutoTranslate); existing != nil {
+	if err := h.translateJobs.Insert(ctx, database.SQLX, newJob); err != nil {
+		// Unique-index violation race: another request enqueued the same job
+		// between our lookup and our insert. Find and return it.
+		if existing := h.findActiveTranslateJob(ctx, componentID, req.SourceLocale, req.TargetLocale, job.TranslateTypeAutoTranslate); existing != nil {
 			c.JSON(http.StatusAccepted, gin.H{
 				"job_id":  existing.ID.String(),
 				"status":  existing.Status,
@@ -722,25 +729,22 @@ func (h *TranslationHandler) AutoTranslate(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"job_id":  job.ID.String(),
-		"status":  job.Status,
-		"message": "Translation job enqueued. Poll /translate-jobs/" + job.ID.String() + " for status.",
+		"job_id":  newJob.ID.String(),
+		"status":  job.StatusPending,
+		"message": "Translation job enqueued. Poll /translate-jobs/" + newJob.ID.String() + " for status.",
 	})
 }
 
 // findActiveTranslateJob returns the first pending/running TranslateJob matching
-// the de-duplication tuple, or nil if none exists.
-func findActiveTranslateJob(componentID uuid.UUID, sourceLocale, targetLocale, jobType string) *models.TranslateJob {
-	var job models.TranslateJob
-	err := database.DB.Where(
-		"component_id = ? AND source_locale = ? AND target_locales[1] = ? AND job_type = ? AND status IN ?",
-		componentID, sourceLocale, targetLocale, jobType,
-		[]string{models.JobStatusPending, models.JobStatusRunning},
-	).Order("created_at DESC").First(&job).Error
+// the de-duplication tuple, or nil if none exists. Errors are swallowed — the
+// caller treats nil as "no in-flight job" and proceeds to insert (which will
+// hit the unique index if a concurrent insert won the race).
+func (h *TranslationHandler) findActiveTranslateJob(ctx context.Context, componentID uuid.UUID, sourceLocale, targetLocale, jobType string) *job.TranslateJob {
+	existing, err := h.translateJobs.FindActive(ctx, database.SQLX, componentID, sourceLocale, targetLocale, jobType)
 	if err != nil {
 		return nil
 	}
-	return &job
+	return existing
 }
 
 type BackfillRequest struct {
@@ -784,8 +788,10 @@ func (h *TranslationHandler) BackfillTranslations(c *gin.Context) {
 	}
 
 	// Verify component exists
-	var component models.Component
-	if err := database.DB.First(&component, "id = ?", componentID).Error; err != nil {
+	ctx := c.Request.Context()
+	componentRepo := h.translationService.ComponentRepo()
+	comp, err := componentRepo.GetByID(ctx, database.SQLX, componentID)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
 		return
 	}
@@ -806,23 +812,22 @@ func (h *TranslationHandler) BackfillTranslations(c *gin.Context) {
 	jobIDs := make([]string, 0, len(req.TargetLocales))
 	dedupedCount := 0
 	for _, targetLocale := range req.TargetLocales {
-		if existing := findActiveTranslateJob(componentID, req.SourceLocale, targetLocale, models.TranslateJobTypeBackfill); existing != nil {
+		if existing := h.findActiveTranslateJob(ctx, componentID, req.SourceLocale, targetLocale, job.TranslateTypeBackfill); existing != nil {
 			jobIDs = append(jobIDs, existing.ID.String())
 			dedupedCount++
 			continue
 		}
-		job := models.TranslateJob{
-			ApplicationID: component.ApplicationID,
+		newJob := &job.TranslateJob{
+			ApplicationID: comp.ApplicationID,
 			ComponentID:   componentID,
-			JobType:       models.TranslateJobTypeBackfill,
+			JobType:       job.TranslateTypeBackfill,
 			SourceLocale:  req.SourceLocale,
-			TargetLocales: models.StringArray{targetLocale},
-			Status:        models.JobStatusPending,
+			TargetLocales: pq.StringArray{targetLocale},
 			CreatedBy:     userID,
 		}
-		if err := database.DB.Create(&job).Error; err != nil {
+		if err := h.translateJobs.Insert(ctx, database.SQLX, newJob); err != nil {
 			// Lost the dedupe race — pick up the existing job and keep going.
-			if existing := findActiveTranslateJob(componentID, req.SourceLocale, targetLocale, models.TranslateJobTypeBackfill); existing != nil {
+			if existing := h.findActiveTranslateJob(ctx, componentID, req.SourceLocale, targetLocale, job.TranslateTypeBackfill); existing != nil {
 				jobIDs = append(jobIDs, existing.ID.String())
 				dedupedCount++
 				continue
@@ -830,7 +835,7 @@ func (h *TranslationHandler) BackfillTranslations(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue job for locale " + targetLocale})
 			return
 		}
-		jobIDs = append(jobIDs, job.ID.String())
+		jobIDs = append(jobIDs, newJob.ID.String())
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
@@ -860,13 +865,17 @@ func (h *TranslationHandler) GetTranslateJobStatus(c *gin.Context) {
 		return
 	}
 
-	var job models.TranslateJob
-	if err := database.DB.First(&job, "id = ?", jobID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+	j, err := h.translateJobs.GetByID(c.Request.Context(), database.SQLX, jobID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, job)
+	c.JSON(http.StatusOK, j)
 }
 
 // ListComponentTranslateJobs returns all TranslateJobs for a component, newest first.
@@ -890,15 +899,33 @@ func (h *TranslationHandler) ListComponentTranslateJobs(c *gin.Context) {
 		return
 	}
 
-	q := database.DB.Where("component_id = ?", componentID)
+	// Dashboard endpoint: bounded list (50) of recent jobs for one component,
+	// optionally narrowed to specific statuses. The dynamic IN-list filter is
+	// the only variation, so we build it inline rather than carrying it as a
+	// repository concern.
+	const baseQuery = `
+		SELECT id, application_id, component_id, job_type, source_locale, target_locales,
+		       status, error_message, error_detail, claimed_by,
+		       created_by, created_at, updated_at
+		FROM translate_jobs
+		WHERE component_id = $1 AND deleted_at IS NULL
+	`
+	args := []interface{}{componentID}
+	query := baseQuery
 
 	if statusFilter := c.Query("status"); statusFilter != "" {
 		statuses := strings.Split(statusFilter, ",")
-		q = q.Where("status IN ?", statuses)
+		placeholders := make([]string, len(statuses))
+		for i, s := range statuses {
+			placeholders[i] = fmt.Sprintf("$%d", len(args)+1)
+			args = append(args, strings.TrimSpace(s))
+		}
+		query += " AND status IN (" + strings.Join(placeholders, ",") + ")"
 	}
+	query += " ORDER BY created_at DESC LIMIT 50"
 
-	var jobs []models.TranslateJob
-	if err := q.Order("created_at DESC").Limit(50).Find(&jobs).Error; err != nil {
+	var jobs []job.TranslateJob
+	if err := database.SQLX.SelectContext(c.Request.Context(), &jobs, query, args...); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

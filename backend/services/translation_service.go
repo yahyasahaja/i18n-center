@@ -43,6 +43,12 @@ func NewTranslationService() *TranslationService {
 	}
 }
 
+// ComponentRepo exposes the underlying component repository so handlers that
+// already hold a TranslationService can do lightweight component reads without
+// instantiating their own repo. Kept narrow on purpose — if you need more
+// translation persistence ops, add a service method, not another getter.
+func (s *TranslationService) ComponentRepo() component.Repository { return s.components }
+
 // ─── Cache invalidation ──────────────────────────────────────────────────────
 
 // InvalidateAfterTranslationWrite busts every cache that could now be stale
