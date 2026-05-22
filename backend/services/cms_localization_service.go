@@ -1,60 +1,60 @@
+// services/cms_localization_service.go contains the legacy SaveCmsLocalizationVersion
+// helper. As of Commit G it's a thin wrapper around cms.LocalizationRepository
+// — the race-retry logic moved into the repository layer. The exported function
+// stays so the worker (still on GORM until Commit H) doesn't need to change.
+//
+// TODO(commit H): once the worker is converted, delete this file and call
+// cms.LocalizationRepository.SaveLocalizationVersion directly.
 package services
 
 import (
-	"fmt"
+	"context"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
+
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/models"
-	"gorm.io/gorm"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/cms"
+	"github.com/your-org/i18n-center/repository/translation"
 )
 
-// SaveCmsLocalizationVersion inserts a new CmsLocalization row with the next
-// version number for (cmsItemID, locale, stage). The MAX(version)+1 read+insert
-// is racy under concurrent writes — two callers can pick the same number — so
-// we rely on idx_cms_loc_unique_version (partial unique index) to catch the
-// collision and retry. Same pattern as TranslationService.saveVersion.
+// SaveCmsLocalizationVersion preserves the GORM-era signature for the worker.
+// The tx parameter is accepted but only used as a signal — when non-nil we
+// still route through the sqlx repository against database.SQLX, accepting
+// that the outer GORM tx and this insert are NOT atomic with each other.
 //
-// Pass tx != nil to participate in an outer transaction. The function does NOT
-// invalidate cache or trigger any retention sweep — callers handle that.
-//
-// Used by: cms_item_handler (SaveLocalization, DeployLocalization, RevertLocalization)
-// and jobs/worker.go (processCmsTranslateJob).
+// This is a transitional bridge. Commit H rewrites the worker to use sqlx
+// transactions and the repository directly; this function gets deleted then.
 func SaveCmsLocalizationVersion(tx *gorm.DB, cmsItemID uuid.UUID, locale string, stage models.DeploymentStage, data models.JSONB, sourceLocale string, userID uuid.UUID) (*models.CmsLocalization, error) {
-	db := tx
-	if db == nil {
-		db = database.DB
+	repo := cms.NewLocalizationRepository()
+	l := &cms.Localization{
+		CmsItemID:    cmsItemID,
+		Locale:       locale,
+		Stage:        translation.Stage(stage),
+		Data:         repository.JSONB(data),
+		SourceLocale: sourceLocale,
+		IsActive:     true,
+		CreatedBy:    userID,
+		UpdatedBy:    userID,
 	}
-
-	const maxAttempts = 5
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		var latestVersion int
-		db.Model(&models.CmsLocalization{}).
-			Where("cms_item_id = ? AND locale = ? AND stage = ?", cmsItemID, locale, stage).
-			Select("COALESCE(MAX(version), 0)").
-			Scan(&latestVersion)
-
-		loc := models.CmsLocalization{
-			CmsItemID:    cmsItemID,
-			Locale:       locale,
-			Stage:        stage,
-			Version:      latestVersion + 1,
-			Data:         data,
-			SourceLocale: sourceLocale,
-			IsActive:     true,
-			CreatedBy:    userID,
-			UpdatedBy:    userID,
-		}
-		if err := db.Create(&loc).Error; err == nil {
-			return &loc, nil
-		} else {
-			lastErr = err
-			if !IsUniqueViolation(err) {
-				return nil, err
-			}
-			// Lost the race — another writer used our version number. Re-read MAX and retry.
-		}
+	if err := repo.SaveLocalizationVersion(context.Background(), database.SQLX, l); err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("SaveCmsLocalizationVersion: exhausted %d retries on unique version conflict: %w", maxAttempts, lastErr)
+	// Translate back to the GORM model shape the worker expects.
+	return &models.CmsLocalization{
+		ID:           l.ID,
+		CmsItemID:    l.CmsItemID,
+		Locale:       l.Locale,
+		Stage:        stage,
+		Version:      l.Version,
+		Data:         data,
+		SourceLocale: l.SourceLocale,
+		IsActive:     l.IsActive,
+		CreatedBy:    l.CreatedBy,
+		UpdatedBy:    l.UpdatedBy,
+		CreatedAt:    l.CreatedAt,
+		UpdatedAt:    l.UpdatedAt,
+	}, nil
 }

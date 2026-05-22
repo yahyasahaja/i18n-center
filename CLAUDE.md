@@ -313,7 +313,7 @@ The data layer is being moved off GORM onto raw SQL. New code MUST follow this p
 
 See `backend/repository/types.go` for the base abstractions and `backend/repository/<resource>/` for example impls.
 
-### Migration status (Commit F in flight)
+### Migration status (Commit G in flight)
 | Resource | Repository | Handlers wired |
 |---|---|---|
 | User | `repository/user` | ✅ |
@@ -323,7 +323,9 @@ See `backend/repository/types.go` for the base abstractions and `backend/reposit
 | Page | `repository/page` | ✅ |
 | Component | `repository/component` | ✅ (CRUD + tag/page attach via transaction) |
 | TranslationVersion | `repository/translation` | ✅ (preserves saveVersion race-retry via partial unique index) |
-| CmsTemplate, CmsItem, CmsLocalization, CmsTemplateField | — | Commit G |
+| CmsTemplate + CmsTemplateField | `repository/cms` | ✅ (template + child fields via ReplaceFields) |
+| CmsItem | `repository/cms` | ✅ (with normalised identifier + template preload) |
+| CmsLocalization | `repository/cms` | ✅ (preserves SaveLocalizationVersion race-retry) |
 | AuditLog, AddLanguageJob, TranslateJob, CmsTranslateJob, ApplicationLocaleDeploy | — | Commit H |
 
 GORM stays loaded in `database.DB` until Commit I — handlers that haven't been ported yet still use it.

@@ -1,15 +1,20 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
 	"github.com/your-org/i18n-center/database"
 	"github.com/your-org/i18n-center/middleware"
 	"github.com/your-org/i18n-center/models"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/cms"
+	"github.com/your-org/i18n-center/repository/translation"
 	"github.com/your-org/i18n-center/services"
 )
 
@@ -22,11 +27,20 @@ func normalizeIdentifier(s string) string {
 }
 
 type CmsItemHandler struct {
-	auditService services.AuditServicer
+	auditService  services.AuditServicer
+	templates     cms.TemplateRepository
+	items         cms.ItemRepository
+	localizations cms.LocalizationRepository
 }
 
 func NewCmsItemHandler() *CmsItemHandler {
-	return &CmsItemHandler{auditService: services.NewAuditService()}
+	templates := cms.NewTemplateRepository()
+	return &CmsItemHandler{
+		auditService:  services.NewAuditService(),
+		templates:     templates,
+		items:         cms.NewItemRepository(templates),
+		localizations: cms.NewLocalizationRepository(),
+	}
 }
 
 func (h *CmsItemHandler) currentUser(c *gin.Context) (uuid.UUID, string) {
@@ -41,44 +55,62 @@ func (h *CmsItemHandler) currentUser(c *gin.Context) (uuid.UUID, string) {
 	return userID, name
 }
 
-
 // ─── CMS Items ───────────────────────────────────────────────────────────────
 
 // ListItems returns all CMS items for an application.
 // @Summary      List CMS items
-// @Description  Get all CMS items for an application
 // @Tags         cms
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id  path      string  true  "Application ID (UUID)"
-// @Success      200  {array}   models.CmsItem
+// @Success      200  {array}   cms.Item
 // @Failure      401  {object}  map[string]string
 // @Router       /applications/{id}/cms/items [get]
 func (h *CmsItemHandler) ListItems(c *gin.Context) {
-	appID := c.Param("id")
-	var items []models.CmsItem
-	if err := database.DB.Preload("Template").Where("application_id = ?", appID).Find(&items).Error; err != nil {
+	appID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid application ID"})
+		return
+	}
+	ctx := c.Request.Context()
+	items, err := h.items.ListByApp(ctx, database.SQLX, appID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	// Preload templates for each item so the list page can display template names
+	// without an N+1 round-trip from the admin UI. Bounded by item count (~100s).
+	for i := range items {
+		t, err := h.templates.GetByID(ctx, database.SQLX, items[i].TemplateID)
+		if err == nil {
+			items[i].Template = t
+		}
 	}
 	c.JSON(http.StatusOK, items)
 }
 
-// GetItem returns a single CMS item with its template and fields.
+// GetItem returns a single CMS item with its template + fields preloaded.
 // @Summary      Get CMS item
-// @Description  Get a single CMS item with its template and fields
 // @Tags         cms
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id  path      string  true  "CMS item ID (UUID)"
-// @Success      200  {object}  models.CmsItem
+// @Success      200  {object}  cms.Item
 // @Failure      404  {object}  map[string]string
 // @Router       /cms/items/{id} [get]
 func (h *CmsItemHandler) GetItem(c *gin.Context) {
-	id := c.Param("id")
-	var item models.CmsItem
-	if err := database.DB.Preload("Template.Fields").First(&item, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CMS item ID"})
+		return
+	}
+	item, err := h.items.GetByIDWithTemplate(c.Request.Context(), database.SQLX, id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, item)
@@ -93,20 +125,17 @@ type createCmsItemBody struct {
 
 // CreateItem creates a new CMS item in an application.
 // @Summary      Create CMS item
-// @Description  Create a new CMS item in an application
 // @Tags         cms
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id    path      string             true  "Application ID (UUID)"
 // @Param        body  body      createCmsItemBody  true  "CMS item data"
-// @Success      201  {object}  models.CmsItem
+// @Success      201  {object}  cms.Item
 // @Failure      400  {object}  map[string]string
-// @Failure      401  {object}  map[string]string
 // @Router       /applications/{id}/cms/items [post]
 func (h *CmsItemHandler) CreateItem(c *gin.Context) {
-	appID := c.Param("id")
-	appUUID, err := uuid.Parse(appID)
+	appUUID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid application ID"})
 		return
@@ -124,16 +153,20 @@ func (h *CmsItemHandler) CreateItem(c *gin.Context) {
 		return
 	}
 
-	// Verify template belongs to the same application
-	var tmpl models.CmsTemplate
-	if err := database.DB.First(&tmpl, "id = ? AND application_id = ?", templateID, appUUID).Error; err != nil {
+	ctx := c.Request.Context()
+
+	// Verify template belongs to the same application. Looking up via the repo
+	// + checking ApplicationID is one round-trip instead of GORM's filter on
+	// the WHERE clause.
+	tmpl, err := h.templates.GetByID(ctx, database.SQLX, templateID)
+	if err != nil || tmpl.ApplicationID != appUUID {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Template not found in this application"})
 		return
 	}
 
 	userID, username := h.currentUser(c)
 
-	item := models.CmsItem{
+	item := cms.Item{
 		ApplicationID: appUUID,
 		TemplateID:    templateID,
 		Identifier:    normalizeIdentifier(body.Identifier),
@@ -143,8 +176,8 @@ func (h *CmsItemHandler) CreateItem(c *gin.Context) {
 		UpdatedBy:     userID,
 	}
 
-	if err := database.DB.Create(&item).Error; err != nil {
-		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
+	if err := h.items.Create(ctx, database.SQLX, &item); err != nil {
+		if errors.Is(err, repository.ErrConflict) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "CMS item identifier already exists in this application"})
 			return
 		}
@@ -152,7 +185,10 @@ func (h *CmsItemHandler) CreateItem(c *gin.Context) {
 		return
 	}
 
-	database.DB.Preload("Template").First(&item, item.ID)
+	// Reload with template for the response.
+	if reloaded, err := h.items.GetByIDWithTemplate(ctx, database.SQLX, item.ID); err == nil {
+		item = *reloaded
+	}
 	h.auditService.LogCreate(userID, username, "cms_item", item.ID, item.Identifier, item, c.ClientIP(), c.GetHeader("User-Agent"))
 	c.JSON(http.StatusCreated, item)
 }
@@ -165,22 +201,31 @@ type updateCmsItemBody struct {
 
 // UpdateItem updates a CMS item's metadata.
 // @Summary      Update CMS item
-// @Description  Update a CMS item's metadata
 // @Tags         cms
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id    path      string             true  "CMS item ID (UUID)"
 // @Param        body  body      updateCmsItemBody  true  "CMS item update data"
-// @Success      200  {object}  models.CmsItem
+// @Success      200  {object}  cms.Item
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Router       /cms/items/{id} [put]
 func (h *CmsItemHandler) UpdateItem(c *gin.Context) {
-	id := c.Param("id")
-	var item models.CmsItem
-	if err := database.DB.First(&item, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CMS item ID"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	item, err := h.items.GetByID(ctx, database.SQLX, id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -204,8 +249,8 @@ func (h *CmsItemHandler) UpdateItem(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid template_id"})
 			return
 		}
-		var tmpl models.CmsTemplate
-		if err := database.DB.First(&tmpl, "id = ? AND application_id = ?", tid, item.ApplicationID).Error; err != nil {
+		tmpl, err := h.templates.GetByID(ctx, database.SQLX, tid)
+		if err != nil || tmpl.ApplicationID != item.ApplicationID {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Template not found in this application"})
 			return
 		}
@@ -213,19 +258,21 @@ func (h *CmsItemHandler) UpdateItem(c *gin.Context) {
 	}
 	item.UpdatedBy = userID
 
-	if err := database.DB.Save(&item).Error; err != nil {
+	if err := h.items.Update(ctx, database.SQLX, item); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	database.DB.Preload("Template").First(&item, item.ID)
+	if reloaded, err := h.items.GetByIDWithTemplate(ctx, database.SQLX, item.ID); err == nil {
+		item = reloaded
+	}
 	h.auditService.LogUpdate(userID, username, "cms_item", item.ID, item.Identifier, nil, item, c.ClientIP(), c.GetHeader("User-Agent"))
 	c.JSON(http.StatusOK, item)
 }
 
-// DeleteItem deletes a CMS item and all its localizations.
+// DeleteItem soft-deletes a CMS item. Localizations stay (filtered out at
+// read time via deleted_at on the item) so the audit trail is preserved.
 // @Summary      Delete CMS item
-// @Description  Delete a CMS item and all its localizations
 // @Tags         cms
 // @Produce      json
 // @Security     BearerAuth
@@ -234,17 +281,25 @@ func (h *CmsItemHandler) UpdateItem(c *gin.Context) {
 // @Failure      404  {object}  map[string]string
 // @Router       /cms/items/{id} [delete]
 func (h *CmsItemHandler) DeleteItem(c *gin.Context) {
-	id := c.Param("id")
-	var item models.CmsItem
-	if err := database.DB.First(&item, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CMS item ID"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	item, err := h.items.GetByID(ctx, database.SQLX, id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	userID, username := h.currentUser(c)
-
-	database.DB.Where("cms_item_id = ?", item.ID).Delete(&models.CmsLocalization{})
-	if err := database.DB.Delete(&item).Error; err != nil {
+	if err := h.items.SoftDelete(ctx, database.SQLX, id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -255,90 +310,99 @@ func (h *CmsItemHandler) DeleteItem(c *gin.Context) {
 
 // ─── CMS Localizations ───────────────────────────────────────────────────────
 
-// ListLocalizations returns all localizations for a CMS item.
+// ListLocalizations returns all localizations for a CMS item across all locale/stage combinations.
 // @Summary      List localizations
-// @Description  Get all localizations for a CMS item
 // @Tags         cms
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id  path      string  true  "CMS item ID (UUID)"
-// @Success      200  {array}   models.CmsLocalization
+// @Success      200  {array}   cms.Localization
 // @Failure      401  {object}  map[string]string
 // @Router       /cms/items/{id}/localizations [get]
 func (h *CmsItemHandler) ListLocalizations(c *gin.Context) {
-	itemID := c.Param("id")
-	var localizations []models.CmsLocalization
-	if err := database.DB.Where("cms_item_id = ?", itemID).Find(&localizations).Error; err != nil {
+	itemID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CMS item ID"})
+		return
+	}
+	locs, err := h.localizations.ListAll(c.Request.Context(), database.SQLX, itemID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, localizations)
+	c.JSON(http.StatusOK, locs)
 }
 
-// GetLocalization returns the latest localization for a CMS item + locale + stage.
+// GetLocalization returns the latest localization for (item, locale, stage).
 // @Summary      Get localization
-// @Description  Get the latest localization for a CMS item by locale and stage
 // @Tags         cms
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id      path      string  true   "CMS item ID (UUID)"
 // @Param        locale  query     string  false  "Locale code (default: en)"
 // @Param        stage   query     string  false  "Stage: draft | staging | production (default: draft)"
-// @Success      200  {object}  models.CmsLocalization
+// @Success      200  {object}  cms.Localization
 // @Failure      404  {object}  map[string]string
 // @Router       /cms/items/{id}/localizations/detail [get]
 func (h *CmsItemHandler) GetLocalization(c *gin.Context) {
-	itemID := c.Param("id")
+	itemID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CMS item ID"})
+		return
+	}
 	locale := c.Query("locale")
-	stage := models.DeploymentStage(c.Query("stage"))
 	if locale == "" {
 		locale = "en"
 	}
+	stage := translation.Stage(c.Query("stage"))
 	if stage == "" {
-		stage = models.StageDraft
+		stage = translation.StageDraft
 	}
 
-	var loc models.CmsLocalization
-	if err := database.DB.
-		Where("cms_item_id = ? AND locale = ? AND stage = ?", itemID, locale, stage).
-		Order("version DESC").
-		First(&loc).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Localization not found"})
+	loc, err := h.localizations.GetLatest(c.Request.Context(), database.SQLX, itemID, locale, stage)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Localization not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, loc)
 }
 
 type saveCmsLocalizationBody struct {
-	Locale string       `json:"locale" binding:"required"`
-	Stage  string       `json:"stage" binding:"required"`
-	Data   models.JSONB `json:"data" binding:"required"`
+	Locale string           `json:"locale" binding:"required"`
+	Stage  string           `json:"stage" binding:"required"`
+	Data   repository.JSONB `json:"data" binding:"required"`
 }
 
 // SaveLocalization creates a new version of a localization (always appends).
 // @Summary      Save localization
-// @Description  Creates a new version of a CMS localization (non-destructive — always appends)
 // @Tags         cms
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id    path      string                   true  "CMS item ID (UUID)"
 // @Param        body  body      saveCmsLocalizationBody  true  "Localization data"
-// @Success      201  {object}  models.CmsLocalization
+// @Success      201  {object}  cms.Localization
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Router       /cms/items/{id}/localizations [post]
 func (h *CmsItemHandler) SaveLocalization(c *gin.Context) {
-	itemID := c.Param("id")
-	itemUUID, err := uuid.Parse(itemID)
+	itemUUID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CMS item ID"})
 		return
 	}
 
-	var item models.CmsItem
-	if err := database.DB.Preload("Template.Fields").First(&item, "id = ?", itemUUID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+	ctx := c.Request.Context()
+	if _, err := h.items.GetByID(ctx, database.SQLX, itemUUID); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -348,16 +412,23 @@ func (h *CmsItemHandler) SaveLocalization(c *gin.Context) {
 		return
 	}
 
-	stage := models.DeploymentStage(body.Stage)
-	if stage != models.StageDraft && stage != models.StageStaging && stage != models.StageProduction {
+	stage := translation.Stage(body.Stage)
+	if stage != translation.StageDraft && stage != translation.StageStaging && stage != translation.StageProduction {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid stage"})
 		return
 	}
 
 	userID, _ := h.currentUser(c)
-
-	loc, err := services.SaveCmsLocalizationVersion(nil, itemUUID, body.Locale, stage, body.Data, "", userID)
-	if err != nil {
+	loc := &cms.Localization{
+		CmsItemID: itemUUID,
+		Locale:    body.Locale,
+		Stage:     stage,
+		Data:      body.Data,
+		IsActive:  true,
+		CreatedBy: userID,
+		UpdatedBy: userID,
+	}
+	if err := h.localizations.SaveLocalizationVersion(ctx, database.SQLX, loc); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -370,9 +441,10 @@ type translateCmsLocalizationBody struct {
 	Stage        string `json:"stage" binding:"required"`
 }
 
-// TranslateLocalization enqueues an async AI translation job for a CMS localization.
+// TranslateLocalization enqueues an async AI translation job. CmsTranslateJob
+// itself still lives on GORM until Commit H — this handler reads the item via
+// the new repo but writes the job row through the legacy ORM.
 // @Summary      Translate localization
-// @Description  Enqueues an async AI translation job. Poll /cms/translate-jobs/{job_id} for status
 // @Tags         cms
 // @Accept       json
 // @Produce      json
@@ -384,16 +456,20 @@ type translateCmsLocalizationBody struct {
 // @Failure      404  {object}  map[string]string
 // @Router       /cms/items/{id}/localizations/translate [post]
 func (h *CmsItemHandler) TranslateLocalization(c *gin.Context) {
-	itemID := c.Param("id")
-	itemUUID, err := uuid.Parse(itemID)
+	itemUUID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CMS item ID"})
 		return
 	}
 
-	var item models.CmsItem
-	if err := database.DB.First(&item, "id = ?", itemUUID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+	ctx := c.Request.Context()
+	item, err := h.items.GetByID(ctx, database.SQLX, itemUUID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -403,29 +479,28 @@ func (h *CmsItemHandler) TranslateLocalization(c *gin.Context) {
 		return
 	}
 
-	stage := models.DeploymentStage(body.Stage)
+	stage := translation.Stage(body.Stage)
 
-	// Verify source localization exists
-	var sourceLoc models.CmsLocalization
-	if err := database.DB.
-		Where("cms_item_id = ? AND locale = ? AND stage = ?", itemUUID, body.SourceLocale, stage).
-		Order("version DESC").
-		First(&sourceLoc).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Source localization not found"})
+	// Verify source localization exists via the new repo.
+	if _, err := h.localizations.GetLatest(ctx, database.SQLX, itemUUID, body.SourceLocale, stage); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Source localization not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	userID, _ := h.currentUser(c)
 
-	// Idempotency: dedupe double-clicks on the same (item, source, target, stage).
-	// idx_cms_translate_jobs_dedupe enforces this at the DB layer; this lookup
-	// gives a clean 202 response rather than bouncing back a 500.
-	if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, body.TargetLocale, stage); existing != nil {
+	// Idempotency: dedupe double-clicks. cms_translate_jobs still uses GORM
+	// in this commit; we keep the existing helper.
+	if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, body.TargetLocale, models.DeploymentStage(stage)); existing != nil {
 		c.JSON(http.StatusAccepted, gin.H{
 			"job_id":  existing.ID.String(),
 			"status":  existing.Status,
 			"deduped": true,
-			"message": "Existing CMS translation job is " + existing.Status + ". Poll /cms/translate-jobs/" + existing.ID.String() + " for status.",
+			"message": "Existing CMS translation job is " + existing.Status + ".",
 		})
 		return
 	}
@@ -435,14 +510,12 @@ func (h *CmsItemHandler) TranslateLocalization(c *gin.Context) {
 		CmsItemID:     itemUUID,
 		SourceLocale:  body.SourceLocale,
 		TargetLocale:  body.TargetLocale,
-		Stage:         stage,
+		Stage:         models.DeploymentStage(stage),
 		Status:        models.JobStatusPending,
 		CreatedBy:     userID,
 	}
-
 	if err := database.DB.Create(&job).Error; err != nil {
-		// Lost the dedupe race — DB unique constraint kicked in.
-		if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, body.TargetLocale, stage); existing != nil {
+		if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, body.TargetLocale, models.DeploymentStage(stage)); existing != nil {
 			c.JSON(http.StatusAccepted, gin.H{
 				"job_id":  existing.ID.String(),
 				"status":  existing.Status,
@@ -463,7 +536,8 @@ func (h *CmsItemHandler) TranslateLocalization(c *gin.Context) {
 }
 
 // findActiveCmsTranslateJob returns the first pending/running CmsTranslateJob
-// matching the de-duplication tuple, or nil if none exists.
+// matching the de-duplication tuple, or nil if none exists. Still GORM until
+// Commit H.
 func findActiveCmsTranslateJob(cmsItemID uuid.UUID, sourceLocale, targetLocale string, stage models.DeploymentStage) *models.CmsTranslateJob {
 	var job models.CmsTranslateJob
 	err := database.DB.Where(
@@ -485,7 +559,6 @@ type backfillCmsLocalizationBody struct {
 
 // BackfillLocalizations enqueues one async AI translation job per target locale.
 // @Summary      Backfill CMS localizations (async)
-// @Description  Enqueue OpenAI translation jobs for multiple target locales. Poll each job_id for individual status.
 // @Tags         cms
 // @Accept       json
 // @Produce      json
@@ -493,20 +566,22 @@ type backfillCmsLocalizationBody struct {
 // @Param        id    path      string                       true  "CMS item ID (UUID)"
 // @Param        body  body      backfillCmsLocalizationBody  true  "Backfill request"
 // @Success      202  {object}  map[string]interface{}
-// @Failure      400  {object}  map[string]string
-// @Failure      404  {object}  map[string]string
 // @Router       /cms/items/{id}/localizations/backfill [post]
 func (h *CmsItemHandler) BackfillLocalizations(c *gin.Context) {
-	itemID := c.Param("id")
-	itemUUID, err := uuid.Parse(itemID)
+	itemUUID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CMS item ID"})
 		return
 	}
 
-	var item models.CmsItem
-	if err := database.DB.First(&item, "id = ?", itemUUID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+	ctx := c.Request.Context()
+	item, err := h.items.GetByID(ctx, database.SQLX, itemUUID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -520,27 +595,26 @@ func (h *CmsItemHandler) BackfillLocalizations(c *gin.Context) {
 		return
 	}
 
-	stage := models.DeploymentStage(body.Stage)
+	stage := translation.Stage(body.Stage)
 
-	// Verify source localization exists
-	var sourceLoc models.CmsLocalization
-	if err := database.DB.
-		Where("cms_item_id = ? AND locale = ? AND stage = ?", itemUUID, body.SourceLocale, stage).
-		Order("version DESC").
-		First(&sourceLoc).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Source localization not found"})
+	// Verify source localization exists.
+	if _, err := h.localizations.GetLatest(ctx, database.SQLX, itemUUID, body.SourceLocale, stage); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Source localization not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	userID, _ := h.currentUser(c)
-
 	jobIDs := make([]string, 0, len(body.TargetLocales))
 	dedupedCount := 0
 	for _, targetLocale := range body.TargetLocales {
 		if targetLocale == body.SourceLocale {
 			continue
 		}
-		if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, targetLocale, stage); existing != nil {
+		if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, targetLocale, models.DeploymentStage(stage)); existing != nil {
 			jobIDs = append(jobIDs, existing.ID.String())
 			dedupedCount++
 			continue
@@ -550,13 +624,12 @@ func (h *CmsItemHandler) BackfillLocalizations(c *gin.Context) {
 			CmsItemID:     itemUUID,
 			SourceLocale:  body.SourceLocale,
 			TargetLocale:  targetLocale,
-			Stage:         stage,
+			Stage:         models.DeploymentStage(stage),
 			Status:        models.JobStatusPending,
 			CreatedBy:     userID,
 		}
 		if err := database.DB.Create(&job).Error; err != nil {
-			// Lost the dedupe race — pick up the existing job and keep going.
-			if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, targetLocale, stage); existing != nil {
+			if existing := findActiveCmsTranslateJob(itemUUID, body.SourceLocale, targetLocale, models.DeploymentStage(stage)); existing != nil {
 				jobIDs = append(jobIDs, existing.ID.String())
 				dedupedCount++
 				continue
@@ -571,7 +644,7 @@ func (h *CmsItemHandler) BackfillLocalizations(c *gin.Context) {
 		"job_ids":       jobIDs,
 		"count":         len(jobIDs),
 		"deduped_count": dedupedCount,
-		"message":       fmt.Sprintf("%d CMS translation jobs (%d already in-flight). Poll /cms/translate-jobs/:job_id for each status.", len(jobIDs)-dedupedCount, dedupedCount),
+		"message":       fmt.Sprintf("%d CMS translation jobs (%d already in-flight).", len(jobIDs)-dedupedCount, dedupedCount),
 	})
 }
 
@@ -582,21 +655,19 @@ type deployCmsLocalizationBody struct {
 }
 
 // DeployLocalization promotes a CMS localization from one stage to the next.
+// Reads source from fromStage, writes a new row at toStage with the same data.
 // @Summary      Deploy localization
-// @Description  Promotes a localization from one stage to the next (draft→staging or staging→production)
 // @Tags         cms
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id    path      string                      true  "CMS item ID (UUID)"
 // @Param        body  body      deployCmsLocalizationBody   true  "Deploy request"
-// @Success      200  {object}  models.CmsLocalization
-// @Failure      400  {object}  map[string]string
+// @Success      200  {object}  cms.Localization
 // @Failure      404  {object}  map[string]string
 // @Router       /cms/items/{id}/localizations/deploy [post]
 func (h *CmsItemHandler) DeployLocalization(c *gin.Context) {
-	itemID := c.Param("id")
-	itemUUID, err := uuid.Parse(itemID)
+	itemUUID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CMS item ID"})
 		return
@@ -608,23 +679,31 @@ func (h *CmsItemHandler) DeployLocalization(c *gin.Context) {
 		return
 	}
 
-	fromStage := models.DeploymentStage(body.FromStage)
-	toStage := models.DeploymentStage(body.ToStage)
+	fromStage := translation.Stage(body.FromStage)
+	toStage := translation.Stage(body.ToStage)
 
-	// Fetch latest source localization
-	var source models.CmsLocalization
-	if err := database.DB.
-		Where("cms_item_id = ? AND locale = ? AND stage = ?", itemUUID, body.Locale, fromStage).
-		Order("version DESC").
-		First(&source).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Source localization not found"})
+	ctx := c.Request.Context()
+	source, err := h.localizations.GetLatest(ctx, database.SQLX, itemUUID, body.Locale, fromStage)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Source localization not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	userID, _ := h.currentUser(c)
-
-	deployed, err := services.SaveCmsLocalizationVersion(nil, itemUUID, body.Locale, toStage, source.Data, "", userID)
-	if err != nil {
+	deployed := &cms.Localization{
+		CmsItemID: itemUUID,
+		Locale:    body.Locale,
+		Stage:     toStage,
+		Data:      source.Data,
+		IsActive:  true,
+		CreatedBy: userID,
+		UpdatedBy: userID,
+	}
+	if err := h.localizations.SaveLocalizationVersion(ctx, database.SQLX, deployed); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -638,20 +717,19 @@ type revertCmsLocalizationBody struct {
 }
 
 // RevertLocalization creates a new version from a previous version's data.
+// Non-destructive — the old version stays in the history.
 // @Summary      Revert localization
-// @Description  Creates a new version from an older version's data (non-destructive)
 // @Tags         cms
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id    path      string                      true  "CMS item ID (UUID)"
 // @Param        body  body      revertCmsLocalizationBody   true  "Revert request"
-// @Success      200  {object}  models.CmsLocalization
+// @Success      200  {object}  cms.Localization
 // @Failure      404  {object}  map[string]string
 // @Router       /cms/items/{id}/localizations/revert [post]
 func (h *CmsItemHandler) RevertLocalization(c *gin.Context) {
-	itemID := c.Param("id")
-	itemUUID, err := uuid.Parse(itemID)
+	itemUUID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CMS item ID"})
 		return
@@ -663,53 +741,64 @@ func (h *CmsItemHandler) RevertLocalization(c *gin.Context) {
 		return
 	}
 
-	var prev models.CmsLocalization
-	if err := database.DB.
-		Where("cms_item_id = ? AND locale = ? AND stage = ? AND version = ?", itemUUID, body.Locale, body.Stage, body.Version).
-		First(&prev).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
+	ctx := c.Request.Context()
+	stage := translation.Stage(body.Stage)
+	prev, err := h.localizations.GetByVersion(ctx, database.SQLX, itemUUID, body.Locale, stage, body.Version)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	userID, _ := h.currentUser(c)
-
-	reverted, err := services.SaveCmsLocalizationVersion(nil, itemUUID, body.Locale, models.DeploymentStage(body.Stage), prev.Data, "", userID)
-	if err != nil {
+	reverted := &cms.Localization{
+		CmsItemID: itemUUID,
+		Locale:    body.Locale,
+		Stage:     stage,
+		Data:      prev.Data,
+		IsActive:  true,
+		CreatedBy: userID,
+		UpdatedBy: userID,
+	}
+	if err := h.localizations.SaveLocalizationVersion(ctx, database.SQLX, reverted); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, reverted)
 }
 
-// ListVersions lists all versions of a CMS localization for a given locale + stage.
+// ListVersions lists all versions of a CMS localization for (locale, stage), newest first.
 // @Summary      List localization versions
-// @Description  List all versions of a CMS localization for a given locale and stage
 // @Tags         cms
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id      path      string  true   "CMS item ID (UUID)"
 // @Param        locale  query     string  true   "Locale code"
 // @Param        stage   query     string  false  "Stage: draft | staging | production (default: draft)"
-// @Success      200  {array}   models.CmsLocalization
+// @Success      200  {array}   cms.Localization
 // @Failure      400  {object}  map[string]string
 // @Router       /cms/items/{id}/localizations/versions [get]
 func (h *CmsItemHandler) ListVersions(c *gin.Context) {
-	itemID := c.Param("id")
+	itemID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CMS item ID"})
+		return
+	}
 	locale := c.Query("locale")
-	stage := c.Query("stage")
 	if locale == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "locale query param required"})
 		return
 	}
+	stage := translation.Stage(c.Query("stage"))
 	if stage == "" {
-		stage = "draft"
+		stage = translation.StageDraft
 	}
 
-	var versions []models.CmsLocalization
-	if err := database.DB.
-		Where("cms_item_id = ? AND locale = ? AND stage = ?", itemID, locale, stage).
-		Order("version DESC").
-		Find(&versions).Error; err != nil {
+	versions, err := h.localizations.ListVersions(c.Request.Context(), database.SQLX, itemID, locale, stage)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -717,8 +806,8 @@ func (h *CmsItemHandler) ListVersions(c *gin.Context) {
 }
 
 // GetCmsTranslateJobStatus returns the status of a CmsTranslateJob by ID.
+// Still GORM until Commit H.
 // @Summary      Get translate job status
-// @Description  Get the status of a CMS translate job by ID
 // @Tags         cms
 // @Produce      json
 // @Security     BearerAuth
@@ -736,10 +825,9 @@ func (h *CmsItemHandler) GetCmsTranslateJobStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, job)
 }
 
-// GetCmsItemByIdentifier returns the latest production localization for a CMS item by identifier.
-// Used by the public-facing translation API.
+// GetCmsItemByIdentifier returns the latest production localization for a CMS item.
+// Public-facing read; accepts either JWT or API key (scoped to the URL's application).
 // @Summary      Get CMS item by identifier
-// @Description  Returns localized CMS content by identifier. Accessible via API key. Intended for client applications (FE, mobile)
 // @Tags         cms-public
 // @Produce      json
 // @Param        id          path      string  true   "Application ID (UUID)"
@@ -757,9 +845,9 @@ func GetCmsItemByIdentifier(c *gin.Context) {
 	if locale == "" {
 		locale = "en"
 	}
-	stage := models.DeploymentStage(stageStr)
+	stage := translation.Stage(stageStr)
 	if stage == "" {
-		stage = models.StageProduction
+		stage = translation.StageProduction
 	}
 
 	applicationID, err := uuid.Parse(appIDStr)
@@ -768,34 +856,39 @@ func GetCmsItemByIdentifier(c *gin.Context) {
 		return
 	}
 
-	// Application-scope check for API-key-authenticated requests. Without this,
-	// an API key issued for app A can fetch CMS content from app B. JWT requests
-	// pass through (operators already scoped at the role layer).
+	// API-key application scoping (cross-tenant data leak prevention).
 	if apiKeyAppID := middleware.GetAPIKeyApplicationID(c); apiKeyAppID != uuid.Nil && apiKeyAppID != applicationID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "API key does not have access to this application"})
 		return
 	}
 
-	var item models.CmsItem
-	if err := database.DB.
-		Where("application_id = ? AND identifier = ?", applicationID, identifier).
-		First(&item).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+	ctx := c.Request.Context()
+	items := cms.NewItemRepository(cms.NewTemplateRepository())
+	locs := cms.NewLocalizationRepository()
+
+	item, err := items.GetByAppIdentifier(ctx, database.SQLX, applicationID, identifier)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "CMS item not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	var loc models.CmsLocalization
-	if err := database.DB.
-		Where("cms_item_id = ? AND locale = ? AND stage = ?", item.ID, locale, stage).
-		Order("version DESC").
-		First(&loc).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Localization not found"})
+	loc, err := locs.GetLatest(ctx, database.SQLX, item.ID, locale, stage)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Localization not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Same cache strategy as translation read endpoints: Cloudflare-cacheable for
-	// production, no-store for draft/staging so operator edits are visible immediately.
-	if stage == models.StageProduction {
+	// Cloudflare-cacheable for production; private no-store for draft/staging
+	// so operator edits show immediately.
+	if stage == translation.StageProduction {
 		c.Header("Cache-Control", "public, max-age=60, s-maxage=300, stale-while-revalidate=600")
 		c.Header("Vary", "X-API-Key, Authorization, Accept-Encoding")
 	} else {

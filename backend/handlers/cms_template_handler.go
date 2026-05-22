@@ -1,23 +1,30 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
 	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/models"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/cms"
 	"github.com/your-org/i18n-center/services"
 )
 
 type CmsTemplateHandler struct {
 	auditService services.AuditServicer
+	templates    cms.TemplateRepository
 }
 
 func NewCmsTemplateHandler() *CmsTemplateHandler {
-	return &CmsTemplateHandler{auditService: services.NewAuditService()}
+	return &CmsTemplateHandler{
+		auditService: services.NewAuditService(),
+		templates:    cms.NewTemplateRepository(),
+	}
 }
 
 func (h *CmsTemplateHandler) currentUser(c *gin.Context) (uuid.UUID, string) {
@@ -39,45 +46,59 @@ func (h *CmsTemplateHandler) currentUser(c *gin.Context) (uuid.UUID, string) {
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id  path      string  true  "Application ID (UUID)"
-// @Success      200  {array}   models.CmsTemplate
+// @Success      200  {array}   cms.Template
 // @Failure      401  {object}  map[string]string
 // @Router       /applications/{id}/cms/templates [get]
 func (h *CmsTemplateHandler) ListTemplates(c *gin.Context) {
-	appID := c.Param("id")
-	var templates []models.CmsTemplate
-	if err := database.DB.Preload("Fields").Where("application_id = ?", appID).Find(&templates).Error; err != nil {
+	appID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid application ID"})
+		return
+	}
+	ctx := c.Request.Context()
+	templates, err := h.templates.ListByApp(ctx, database.SQLX, appID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// Populate Fields per template for the response. Page size is bounded
+	// (templates per app << 100 in practice); N+1 is fine.
 	for i := range templates {
-		sort.Slice(templates[i].Fields, func(a, b int) bool {
-			return templates[i].Fields[a].SortOrder < templates[i].Fields[b].SortOrder
-		})
+		fields, err := h.templates.LoadFields(ctx, database.SQLX, templates[i].ID)
+		if err == nil {
+			sortFields(fields)
+			templates[i].Fields = fields
+		}
 	}
 	c.JSON(http.StatusOK, templates)
 }
 
-// GetTemplate returns a single CMS template by ID.
+// GetTemplate returns a single CMS template by ID, including its fields.
 // @Summary      Get template
-// @Description  Get a single CMS template by ID
 // @Tags         cms
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id  path      string  true  "Template ID (UUID)"
-// @Success      200  {object}  models.CmsTemplate
+// @Success      200  {object}  cms.Template
 // @Failure      404  {object}  map[string]string
 // @Router       /cms/templates/{id} [get]
 func (h *CmsTemplateHandler) GetTemplate(c *gin.Context) {
-	id := c.Param("id")
-	var tmpl models.CmsTemplate
-	if err := database.DB.Preload("Fields").First(&tmpl, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid template ID"})
 		return
 	}
-	sort.Slice(tmpl.Fields, func(a, b int) bool {
-		return tmpl.Fields[a].SortOrder < tmpl.Fields[b].SortOrder
-	})
-	c.JSON(http.StatusOK, tmpl)
+	t, err := h.templates.GetByIDWithFields(c.Request.Context(), database.SQLX, id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	sortFields(t.Fields)
+	c.JSON(http.StatusOK, t)
 }
 
 type cmsTemplateFieldInput struct {
@@ -95,22 +116,19 @@ type createCmsTemplateBody struct {
 	Fields      []cmsTemplateFieldInput `json:"fields"`
 }
 
-// CreateTemplate creates a new CMS template with its fields.
+// CreateTemplate creates a new CMS template with its fields, atomically.
 // @Summary      Create template
-// @Description  Create a new CMS template with its fields
 // @Tags         cms
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id    path      string                 true  "Application ID (UUID)"
 // @Param        body  body      createCmsTemplateBody  true  "Template data"
-// @Success      201  {object}  models.CmsTemplate
+// @Success      201  {object}  cms.Template
 // @Failure      400  {object}  map[string]string
-// @Failure      401  {object}  map[string]string
 // @Router       /applications/{id}/cms/templates [post]
 func (h *CmsTemplateHandler) CreateTemplate(c *gin.Context) {
-	appID := c.Param("id")
-	appUUID, err := uuid.Parse(appID)
+	appUUID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid application ID"})
 		return
@@ -122,9 +140,17 @@ func (h *CmsTemplateHandler) CreateTemplate(c *gin.Context) {
 		return
 	}
 
+	// Validate value_types up front so we fail before opening a transaction.
+	for _, f := range body.Fields {
+		if !cms.IsValidValueType(f.ValueType) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid value_type: " + f.ValueType})
+			return
+		}
+	}
+
 	userID, username := h.currentUser(c)
 
-	tmpl := models.CmsTemplate{
+	tmpl := cms.Template{
 		ApplicationID: appUUID,
 		Name:          strings.TrimSpace(body.Name),
 		Code:          strings.TrimSpace(body.Code),
@@ -133,10 +159,15 @@ func (h *CmsTemplateHandler) CreateTemplate(c *gin.Context) {
 		UpdatedBy:     userID,
 	}
 
-	tx := database.DB.Begin()
-	if err := tx.Create(&tmpl).Error; err != nil {
-		tx.Rollback()
-		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
+	ctx := c.Request.Context()
+	if err := repository.WithTx(ctx, database.SQLX, func(tx repository.Queryer) error {
+		if err := h.templates.Create(ctx, tx, &tmpl); err != nil {
+			return err
+		}
+		fields := mapInputToFields(body.Fields, tmpl.ID)
+		return h.templates.ReplaceFields(ctx, tx, tmpl.ID, fields)
+	}); err != nil {
+		if errors.Is(err, repository.ErrConflict) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Template code already exists for this application"})
 			return
 		}
@@ -144,65 +175,52 @@ func (h *CmsTemplateHandler) CreateTemplate(c *gin.Context) {
 		return
 	}
 
-	for _, f := range body.Fields {
-		if !isValidCmsValueType(f.ValueType) {
-			tx.Rollback()
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid value_type: " + f.ValueType})
-			return
-		}
-		field := models.CmsTemplateField{
-			TemplateID: tmpl.ID,
-			Key:        strings.TrimSpace(f.Key),
-			Label:      strings.TrimSpace(f.Label),
-			ValueType:  f.ValueType,
-			Required:   f.Required,
-			SortOrder:  f.SortOrder,
-		}
-		if err := tx.Create(&field).Error; err != nil {
-			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
+	// Reload with fields populated for the response.
+	if reloaded, err := h.templates.GetByIDWithFields(ctx, database.SQLX, tmpl.ID); err == nil {
+		sortFields(reloaded.Fields)
+		tmpl = *reloaded
 	}
-
-	if err := tx.Commit().Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	database.DB.Preload("Fields").First(&tmpl, tmpl.ID)
-	sort.Slice(tmpl.Fields, func(a, b int) bool {
-		return tmpl.Fields[a].SortOrder < tmpl.Fields[b].SortOrder
-	})
 
 	h.auditService.LogCreate(userID, username, "cms_template", tmpl.ID, tmpl.Code, tmpl, c.ClientIP(), c.GetHeader("User-Agent"))
 	c.JSON(http.StatusCreated, tmpl)
 }
 
 type updateCmsTemplateBody struct {
-	Name        *string                  `json:"name"`
-	Description *string                  `json:"description"`
-	Fields      []cmsTemplateFieldInput  `json:"fields"`
+	Name        *string                 `json:"name"`
+	Description *string                 `json:"description"`
+	Fields      []cmsTemplateFieldInput `json:"fields"`
 }
 
-// UpdateTemplate replaces a CMS template's metadata and fields.
+// UpdateTemplate replaces a CMS template's metadata and (optionally) its full
+// field list. Fields, when provided, REPLACE the current set — clients that
+// want to add a single field must send the full updated list.
+//
 // @Summary      Update template
-// @Description  Replace a CMS template's metadata and fields
 // @Tags         cms
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id    path      string                 true  "Template ID (UUID)"
 // @Param        body  body      updateCmsTemplateBody  true  "Template update data"
-// @Success      200  {object}  models.CmsTemplate
+// @Success      200  {object}  cms.Template
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Router       /cms/templates/{id} [put]
 func (h *CmsTemplateHandler) UpdateTemplate(c *gin.Context) {
-	id := c.Param("id")
-	var tmpl models.CmsTemplate
-	if err := database.DB.First(&tmpl, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid template ID"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	tmpl, err := h.templates.GetByID(ctx, database.SQLX, id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -213,7 +231,6 @@ func (h *CmsTemplateHandler) UpdateTemplate(c *gin.Context) {
 	}
 
 	userID, username := h.currentUser(c)
-
 	if body.Name != nil {
 		tmpl.Name = strings.TrimSpace(*body.Name)
 	}
@@ -222,59 +239,39 @@ func (h *CmsTemplateHandler) UpdateTemplate(c *gin.Context) {
 	}
 	tmpl.UpdatedBy = userID
 
-	tx := database.DB.Begin()
-	if err := tx.Save(&tmpl).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	if body.Fields != nil {
-		// Replace all fields
-		if err := tx.Where("template_id = ?", tmpl.ID).Delete(&models.CmsTemplateField{}).Error; err != nil {
-			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	// Validate value_types up front (before opening the tx).
+	for _, f := range body.Fields {
+		if !cms.IsValidValueType(f.ValueType) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid value_type: " + f.ValueType})
 			return
 		}
-		for _, f := range body.Fields {
-			if !isValidCmsValueType(f.ValueType) {
-				tx.Rollback()
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid value_type: " + f.ValueType})
-				return
-			}
-			field := models.CmsTemplateField{
-				TemplateID: tmpl.ID,
-				Key:        strings.TrimSpace(f.Key),
-				Label:      strings.TrimSpace(f.Label),
-				ValueType:  f.ValueType,
-				Required:   f.Required,
-				SortOrder:  f.SortOrder,
-			}
-			if err := tx.Create(&field).Error; err != nil {
-				tx.Rollback()
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-		}
 	}
 
-	if err := tx.Commit().Error; err != nil {
+	if err := repository.WithTx(ctx, database.SQLX, func(tx repository.Queryer) error {
+		if err := h.templates.Update(ctx, tx, tmpl); err != nil {
+			return err
+		}
+		if body.Fields != nil {
+			fields := mapInputToFields(body.Fields, tmpl.ID)
+			return h.templates.ReplaceFields(ctx, tx, tmpl.ID, fields)
+		}
+		return nil
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	database.DB.Preload("Fields").First(&tmpl, tmpl.ID)
-	sort.Slice(tmpl.Fields, func(a, b int) bool {
-		return tmpl.Fields[a].SortOrder < tmpl.Fields[b].SortOrder
-	})
+	if reloaded, err := h.templates.GetByIDWithFields(ctx, database.SQLX, tmpl.ID); err == nil {
+		sortFields(reloaded.Fields)
+		tmpl = reloaded
+	}
 
 	h.auditService.LogUpdate(userID, username, "cms_template", tmpl.ID, tmpl.Code, nil, tmpl, c.ClientIP(), c.GetHeader("User-Agent"))
 	c.JSON(http.StatusOK, tmpl)
 }
 
-// DeleteTemplate deletes a CMS template and its fields.
+// DeleteTemplate refuses to delete if items still reference it.
 // @Summary      Delete template
-// @Description  Delete a CMS template and its fields
 // @Tags         cms
 // @Produce      json
 // @Security     BearerAuth
@@ -284,36 +281,68 @@ func (h *CmsTemplateHandler) UpdateTemplate(c *gin.Context) {
 // @Failure      404  {object}  map[string]string
 // @Router       /cms/templates/{id} [delete]
 func (h *CmsTemplateHandler) DeleteTemplate(c *gin.Context) {
-	id := c.Param("id")
-	var tmpl models.CmsTemplate
-	if err := database.DB.First(&tmpl, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid template ID"})
 		return
 	}
 
-	userID, username := h.currentUser(c)
+	ctx := c.Request.Context()
+	tmpl, err := h.templates.GetByID(ctx, database.SQLX, id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
-	// Check no CmsItems reference this template
-	var count int64
-	database.DB.Model(&models.CmsItem{}).Where("template_id = ?", tmpl.ID).Count(&count)
+	count, err := h.templates.CountItemsForTemplate(ctx, database.SQLX, tmpl.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	if count > 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot delete template: it is used by existing CMS items"})
 		return
 	}
 
-	if err := database.DB.Delete(&tmpl).Error; err != nil {
+	if err := h.templates.SoftDelete(ctx, database.SQLX, tmpl.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
+	userID, username := h.currentUser(c)
 	h.auditService.LogDelete(userID, username, "cms_template", tmpl.ID, tmpl.Code, tmpl, c.ClientIP(), c.GetHeader("User-Agent"))
 	c.JSON(http.StatusOK, gin.H{"message": "Template deleted"})
 }
 
-func isValidCmsValueType(vt string) bool {
-	switch vt {
-	case models.CmsValueTypeText, models.CmsValueTypeTextarea, models.CmsValueTypeRichText, models.CmsValueTypeJSON:
-		return true
+// mapInputToFields converts the user-facing field-input slice into the
+// repository's TemplateField shape, trimming string values along the way.
+// TemplateID is set by ReplaceFields.
+func mapInputToFields(input []cmsTemplateFieldInput, templateID uuid.UUID) []cms.TemplateField {
+	out := make([]cms.TemplateField, len(input))
+	for i, f := range input {
+		out[i] = cms.TemplateField{
+			TemplateID: templateID,
+			Key:        strings.TrimSpace(f.Key),
+			Label:      strings.TrimSpace(f.Label),
+			ValueType:  f.ValueType,
+			Required:   f.Required,
+			SortOrder:  f.SortOrder,
+		}
 	}
-	return false
+	return out
+}
+
+// sortFields sorts the provided slice in-place by (SortOrder, Key) so the
+// response order is stable for a given template configuration.
+func sortFields(fields []cms.TemplateField) {
+	sort.Slice(fields, func(a, b int) bool {
+		if fields[a].SortOrder != fields[b].SortOrder {
+			return fields[a].SortOrder < fields[b].SortOrder
+		}
+		return fields[a].Key < fields[b].Key
+	})
 }
