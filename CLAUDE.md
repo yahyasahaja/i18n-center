@@ -313,13 +313,15 @@ The data layer is being moved off GORM onto raw SQL. New code MUST follow this p
 
 See `backend/repository/types.go` for the base abstractions and `backend/repository/<resource>/` for example impls.
 
-### Migration status (Commit D in flight)
+### Migration status (Commit E in flight)
 | Resource | Repository | Handlers wired |
 |---|---|---|
 | User | `repository/user` | ✅ |
 | Application | `repository/application` | ✅ (CRUD + AddLanguage + DeleteLanguage; jobs path still on GORM) |
 | ApplicationAPIKey | `repository/apikey` | ✅ (also powers `auth.ValidateAPIKey`) |
-| Tag, Page, Component | — | Commit E |
+| Tag | `repository/tag` | ✅ |
+| Page | `repository/page` | ✅ |
+| Component | `repository/component` | ✅ (CRUD + tag/page attach via transaction) |
 | TranslationVersion | — | Commit F |
 | CmsTemplate, CmsItem, CmsLocalization, CmsTemplateField | — | Commit G |
 | AuditLog, AddLanguageJob, TranslateJob, CmsTranslateJob, ApplicationLocaleDeploy | — | Commit H |

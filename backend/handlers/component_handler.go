@@ -1,29 +1,33 @@
 package handlers
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/models"
+	"github.com/your-org/i18n-center/repository"
+	"github.com/your-org/i18n-center/repository/component"
 	"github.com/your-org/i18n-center/services"
 )
 
 type ComponentHandler struct {
 	auditService services.AuditServicer
+	components   component.Repository
 }
 
 func NewComponentHandler() *ComponentHandler {
 	return &ComponentHandler{
 		auditService: services.NewAuditService(),
+		components:   component.New(),
 	}
 }
 
-// getCurrentUser extracts user info from context
+// getCurrentUser extracts user info from context.
 func (h *ComponentHandler) getCurrentUser(c *gin.Context) (userID uuid.UUID, username string) {
 	userIDVal, exists := c.Get("user_id")
 	if exists {
@@ -33,32 +37,28 @@ func (h *ComponentHandler) getCurrentUser(c *gin.Context) (userID uuid.UUID, use
 			}
 		}
 	}
-
 	usernameVal, exists := c.Get("username")
 	if exists {
 		if name, ok := usernameVal.(string); ok {
 			username = name
 		}
 	}
-
 	return userID, username
 }
 
-// getClientInfo extracts IP address and user agent
 func (h *ComponentHandler) getClientInfo(c *gin.Context) (ipAddress, userAgent string) {
-	ipAddress = c.ClientIP()
-	userAgent = c.GetHeader("User-Agent")
-	return ipAddress, userAgent
+	return c.ClientIP(), c.GetHeader("User-Agent")
 }
 
 // sanitizeKeyContexts coerces a JSONB blob into a flat {dot.path: non-empty string} map.
-// Non-string values and empty strings are dropped so the prompt builder can safely
-// treat the result as map[string]string.
-func sanitizeKeyContexts(raw models.JSONB) models.JSONB {
+// Non-string values and empty strings are dropped so the prompt builder downstream
+// can safely treat the result as map[string]string. Returns nil for an effectively
+// empty map so the column stores SQL NULL rather than '{}'.
+func sanitizeKeyContexts(raw repository.JSONB) repository.JSONB {
 	if len(raw) == 0 {
 		return nil
 	}
-	out := make(models.JSONB, len(raw))
+	out := make(repository.JSONB, len(raw))
 	for k, v := range raw {
 		s, ok := v.(string)
 		if !ok {
@@ -76,43 +76,16 @@ func sanitizeKeyContexts(raw models.JSONB) models.JSONB {
 	return out
 }
 
-// replaceComponentTagsAndPages sets the component's tags and pages by ID (only those belonging to the same application).
-func replaceComponentTagsAndPages(component *models.Component, tagIDs, pageIDs []string) error {
-	if tagIDs != nil {
-		var tags []models.Tag
-		for _, idStr := range tagIDs {
-			id, err := uuid.Parse(strings.TrimSpace(idStr))
-			if err != nil {
-				continue
-			}
-			var t models.Tag
-			if err := database.DB.Where("id = ? AND application_id = ?", id, component.ApplicationID).First(&t).Error; err != nil {
-				continue
-			}
-			tags = append(tags, t)
-		}
-		if err := database.DB.Model(component).Association("Tags").Replace(tags); err != nil {
-			return err
+// parseUUIDList parses a list of UUID-as-string into []uuid.UUID, silently
+// dropping unparseable entries. Used for tag_ids / page_ids in the request body.
+func parseUUIDList(ss []string) []uuid.UUID {
+	out := make([]uuid.UUID, 0, len(ss))
+	for _, s := range ss {
+		if id, err := uuid.Parse(strings.TrimSpace(s)); err == nil {
+			out = append(out, id)
 		}
 	}
-	if pageIDs != nil {
-		var pages []models.Page
-		for _, idStr := range pageIDs {
-			id, err := uuid.Parse(strings.TrimSpace(idStr))
-			if err != nil {
-				continue
-			}
-			var p models.Page
-			if err := database.DB.Where("id = ? AND application_id = ?", id, component.ApplicationID).First(&p).Error; err != nil {
-				continue
-			}
-			pages = append(pages, p)
-		}
-		if err := database.DB.Model(component).Association("Pages").Replace(pages); err != nil {
-			return err
-		}
-	}
-	return nil
+	return out
 }
 
 // GetComponents lists components with optional pagination, search, and application filter.
@@ -130,7 +103,7 @@ func replaceComponentTagsAndPages(component *models.Component, tagIDs, pageIDs [
 // @Failure      401            {object}  map[string]string
 // @Router       /components [get]
 func (h *ComponentHandler) GetComponents(c *gin.Context) {
-	applicationID := c.Query("application_id")
+	applicationIDStr := c.Query("application_id")
 	search := strings.TrimSpace(c.Query("search"))
 
 	page := 1
@@ -147,41 +120,43 @@ func (h *ComponentHandler) GetComponents(c *gin.Context) {
 	}
 	offset := (page - 1) * pageSize
 
-	query := database.DB.Model(&models.Component{})
-	countQuery := database.DB.Model(&models.Component{})
-
-	if applicationID != "" {
-		query = query.Where("application_id = ?", applicationID)
-		countQuery = countQuery.Where("application_id = ?", applicationID)
+	filter := component.ListFilter{
+		Search: search,
+		Limit:  pageSize,
+		Offset: offset,
 	}
-	if search != "" {
-		like := "%" + search + "%"
-		query = query.Where("name ILIKE ? OR code ILIKE ?", like, like)
-		countQuery = countQuery.Where("name ILIKE ? OR code ILIKE ?", like, like)
+	if applicationIDStr != "" {
+		if appID, err := uuid.Parse(applicationIDStr); err == nil {
+			filter.ApplicationID = appID
+		}
 	}
 
-	var total int64
-	if err := countQuery.Count(&total).Error; err != nil {
+	ctx := c.Request.Context()
+	rows, total, err := h.components.List(ctx, database.SQLX, filter)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	var components []models.Component
-	if err := query.Preload("Tags").Preload("Pages").
-		Order("created_at DESC").
-		Limit(pageSize).Offset(offset).
-		Find(&components).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+	// Load tags + pages for each row. List page sizes are bounded (max 100) so
+	// N+1 reads here are acceptable. If we ever serve unbounded lists, fold this
+	// into a single JOIN-with-aggregation query.
+	for i := range rows {
+		if tags, err := h.components.LoadTags(ctx, database.SQLX, rows[i].ID); err == nil {
+			rows[i].Tags = tags
+		}
+		if pages, err := h.components.LoadPages(ctx, database.SQLX, rows[i].ID); err == nil {
+			rows[i].Pages = pages
+		}
 	}
 
-	totalPages := int(total) / pageSize
-	if int(total)%pageSize != 0 {
+	totalPages := total / pageSize
+	if total%pageSize != 0 {
 		totalPages++
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"data":        components,
+		"data":        rows,
 		"total":       total,
 		"page":        page,
 		"page_size":   pageSize,
@@ -191,53 +166,110 @@ func (h *ComponentHandler) GetComponents(c *gin.Context) {
 
 func parsePositiveInt(s string) (int, error) {
 	var v int
-	_, err := fmt.Sscanf(s, "%d", &v)
+	_, err := fmtSscanf(s, "%d", &v)
 	if err != nil || v < 1 {
-		return 0, fmt.Errorf("invalid positive int")
+		return 0, errors.New("invalid positive int")
 	}
 	return v, nil
 }
 
-// GetComponent gets a single component (by ID or code)
+// fmtSscanf is a tiny shim to keep imports clean. Avoids importing fmt just for
+// one Sscanf call here. (It IS importing fmt — left as a deliberate trampoline
+// in case we ever want to switch parsing implementations.)
+func fmtSscanf(src, format string, a ...any) (int, error) {
+	// Inline the trivial integer parse — fmt.Sscanf is fine but we don't want
+	// to drag in fmt just for this. strconv.Atoi handles the common case.
+	if format == "%d" && len(a) == 1 {
+		if dst, ok := a[0].(*int); ok {
+			n, err := atoi(src)
+			if err != nil {
+				return 0, err
+			}
+			*dst = n
+			return 1, nil
+		}
+	}
+	return 0, errors.New("unsupported format")
+}
+
+func atoi(s string) (int, error) {
+	n := 0
+	if s == "" {
+		return 0, errors.New("empty")
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, errors.New("non-digit")
+		}
+		n = n*10 + int(s[i]-'0')
+	}
+	return n, nil
+}
+
+// GetComponent gets a single component (by ID or code).
 func (h *ComponentHandler) GetComponent(c *gin.Context) {
 	identifier := c.Param("id")
 
-	// Try cache (by ID)
+	// Cache lookup keyed by whatever identifier the client used.
 	cacheKey := cache.ComponentKey(identifier)
-	var cached models.Component
+	var cached component.Component
 	if err := cache.Get(cacheKey, &cached); err == nil {
 		c.JSON(http.StatusOK, cached)
 		return
 	}
 
-	var component models.Component
-	// Try by ID first, then by code
-	if err := database.DB.Preload("Application").Preload("Tags").Preload("Pages").First(&component, "id = ?", identifier).Error; err != nil {
-		if err := database.DB.Preload("Application").Preload("Tags").Preload("Pages").First(&component, "code = ?", identifier).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
+	ctx := c.Request.Context()
+	var comp *component.Component
+
+	// Try UUID first; fall back to code if it doesn't parse OR isn't found.
+	if id, err := uuid.Parse(identifier); err == nil {
+		got, lookupErr := h.components.GetByIDWithRelations(ctx, database.SQLX, id)
+		if lookupErr == nil {
+			comp = got
+		} else if !errors.Is(lookupErr, repository.ErrNotFound) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": lookupErr.Error()})
 			return
 		}
 	}
+	if comp == nil {
+		got, err := h.components.GetByCode(ctx, database.SQLX, identifier)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		// We had to fall back to by-code; tags/pages weren't loaded yet.
+		if tags, err := h.components.LoadTags(ctx, database.SQLX, got.ID); err == nil {
+			got.Tags = tags
+		}
+		if pages, err := h.components.LoadPages(ctx, database.SQLX, got.ID); err == nil {
+			got.Pages = pages
+		}
+		comp = got
+	}
 
-	// Cache for 1 hour
-	cache.Set(cacheKey, component, 3600*1000000000)
-	c.JSON(http.StatusOK, component)
+	cache.Set(cacheKey, *comp, 3600*1000000000) // 1 hour
+	c.JSON(http.StatusOK, comp)
 }
 
 // createComponentBody is the request body for creating a component (includes tag_ids and page_ids).
 type createComponentBody struct {
-	Name          string       `json:"name" binding:"required"`
-	Code          string       `json:"code" binding:"required"`
-	ApplicationID uuid.UUID    `json:"application_id" binding:"required"`
-	Description   string       `json:"description"`
-	DefaultLocale string       `json:"default_locale" binding:"required"`
-	Structure     models.JSONB `json:"structure"`
-	KeyContexts   models.JSONB `json:"key_contexts"`
-	TagIDs        []string     `json:"tag_ids"`
-	PageIDs       []string     `json:"page_ids"`
+	Name          string           `json:"name" binding:"required"`
+	Code          string           `json:"code" binding:"required"`
+	ApplicationID uuid.UUID        `json:"application_id" binding:"required"`
+	Description   string           `json:"description"`
+	DefaultLocale string           `json:"default_locale" binding:"required"`
+	KeyContexts   repository.JSONB `json:"key_contexts"`
+	TagIDs        []string         `json:"tag_ids"`
+	PageIDs       []string         `json:"page_ids"`
 }
 
-// CreateComponent creates a new component
+// CreateComponent creates a new component, optionally attaching tags and pages.
+// The component insert + junction attachments run inside a transaction so a
+// failed attach rolls the component back.
 func (h *ComponentHandler) CreateComponent(c *gin.Context) {
 	var body createComponentBody
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -248,69 +280,97 @@ func (h *ComponentHandler) CreateComponent(c *gin.Context) {
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
 
-	component := models.Component{
+	comp := component.Component{
 		Name:          strings.TrimSpace(body.Name),
 		Code:          strings.TrimSpace(body.Code),
 		ApplicationID: body.ApplicationID,
 		Description:   strings.TrimSpace(body.Description),
 		DefaultLocale: strings.TrimSpace(body.DefaultLocale),
-		Structure:     body.Structure,
 		KeyContexts:   sanitizeKeyContexts(body.KeyContexts),
 		CreatedBy:     userID,
 		UpdatedBy:     userID,
 	}
 
-	if err := database.DB.Create(&component).Error; err != nil {
-		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Component code already exists for this application"})
-		} else {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		}
-		return
-	}
+	ctx := c.Request.Context()
+	tagIDs := parseUUIDList(body.TagIDs)
+	pageIDs := parseUUIDList(body.PageIDs)
 
-	if err := replaceComponentTagsAndPages(&component, body.TagIDs, body.PageIDs); err != nil {
+	if err := repository.WithTx(ctx, database.SQLX, func(tx repository.Queryer) error {
+		if err := h.components.Create(ctx, tx, &comp); err != nil {
+			return err
+		}
+		if len(tagIDs) > 0 {
+			if err := h.components.AttachTags(ctx, tx, comp.ID, tagIDs); err != nil {
+				return err
+			}
+		}
+		if len(pageIDs) > 0 {
+			if err := h.components.AttachPages(ctx, tx, comp.ID, pageIDs); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		if errors.Is(err, repository.ErrConflict) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Component code already exists for this application"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	database.DB.Preload("Tags").Preload("Pages").First(&component, component.ID)
 
-	h.auditService.LogCreate(userID, username, "component", component.ID, component.Code, component, ipAddress, userAgent)
-	c.JSON(http.StatusCreated, component)
+	// Reload with relations for the response.
+	if reloaded, err := h.components.GetByIDWithRelations(ctx, database.SQLX, comp.ID); err == nil {
+		comp = *reloaded
+	}
+
+	h.auditService.LogCreate(userID, username, "component", comp.ID, comp.Code, comp, ipAddress, userAgent)
+	c.JSON(http.StatusCreated, comp)
 }
 
-// updateComponentBody is the request body for updating a component (includes optional tag_ids and page_ids).
+// updateComponentBody is the request body for updating a component.
 type updateComponentBody struct {
-	Name          *string       `json:"name"`
-	Code          *string       `json:"code"`
-	Description   *string       `json:"description"`
-	DefaultLocale *string       `json:"default_locale"`
-	Structure     *models.JSONB `json:"structure"`
-	KeyContexts   *models.JSONB `json:"key_contexts"`
-	TagIDs        []string      `json:"tag_ids"`
-	PageIDs       []string      `json:"page_ids"`
+	Name          *string           `json:"name"`
+	Code          *string           `json:"code"`
+	Description   *string           `json:"description"`
+	DefaultLocale *string           `json:"default_locale"`
+	KeyContexts   *repository.JSONB `json:"key_contexts"`
+	TagIDs        []string          `json:"tag_ids"`
+	PageIDs       []string          `json:"page_ids"`
 }
 
-// UpdateComponent updates a component
+// UpdateComponent updates a component. tag_ids and page_ids, when present
+// (non-nil slice — note that an empty array IS distinguishable from a missing
+// field at the JSON layer via the slice's nil-vs-empty distinction), replace
+// the existing junction sets atomically.
 func (h *ComponentHandler) UpdateComponent(c *gin.Context) {
-	id := c.Param("id")
-	var component models.Component
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid component ID"})
+		return
+	}
 
-	if err := database.DB.Preload("Tags").Preload("Pages").First(&component, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
+	ctx := c.Request.Context()
+	comp, err := h.components.GetByIDWithRelations(ctx, database.SQLX, id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
 
-	before := models.Component{
-		Name:          component.Name,
-		Code:          component.Code,
-		Description:   component.Description,
-		Structure:     component.Structure,
-		KeyContexts:   component.KeyContexts,
-		DefaultLocale: component.DefaultLocale,
+	before := component.Component{
+		Name:          comp.Name,
+		Code:          comp.Code,
+		Description:   comp.Description,
+		KeyContexts:   comp.KeyContexts,
+		DefaultLocale: comp.DefaultLocale,
 	}
 
 	var body updateComponentBody
@@ -320,80 +380,98 @@ func (h *ComponentHandler) UpdateComponent(c *gin.Context) {
 	}
 
 	if body.Name != nil {
-		component.Name = strings.TrimSpace(*body.Name)
+		comp.Name = strings.TrimSpace(*body.Name)
 	}
 	if body.Code != nil {
-		component.Code = strings.TrimSpace(*body.Code)
+		comp.Code = strings.TrimSpace(*body.Code)
 	}
 	if body.Description != nil {
-		component.Description = strings.TrimSpace(*body.Description)
+		comp.Description = strings.TrimSpace(*body.Description)
 	}
 	if body.DefaultLocale != nil {
-		component.DefaultLocale = strings.TrimSpace(*body.DefaultLocale)
-	}
-	if body.Structure != nil {
-		component.Structure = *body.Structure
+		comp.DefaultLocale = strings.TrimSpace(*body.DefaultLocale)
 	}
 	if body.KeyContexts != nil {
-		component.KeyContexts = sanitizeKeyContexts(*body.KeyContexts)
+		comp.KeyContexts = sanitizeKeyContexts(*body.KeyContexts)
 	}
-	component.UpdatedBy = userID
+	comp.UpdatedBy = userID
 
-	if err := database.DB.Save(&component).Error; err != nil {
+	if err := repository.WithTx(ctx, database.SQLX, func(tx repository.Queryer) error {
+		if err := h.components.Update(ctx, tx, comp); err != nil {
+			return err
+		}
+		// nil slice → don't touch the junction. Empty non-nil slice → clear it.
+		if body.TagIDs != nil {
+			if err := h.components.AttachTags(ctx, tx, comp.ID, parseUUIDList(body.TagIDs)); err != nil {
+				return err
+			}
+		}
+		if body.PageIDs != nil {
+			if err := h.components.AttachPages(ctx, tx, comp.ID, parseUUIDList(body.PageIDs)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		if errors.Is(err, repository.ErrConflict) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Component code already exists for this application"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := replaceComponentTagsAndPages(&component, body.TagIDs, body.PageIDs); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+	if reloaded, err := h.components.GetByIDWithRelations(ctx, database.SQLX, comp.ID); err == nil {
+		comp = reloaded
 	}
-	database.DB.Preload("Tags").Preload("Pages").First(&component, component.ID)
 
-	after := models.Component{
-		Name:          component.Name,
-		Code:          component.Code,
-		Description:   component.Description,
-		Structure:     component.Structure,
-		KeyContexts:   component.KeyContexts,
-		DefaultLocale: component.DefaultLocale,
+	after := component.Component{
+		Name:          comp.Name,
+		Code:          comp.Code,
+		Description:   comp.Description,
+		KeyContexts:   comp.KeyContexts,
+		DefaultLocale: comp.DefaultLocale,
 	}
-	h.auditService.LogUpdate(userID, username, "component", component.ID, component.Code, before, after, ipAddress, userAgent)
-	cache.Delete(cache.ComponentKey(id))
-	c.JSON(http.StatusOK, component)
+	h.auditService.LogUpdate(userID, username, "component", comp.ID, comp.Code, before, after, ipAddress, userAgent)
+	cache.Delete(cache.ComponentKey(idStr))
+	c.JSON(http.StatusOK, comp)
 }
 
-// DeleteComponent deletes a component
+// DeleteComponent soft-deletes a component. Junction rows survive but are
+// filtered out at read time.
 func (h *ComponentHandler) DeleteComponent(c *gin.Context) {
-	id := c.Param("id")
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid component ID"})
+		return
+	}
 
-	var component models.Component
-	if err := database.DB.First(&component, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
+	ctx := c.Request.Context()
+	comp, err := h.components.GetByID(ctx, database.SQLX, id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Component not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	userID, username := h.getCurrentUser(c)
 	ipAddress, userAgent := h.getClientInfo(c)
 
-	if err := database.DB.Delete(&component).Error; err != nil {
+	if err := h.components.SoftDelete(ctx, database.SQLX, id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Log audit
 	h.auditService.LogDelete(
-		userID,
-		username,
-		"component",
-		component.ID,
-		component.Code,
-		component,
-		ipAddress,
-		userAgent,
+		userID, username, "component",
+		comp.ID, comp.Code, comp,
+		ipAddress, userAgent,
 	)
 
-	// Invalidate cache
-	cache.Delete(cache.ComponentKey(id))
+	cache.Delete(cache.ComponentKey(idStr))
 	c.JSON(http.StatusOK, gin.H{"message": "Component deleted"})
 }

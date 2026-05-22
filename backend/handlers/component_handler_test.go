@@ -14,27 +14,35 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// setupComponentHandler uses the proper constructor so all repository fields
+// (h.components) are initialised. The sqlmock is wired into both *gorm.DB and
+// *sqlx.DB so legacy and new query paths share one expectation stream.
 func setupComponentHandler(t *testing.T) (*ComponentHandler, sqlmock.Sqlmock) {
 	db, xdb, mock := newMockDB(t)
 	withMockDB(t, db, xdb)
 	audit := newMockAuditService()
-	h := &ComponentHandler{auditService: audit}
+	h := NewComponentHandler()
+	h.auditService = audit
 	return h, mock
 }
 
+// componentColumns lists the columns selected by the new sqlx repository's
+// queries (repository/component/repository_impl.go). Structure column was
+// dropped in the Commit C schema bootstrap; deleted_at is filtered in the
+// WHERE and never projected.
 func componentColumns() []string {
 	return []string{
 		"id", "application_id", "name", "code", "description",
-		"structure", "default_locale", "created_by", "updated_by",
-		"created_at", "updated_at", "deleted_at",
+		"key_contexts", "default_locale", "created_by", "updated_by",
+		"created_at", "updated_at",
 	}
 }
 
 func componentRow(id, appID uuid.UUID, name, code string) *sqlmock.Rows {
 	return sqlmock.NewRows(componentColumns()).AddRow(
 		id, appID, name, code, "",
-		[]byte("{}"), "en", uuid.Nil, uuid.Nil,
-		time.Now(), time.Now(), nil,
+		nil, "en", uuid.Nil, uuid.Nil,
+		time.Now(), time.Now(),
 	)
 }
 
@@ -188,8 +196,9 @@ func TestComponentHandler_ValidationAndHelpers(t *testing.T) {
 	})
 
 	t.Run("GetComponent_NotFoundByCodePath", func(t *testing.T) {
-		// Two lookups return empty rows => not found.
-		mock.ExpectQuery(`SELECT`).WillReturnRows(sqlmock.NewRows(componentColumns()))
+		// "not-found-code" doesn't parse as a UUID, so the handler skips the
+		// GetByID path entirely and falls straight to GetByCode → single
+		// SELECT against the sqlx repository. Returning empty rows yields 404.
 		mock.ExpectQuery(`SELECT`).WillReturnRows(sqlmock.NewRows(componentColumns()))
 
 		w := httptest.NewRecorder()
@@ -199,11 +208,14 @@ func TestComponentHandler_ValidationAndHelpers(t *testing.T) {
 	})
 
 	t.Run("UpdateComponent_BadJSONAfterLookup", func(t *testing.T) {
+		// GetByIDWithRelations issues 3 SELECTs: component, then LoadTags, then LoadPages.
+		// The tag/page repos project 5 cols each (no deleted_at).
 		id := uuid.New()
 		appID := uuid.New()
+		tagPageCols := []string{"id", "application_id", "code", "created_at", "updated_at"}
 		mock.ExpectQuery(`SELECT`).WillReturnRows(componentRow(id, appID, "Header", "header"))
-		mock.ExpectQuery(`SELECT`).WillReturnRows(sqlmock.NewRows([]string{"id", "application_id", "code", "created_at", "updated_at", "deleted_at"}))
-		mock.ExpectQuery(`SELECT`).WillReturnRows(sqlmock.NewRows([]string{"id", "application_id", "code", "created_at", "updated_at", "deleted_at"}))
+		mock.ExpectQuery(`SELECT`).WillReturnRows(sqlmock.NewRows(tagPageCols))
+		mock.ExpectQuery(`SELECT`).WillReturnRows(sqlmock.NewRows(tagPageCols))
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPut, "/components/"+id.String(), bytes.NewBufferString(`{"name":`))
 		req.Header.Set("Content-Type", "application/json")
