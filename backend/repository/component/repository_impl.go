@@ -229,9 +229,17 @@ func (r *Impl) List(ctx context.Context, q repository.Queryer, f ListFilter) ([]
 		return nil, 0, err
 	}
 
-	// Ordering and pagination on the row read.
-	fmt.Fprintf(&sb, " ORDER BY created_at DESC LIMIT $%d OFFSET $%d", i, i+1)
-	args = append(args, f.Limit, f.Offset)
+	// Ordering and pagination on the row read. Limit=0 means "no limit" —
+	// used by callers that need the full set (e.g. the AddLanguage worker
+	// fan-out). Pass NULL so Postgres treats it as unbounded.
+	sb.WriteString(" ORDER BY created_at DESC")
+	if f.Limit > 0 {
+		fmt.Fprintf(&sb, " LIMIT $%d OFFSET $%d", i, i+1)
+		args = append(args, f.Limit, f.Offset)
+	} else if f.Offset > 0 {
+		fmt.Fprintf(&sb, " OFFSET $%d", i)
+		args = append(args, f.Offset)
+	}
 
 	rows := []Component{}
 	if err := q.SelectContext(ctx, &rows, sb.String(), args...); err != nil {

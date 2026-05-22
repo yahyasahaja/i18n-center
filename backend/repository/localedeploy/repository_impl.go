@@ -25,17 +25,23 @@ const (
 		ORDER BY locale ASC
 	`
 
-	// Upsert leans on the (application_id, locale) unique index. On conflict
-	// we bump stage_completed to whatever the caller asked for — that's the
-	// progression path (draft → staging → production) and also the "reset to
-	// draft after a re-translate" path used by the AddLanguage worker.
-	queryUpsert = `
+	// Upsert can't use ON CONFLICT directly: the (application_id, locale)
+	// uniqueness is enforced by a partial unique index
+	// (idx_app_locale ... WHERE deleted_at IS NULL), and Postgres only
+	// matches ON CONFLICT against UNIQUE constraints or non-partial unique
+	// indexes. We do the update-then-insert dance instead — same effect,
+	// works against the partial index.
+	queryUpdateByAppLocale = `
+		UPDATE application_locale_deploys
+		SET stage_completed = $3, updated_at = NOW()
+		WHERE application_id = $1 AND locale = $2 AND deleted_at IS NULL
+		RETURNING id, created_at, updated_at
+	`
+
+	queryInsertNew = `
 		INSERT INTO application_locale_deploys (
 			id, application_id, locale, stage_completed, created_at, updated_at
 		) VALUES ($1, $2, $3, $4, NOW(), NOW())
-		ON CONFLICT (application_id, locale) DO UPDATE
-		SET stage_completed = EXCLUDED.stage_completed,
-		    updated_at = NOW()
 		RETURNING id, created_at, updated_at
 	`
 
@@ -83,7 +89,27 @@ func (r *Impl) Upsert(ctx context.Context, q repository.Queryer, d *Deploy) erro
 		CreatedAt time.Time `db:"created_at"`
 		UpdatedAt time.Time `db:"updated_at"`
 	}{}
-	if err := q.GetContext(ctx, &row, queryUpsert, d.ID, d.ApplicationID, d.Locale, d.StageCompleted); err != nil {
+	// Update-then-insert. The update RETURNING swallows the lookup-then-update
+	// case in one round trip; sql.ErrNoRows tells us we need to insert.
+	err := q.GetContext(ctx, &row, queryUpdateByAppLocale, d.ApplicationID, d.Locale, d.StageCompleted)
+	if err == nil {
+		d.ID = row.ID
+		d.CreatedAt = row.CreatedAt
+		d.UpdatedAt = row.UpdatedAt
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	// No active row — insert a fresh one. The partial unique index might race
+	// us if two pods upsert concurrently for a brand-new (app, locale); rare
+	// in practice (the AddLanguage handler gates it), and the second writer
+	// will see a unique violation it can surface as repository.ErrConflict.
+	if err := q.GetContext(ctx, &row, queryInsertNew, d.ID, d.ApplicationID, d.Locale, d.StageCompleted); err != nil {
+		if repository.IsUniqueViolation(err) {
+			return repository.ErrConflict
+		}
 		return err
 	}
 	d.ID = row.ID

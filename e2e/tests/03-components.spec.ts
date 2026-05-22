@@ -30,8 +30,9 @@ test.describe('Components API', () => {
     const res = await request.get(`${API_URL}/api/components?application_id=${applicationId}`, { headers })
     expect(res.status()).toBe(200)
     const body = await res.json()
-    expect(Array.isArray(body)).toBe(true)
-    const found = body.find((c: any) => c.id === componentId)
+    // Paginated response shape: { data, total, page, page_size, total_pages }.
+    expect(Array.isArray(body.data)).toBe(true)
+    const found = body.data.find((c: any) => c.id === componentId)
     expect(found).toBeDefined()
     expect(found.code).toBe(componentCode)
   })

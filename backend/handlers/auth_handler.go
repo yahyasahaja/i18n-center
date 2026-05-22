@@ -275,10 +275,26 @@ func (h *AuthHandler) UpdateUser(c *gin.Context) {
 // @Failure      401  {object}  map[string]string
 // @Router       /auth/me [get]
 func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
-	v, _ := c.Get("user_id")
-	idStr, _ := v.(string)
-	uid, err := uuid.Parse(idStr)
-	if err != nil {
+	// The auth middleware stores user_id as uuid.UUID, not as a string.
+	// Accept either form so a future middleware that stringifies the claim
+	// doesn't silently 401 every request.
+	v, ok := c.Get("user_id")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing user context"})
+		return
+	}
+	var uid uuid.UUID
+	switch typed := v.(type) {
+	case uuid.UUID:
+		uid = typed
+	case string:
+		parsed, err := uuid.Parse(typed)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user context"})
+			return
+		}
+		uid = parsed
+	default:
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user context"})
 		return
 	}
