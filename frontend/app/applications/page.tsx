@@ -12,7 +12,7 @@ import {
 } from '@/store/slices/applicationSlice'
 import { applicationApi } from '@/services/api'
 import toast from 'react-hot-toast'
-import { Plus, Edit, Trash2, ArrowRight, Globe, Languages } from 'lucide-react'
+import { Plus, Edit, Trash2, Globe } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Table, TableRow, TableCell } from '@/components/ui/Table'
@@ -21,10 +21,16 @@ import { Input } from '@/components/ui/Input'
 import { Textarea } from '@/components/ui/Textarea'
 import { Badge } from '@/components/ui/Badge'
 
+// The Application edit form no longer touches enabled_languages — locale
+// management has moved to the per-app detail page (the "Components" view of
+// an application). The backend treats the field as a sticky patch when
+// omitted, so leaving it out here preserves whatever locales are already
+// enabled. See backend/handlers/application_handler.go:UpdateApplicationRequest.
+
 export default function ApplicationsPage() {
   const router = useRouter()
   const dispatch = useAppDispatch()
-  const { push, stage } = useAppContext()
+  const { push, stage, setApplicationId } = useAppContext()
   const { isAuthenticated, user } = useAppSelector((state) => state.auth)
   const { applications, loading } = useAppSelector(
     (state) => state.applications
@@ -35,9 +41,7 @@ export default function ApplicationsPage() {
     name: '',
     code: '',
     description: '',
-    enabled_languages: [] as string[],
-    enabled_languages_input: '', // Raw input string for comma-separated languages
-    openai_key: '', // For setting/updating the key
+    openai_key: '',
   })
 
   useEffect(() => {
@@ -46,26 +50,21 @@ export default function ApplicationsPage() {
       router.replace('/login')
       return
     }
-
-    // Don't check isAuthenticated immediately - it might not be initialized yet
-    // Just check token and proceed with loading
     dispatch(fetchApplications())
   }, [router, dispatch])
+
+  const resetForm = () =>
+    setFormData({ name: '', code: '', description: '', openai_key: '' })
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
-      // Convert enabled_languages_input to array
-      const enabledLanguages = formData.enabled_languages_input
-        .split(',')
-        .map((l) => l.trim())
-        .filter((l) => l)
-
+      // enabled_languages intentionally omitted; backend preserves the
+      // existing value when the field is absent.
       const submitData = {
         name: formData.name,
         code: formData.code,
         description: formData.description,
-        enabled_languages: enabledLanguages,
         openai_key: formData.openai_key,
       }
 
@@ -80,14 +79,7 @@ export default function ApplicationsPage() {
       }
       setShowModal(false)
       setEditingApp(null)
-      setFormData({
-        name: '',
-        code: '',
-        description: '',
-        enabled_languages: [],
-        enabled_languages_input: '',
-        openai_key: '', // Optional - for setting OpenAI key
-      })
+      resetForm()
     } catch (error: any) {
       toast.error(error.response?.data?.error || 'Failed to save application')
     }
@@ -110,11 +102,19 @@ export default function ApplicationsPage() {
       name: app.name,
       code: app.code || '',
       description: app.description || '',
-      enabled_languages: app.enabled_languages || [],
-      enabled_languages_input: (app.enabled_languages || []).join(', '),
-      openai_key: '', // Leave empty - user can set new key if needed
+      openai_key: '', // never round-trip the existing key; empty = preserve
     })
     setShowModal(true)
+  }
+
+  // Whole-row navigation. Clicking the row drops the user into the per-app
+  // detail view with the current stage carried over. We also push the chosen
+  // app into AppContext so the sidebar dropdown reflects the selection.
+  const openApp = (app: { id: string }) => {
+    setApplicationId(app.id)
+    push(`/applications/${app.id}`, {
+      extraParams: { application_id: app.id, stage },
+    })
   }
 
   if (!isAuthenticated) return null
@@ -132,14 +132,7 @@ export default function ApplicationsPage() {
               variant="primary"
               onClick={() => {
                 setEditingApp(null)
-                setFormData({
-                  name: '',
-                  code: '',
-                  description: '',
-                  enabled_languages: [],
-                  enabled_languages_input: '',
-                  openai_key: '',
-                })
+                resetForm()
                 setShowModal(true)
               }}
             >
@@ -167,14 +160,7 @@ export default function ApplicationsPage() {
                     variant="primary"
                     onClick={() => {
                       setEditingApp(null)
-                      setFormData({
-                        name: '',
-                        code: '',
-                        description: '',
-                        enabled_languages: [],
-                        enabled_languages_input: '',
-                        openai_key: '',
-                      })
+                      resetForm()
                       setShowModal(true)
                     }}
                   >
@@ -189,9 +175,27 @@ export default function ApplicationsPage() {
           <Card>
             <Table headers={['Name', 'Code', 'Description', 'Languages', 'OpenAI', 'Actions']}>
               {applications.map((app) => (
-                <TableRow key={app.id}>
+                <TableRow
+                  key={app.id}
+                  // Hint affordance: cursor + hover bg make the row feel
+                  // tappable. The actual click handler ignores the Actions
+                  // cell so per-row buttons still fire normally.
+                  className="cursor-pointer hover:bg-gray-50"
+                  onClick={(e) => {
+                    const target = e.target as HTMLElement
+                    // Ignore clicks that originated inside an interactive
+                    // element (buttons, links, inputs). Without this guard
+                    // the row swallows the Edit/Delete button clicks.
+                    if (target.closest('button, a, input, select, textarea')) {
+                      return
+                    }
+                    openApp(app)
+                  }}
+                >
                   <TableCell>
-                    <div className="font-medium text-gray-900">{app.name}</div>
+                    <div className="font-medium text-gray-900 hover:text-primary-600">
+                      {app.name}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <div className="text-sm font-mono text-gray-600">{app.code}</div>
@@ -223,31 +227,13 @@ export default function ApplicationsPage() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center flex-wrap gap-2">
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        onClick={() => push(`/applications/${app.id}`, { extraParams: { application_id: app.id, stage } })}
-                      >
-                        <ArrowRight className="w-4 h-4 mr-1" />
-                        View
-                      </Button>
-                      {canManage && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => push(`/applications/${app.id}`, { extraParams: { application_id: app.id, stage, addLanguage: '1' } })}
-                          title="Add language"
-                        >
-                          <Languages className="w-4 h-4 mr-1" />
-                          Add language
-                        </Button>
-                      )}
                       {canManage && (
                         <>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => handleEdit(app)}
+                            title="Edit application details"
                           >
                             <Edit className="w-4 h-4" />
                           </Button>
@@ -256,6 +242,7 @@ export default function ApplicationsPage() {
                               variant="danger"
                               size="sm"
                               onClick={() => handleDelete(app.id)}
+                              title="Delete application"
                             >
                               <Trash2 className="w-4 h-4" />
                             </Button>
@@ -322,17 +309,16 @@ export default function ApplicationsPage() {
               }
               rows={3}
             />
-            <Input
-              label="Enabled Languages"
-              value={formData.enabled_languages_input}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  enabled_languages_input: e.target.value,
-                })
-              }
-              helperText="Comma-separated list of language codes (e.g., en, id, es, fr)"
-            />
+            {editingApp && (
+              <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
+                <strong className="font-semibold">Languages:</strong>{' '}
+                {editingApp.enabled_languages?.length
+                  ? editingApp.enabled_languages.map((l: string) => l.toUpperCase()).join(', ')
+                  : '— none enabled yet —'}
+                . Add or remove languages from the application&apos;s page (it&apos;s
+                contextual with components and translations).
+              </div>
+            )}
             <Input
               label="OpenAI API Key"
               type="password"

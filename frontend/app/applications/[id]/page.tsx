@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import Layout from '@/components/Layout'
 import { useAppDispatch, useAppSelector } from '@/hooks/redux'
@@ -13,9 +13,12 @@ import { Table, TableRow, TableCell } from '@/components/ui/Table'
 import { Badge } from '@/components/ui/Badge'
 import { Modal } from '@/components/ui/Modal'
 import { Input } from '@/components/ui/Input'
-import { ArrowLeft, Plus, Edit, Trash2, ArrowRight, Languages, Rocket, Tag, FileText, Key, Loader2, Upload, Download } from 'lucide-react'
+import { ArrowLeft, Plus, Edit, Trash2, ArrowRight, Languages, Rocket, Tag, FileText, Key, Loader2, Upload, Download, Search, ChevronLeft, ChevronRight } from 'lucide-react'
 import { componentApi, applicationApi, tagApi, pageApi, exportApi, type Tag as TagType, type Page as PageType, type ApplicationAPIKey } from '@/services/api'
 import toast from 'react-hot-toast'
+import { BootstrapModal } from '@/components/BootstrapModal'
+import { PendingDeploymentsModal } from '@/components/PendingDeploymentsModal'
+import { ComponentFormModal } from '@/components/ComponentFormModal'
 
 type PendingDeploy = { locale: string; stage_completed: string; next_stage: string }
 type ComponentWithMeta = { id: string; name: string; code: string; tags?: TagType[]; pages?: PageType[] }
@@ -30,7 +33,22 @@ export default function ApplicationDetailPage() {
   const { setApplicationId, push, stage: appStage } = useAppContext()
   const { isAuthenticated, user } = useAppSelector((state) => state.auth)
   const { currentApplication } = useAppSelector((state) => state.applications)
-  const { components } = useAppSelector((state) => state.components)
+  const { components, total: componentsTotal, page: componentsPage, pageSize: componentsPageSize, totalPages: componentsTotalPages } = useAppSelector((state) => state.components)
+  // Search + pagination for the Components grid. We debounce search input via
+  // a ref to avoid firing a request on every keystroke; pagination is
+  // imperative since fetchComponents pages server-side.
+  const [componentsSearch, setComponentsSearch] = useState('')
+  const [componentsCurrentPage, setComponentsCurrentPage] = useState(1)
+  const componentsSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ComponentFormModal — opening it in-place beats redirecting to /components.
+  const [showComponentModal, setShowComponentModal] = useState(false)
+  const [editingComponent, setEditingComponent] = useState<any>(null)
+
+  // PendingDeployments — a button on this page opens a modal that groups
+  // pending changes by locale. The inline "Pending locale deploys" card is
+  // gone; this is the new canonical view.
+  const [showPendingDeploysModal, setShowPendingDeploysModal] = useState(false)
   const [loading, setLoading] = useState(true)
   const [showAddLanguageModal, setShowAddLanguageModal] = useState(false)
   const [addLanguageLocale, setAddLanguageLocale] = useState('')
@@ -59,13 +77,9 @@ export default function ApplicationDetailPage() {
   const [showNewKeyModal, setShowNewKeyModal] = useState<{ key: string } | null>(null)
   const [addApiKeyLoading, setAddApiKeyLoading] = useState(false)
 
-  // Bootstrap import state
+  // Bootstrap modal — the new multi-file modal owns its own state. We just
+  // track the open/close flag here.
   const [showBootstrapModal, setShowBootstrapModal] = useState(false)
-  const [bootstrapLocale, setBootstrapLocale] = useState('en')
-  const [bootstrapStage, setBootstrapStage] = useState('draft')
-  const [bootstrapLoading, setBootstrapLoading] = useState(false)
-  type BootstrapResult = { components_created: number; components_updated: number; keys_imported: number; flat_keys_in_common: number; components: string[] }
-  const [bootstrapResult, setBootstrapResult] = useState<BootstrapResult | null>(null)
 
   type ActiveAddJob = { job_id: string; locale: string; status: string; total_components: number; completed_components: number }
   type ActiveTranslateJob = { job_id: string; component_id: string; component_code: string; component_name: string; job_type: string; target_locales: string[] | null; status: string }
@@ -120,7 +134,8 @@ export default function ApplicationDetailPage() {
       try {
         await Promise.all([
           dispatch(fetchApplication(applicationId)),
-          dispatch(fetchComponents({ applicationId })),
+          // First page; pagination + search refetches use reloadComponents.
+          dispatch(fetchComponents({ applicationId, page: 1, pageSize: 20 })),
         ])
         await loadPendingDeploys()
         const [tagsRes, pagesRes, keysRes] = await Promise.all([
@@ -294,7 +309,9 @@ export default function ApplicationDetailPage() {
     try {
       await componentApi.delete(id)
       toast.success('Component deleted')
-      dispatch(fetchComponents({ applicationId }))
+      // Keep the current page/search so the user doesn't lose context after a
+      // delete in the middle of a long list.
+      reloadComponents(componentsSearch, componentsCurrentPage)
     } catch (error: any) {
       toast.error('Failed to delete component')
     }
@@ -431,32 +448,44 @@ export default function ApplicationDetailPage() {
     }
   }
 
-  const handleBootstrapFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    e.target.value = ''
-    let parsed: Record<string, unknown>
-    try {
-      parsed = JSON.parse(await file.text())
-    } catch {
-      toast.error('Invalid JSON file')
-      return
-    }
-    setBootstrapLoading(true)
-    setBootstrapResult(null)
-    try {
-      const result = await applicationApi.bootstrap(applicationId, parsed, bootstrapLocale, bootstrapStage)
-      setBootstrapResult(result)
-      toast.success(`Bootstrap complete: ${result.components_created} created, ${result.components_updated} updated`)
-      await Promise.all([
-        dispatch(fetchApplication(applicationId)),
-        dispatch(fetchComponents({ applicationId })),
-      ])
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Bootstrap failed')
-    } finally {
-      setBootstrapLoading(false)
-    }
+  // Bootstrap is handled by <BootstrapModal />; we just expose a small helper
+  // for "refresh after import" so the modal can call us back.
+  const handleAfterBootstrap = async () => {
+    await Promise.all([
+      dispatch(fetchApplication(applicationId)),
+      reloadComponents(componentsSearch, componentsCurrentPage),
+    ])
+  }
+
+  // Paginated + searchable component fetch. Wrapped so search debouncing and
+  // pagination clicks share one call shape.
+  const reloadComponents = useCallback(
+    (searchVal: string, pg: number) => {
+      return dispatch(
+        fetchComponents({
+          applicationId,
+          search: searchVal || undefined,
+          page: pg,
+          pageSize: 20,
+        }),
+      )
+    },
+    [dispatch, applicationId],
+  )
+
+  const handleComponentsSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value
+    setComponentsSearch(val)
+    if (componentsSearchTimerRef.current) clearTimeout(componentsSearchTimerRef.current)
+    componentsSearchTimerRef.current = setTimeout(() => {
+      setComponentsCurrentPage(1)
+      reloadComponents(val, 1)
+    }, 350)
+  }
+
+  const handleComponentsPageChange = (pg: number) => {
+    setComponentsCurrentPage(pg)
+    reloadComponents(componentsSearch, pg)
   }
 
   if (!isAuthenticated || loading) {
@@ -491,9 +520,11 @@ export default function ApplicationDetailPage() {
 
   const canManage = user?.role === 'super_admin' || user?.role === 'operator'
   const canManageApiKeys = user?.role === 'super_admin'
-  const applicationComponents = components.filter(
-    (c) => c.application_id === applicationId
-  )
+  // applicationComponents was a client-side filter used by stats and the
+  // "is default locale" check. The components state is now scoped to this
+  // application server-side (fetchComponents passes applicationId), so we
+  // keep the alias as a no-op narrow for readability.
+  const applicationComponents = components
 
   return (
     <Layout>
@@ -518,9 +549,9 @@ export default function ApplicationDetailPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Card>
             <div className="text-sm font-medium text-gray-500">Components</div>
-            <div className="mt-2 text-3xl font-bold text-gray-900">
-              {applicationComponents.length}
-            </div>
+            {/* `componentsTotal` is the server-side total (across all pages),
+                not the size of the current page slice. */}
+            <div className="mt-2 text-3xl font-bold text-gray-900">{componentsTotal}</div>
           </Card>
           <Card
             title="Enabled Languages"
@@ -734,37 +765,34 @@ export default function ApplicationDetailPage() {
           </Card>
         )}
 
-        {pendingDeploys.length > 0 && (
-          <Card title="Pending locale deploys">
-            <p className="text-sm text-gray-600 mb-4">
-              These locales have draft (or staging) translations. Deploy them to the next stage until production. State is saved—you can continue after reload.
+        {/* Pending Deployments — formerly an inline table; now a one-button
+            entry into a modal that groups by locale and supports bulk deploy.
+            The button is visible even when the list is empty so authors can
+            confirm "yes, everything is shipped to production". */}
+        <div className="flex items-center justify-between rounded-md border border-gray-200 bg-white px-4 py-3">
+          <div>
+            <div className="text-sm font-medium text-gray-900">
+              Pending deployments
+              {pendingDeploys.length > 0 && (
+                <Badge variant="warning" size="sm" className="ml-2">
+                  {pendingDeploys.length} locale{pendingDeploys.length === 1 ? '' : 's'} ready
+                </Badge>
+              )}
+              {pendingDeploys.length === 0 && (
+                <Badge variant="success" size="sm" className="ml-2">All on production</Badge>
+              )}
+            </div>
+            <p className="text-xs text-gray-500">
+              {pendingDeploys.length > 0
+                ? 'Promote draft/staging translations to the next stage. Atomic per locale.'
+                : 'Nothing to promote. New draft saves will show up here.'}
             </p>
-            <Table headers={['Locale', 'Current stage', 'Action']}>
-              {pendingDeploys.map((p) => (
-                <TableRow key={p.locale}>
-                  <TableCell>
-                    <Badge variant="info">{p.locale.toUpperCase()}</Badge>
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-sm text-gray-600">{p.stage_completed}</span>
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      onClick={() => handleDeployLocale(p.locale)}
-                      isLoading={deployingLocale === p.locale}
-                      disabled={!!deployingLocale}
-                    >
-                      <Rocket className="w-4 h-4 mr-2" />
-                      Deploy to {p.next_stage}
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </Table>
-          </Card>
-        )}
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setShowPendingDeploysModal(true)}>
+            <Rocket className="w-4 h-4 mr-2" />
+            View pending deployments
+          </Button>
+        </div>
 
         <Card
           title="Components"
@@ -775,13 +803,25 @@ export default function ApplicationDetailPage() {
                 Download JSON
               </Button>
               {canManage && (
-                <Button variant="outline" size="sm" onClick={() => { setBootstrapResult(null); setShowBootstrapModal(true) }}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowBootstrapModal(true)}
+                  title="Upload one or more locale JSON files to seed this application"
+                >
                   <Upload className="w-4 h-4 mr-1.5" />
                   Bootstrap Import
                 </Button>
               )}
               {canManage && (
-                <Button variant="primary" size="sm" onClick={() => push('/components')}>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => {
+                    setEditingComponent(null)
+                    setShowComponentModal(true)
+                  }}
+                >
                   <Plus className="w-4 h-4 mr-1.5" />
                   Add Component
                 </Button>
@@ -789,92 +829,158 @@ export default function ApplicationDetailPage() {
             </div>
           }
         >
-          {applicationComponents.length === 0 ? (
+          {/* Search input lives inside the Card so it's clearly scoped to the
+              components grid (not the page-level filter). 350ms debounce
+              matches the standalone /components page. */}
+          <div className="mb-3 relative max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+            <Input
+              type="text"
+              placeholder="Search by name or code…"
+              value={componentsSearch}
+              onChange={handleComponentsSearchChange}
+              className="pl-9"
+            />
+          </div>
+
+          {components.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
-              No components yet. Create one to get started.
+              {componentsSearch
+                ? `No components match "${componentsSearch}".`
+                : 'No components yet. Create one or run a Bootstrap Import to get started.'}
             </div>
           ) : (
-            <Table headers={['Name', 'Code', 'Description', 'Default Locale', 'Pages & tags', 'Actions']}>
-              {applicationComponents.map((component) => {
-                const comp = component as ComponentWithMeta
-                const tagList = comp.tags || []
-                const pageList = comp.pages || []
-                const tagCount = tagList.length
-                const pageCount = pageList.length
-                const extra = Math.max(0, tagCount - 2) + Math.max(0, pageCount - 2)
-                return (
-                <TableRow key={component.id}>
-                  <TableCell>
-                    <div className="font-medium text-gray-900">{component.name}</div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="text-sm font-mono text-gray-600">{component.code}</div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="text-sm text-gray-500">
-                      {component.description || 'No description'}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="info">{component.default_locale}</Badge>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {tagList.slice(0, 2).map((t) => (
-                        <span key={t.id} className="rounded bg-gray-100 text-gray-700 px-1.5 py-0.5 text-xs">{t.code}</span>
-                      ))}
-                      {pageList.slice(0, 2).map((p) => (
-                        <span key={p.id} className="rounded bg-blue-50 text-blue-700 px-1.5 py-0.5 text-xs">{p.code}</span>
-                      ))}
-                      {(tagCount > 2 || pageCount > 2) && (
-                        <span className="text-gray-500 text-xs">+{extra}</span>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setShowComponentMetaModal(comp)}
-                        className="text-xs text-primary-600 hover:underline font-medium"
-                      >
-                        Pages & tags
-                      </button>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center space-x-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          push(`/components/${component.id}/translations`)
-                        }
-                      >
-                        <ArrowRight className="w-4 h-4 mr-1" />
-                        Translations
-                      </Button>
-                      {canManage && (
-                        <>
+            <>
+              <Table headers={['Name', 'Code', 'Description', 'Default Locale', 'Pages & tags', 'Actions']}>
+                {components.map((component) => {
+                  const comp = component as ComponentWithMeta
+                  const tagList = comp.tags || []
+                  const pageList = comp.pages || []
+                  const tagCount = tagList.length
+                  const pageCount = pageList.length
+                  const extra = Math.max(0, tagCount - 2) + Math.max(0, pageCount - 2)
+                  return (
+                    <TableRow key={component.id}>
+                      <TableCell>
+                        <div className="font-medium text-gray-900">{component.name}</div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-sm font-mono text-gray-600">{component.code}</div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-sm text-gray-500">
+                          {component.description || 'No description'}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="info">{component.default_locale}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {tagList.slice(0, 2).map((t) => (
+                            <span key={t.id} className="rounded bg-gray-100 text-gray-700 px-1.5 py-0.5 text-xs">{t.code}</span>
+                          ))}
+                          {pageList.slice(0, 2).map((p) => (
+                            <span key={p.id} className="rounded bg-blue-50 text-blue-700 px-1.5 py-0.5 text-xs">{p.code}</span>
+                          ))}
+                          {(tagCount > 2 || pageCount > 2) && (
+                            <span className="text-gray-500 text-xs">+{extra}</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setShowComponentMetaModal(comp)}
+                            className="text-xs text-primary-600 hover:underline font-medium"
+                          >
+                            Pages & tags
+                          </button>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center space-x-2">
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() =>
-                              push('/components', { extraParams: { edit: component.id } })
-                            }
+                            onClick={() => push(`/components/${component.id}/translations`)}
                           >
-                            <Edit className="w-4 h-4" />
+                            <ArrowRight className="w-4 h-4 mr-1" />
+                            Translations
                           </Button>
-                          <Button
-                            variant="danger"
-                            size="sm"
-                            onClick={() => handleDeleteComponent(component.id)}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        </>
-                      )}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              )})}
-            </Table>
+                          {canManage && (
+                            <>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setEditingComponent(comp)
+                                  setShowComponentModal(true)
+                                }}
+                              >
+                                <Edit className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                variant="danger"
+                                size="sm"
+                                onClick={() => handleDeleteComponent(component.id)}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </Table>
+
+              {/* Pagination — same shape as the standalone /components page so
+                  the muscle memory carries across. Renders only when there's
+                  more than one page; otherwise the count line stays compact. */}
+              {componentsTotalPages > 1 && (
+                <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200 mt-3">
+                  <p className="text-sm text-gray-600">
+                    Showing {(componentsPage - 1) * componentsPageSize + 1}–
+                    {Math.min(componentsPage * componentsPageSize, componentsTotal)} of {componentsTotal} components
+                  </p>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={componentsPage <= 1}
+                      onClick={() => handleComponentsPageChange(componentsPage - 1)}
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </Button>
+                    {Array.from({ length: Math.min(componentsTotalPages, 7) }, (_, i) => {
+                      let pg: number
+                      if (componentsTotalPages <= 7) pg = i + 1
+                      else if (componentsPage <= 4) pg = i + 1
+                      else if (componentsPage >= componentsTotalPages - 3) pg = componentsTotalPages - 6 + i
+                      else pg = componentsPage - 3 + i
+                      return (
+                        <Button
+                          key={pg}
+                          variant={pg === componentsPage ? 'primary' : 'outline'}
+                          size="sm"
+                          onClick={() => handleComponentsPageChange(pg)}
+                          className="w-8"
+                        >
+                          {pg}
+                        </Button>
+                      )
+                    })}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={componentsPage >= componentsTotalPages}
+                      onClick={() => handleComponentsPageChange(componentsPage + 1)}
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </Card>
 
@@ -977,90 +1083,47 @@ export default function ApplicationDetailPage() {
           )}
         </Modal>
 
-        {/* Bootstrap Import Modal */}
-        <Modal
+        {/* Bootstrap Import — multi-file modal (see components/BootstrapModal.tsx).
+            Replaces the legacy single-file flow that used to live here inline. */}
+        <BootstrapModal
           isOpen={showBootstrapModal}
-          onClose={() => { if (!bootstrapLoading) { setShowBootstrapModal(false); setBootstrapResult(null) } }}
-          title="Bootstrap Import"
-          footer={
-            <Button variant="outline" onClick={() => { setShowBootstrapModal(false); setBootstrapResult(null) }} disabled={bootstrapLoading}>
-              Close
-            </Button>
-          }
-        >
-          <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              Seed this application from an existing locale JSON file. Top-level object keys become components; flat primitive keys are grouped into a <code className="bg-gray-100 px-1 rounded text-xs">common</code> component.
-            </p>
-            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-              <strong>Upsert behavior:</strong> Existing components are kept and a new translation version is added for the selected locale — other locales are untouched. New components are created.
-            </p>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Source locale</label>
-                <input
-                  type="text"
-                  value={bootstrapLocale}
-                  onChange={(e) => setBootstrapLocale(e.target.value)}
-                  placeholder="e.g. en"
-                  disabled={bootstrapLoading}
-                  className="w-full rounded-md border border-gray-300 py-1.5 px-2.5 text-sm text-gray-900 focus:border-primary-500 focus:ring-primary-500 disabled:opacity-50"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Target stage</label>
-                <select
-                  value={bootstrapStage}
-                  onChange={(e) => setBootstrapStage(e.target.value)}
-                  disabled={bootstrapLoading}
-                  className="w-full rounded-md border border-gray-300 py-1.5 px-2 text-sm text-gray-900 focus:border-primary-500 focus:ring-primary-500 disabled:opacity-50"
-                >
-                  <option value="draft">Draft</option>
-                  <option value="staging">Staging</option>
-                  <option value="production">Production</option>
-                </select>
-              </div>
-            </div>
-            <label className={`flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-gray-300 px-6 py-8 text-center transition-colors ${bootstrapLoading ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:border-primary-400 hover:bg-primary-50'}`}>
-              {bootstrapLoading ? (
-                <>
-                  <Loader2 className="w-7 h-7 text-primary-500 animate-spin" />
-                  <span className="text-sm text-gray-500">Importing…</span>
-                </>
-              ) : (
-                <>
-                  <Upload className="w-7 h-7 text-gray-400" />
-                  <span className="text-sm font-medium text-gray-700">Click to upload JSON file</span>
-                  <span className="text-xs text-gray-400">e.g. en.json, id.json</span>
-                </>
-              )}
-              <input type="file" accept=".json,application/json" onChange={handleBootstrapFile} disabled={bootstrapLoading} className="hidden" />
-            </label>
-            {bootstrapResult && (
-              <div className="rounded-md bg-green-50 border border-green-200 p-4 space-y-2">
-                <p className="text-sm font-semibold text-green-800">Import successful</p>
-                <div className="grid grid-cols-3 gap-2 text-center text-sm">
-                  <div className="rounded bg-white border border-green-100 py-2">
-                    <div className="text-xl font-bold text-green-700">{bootstrapResult.components_created}</div>
-                    <div className="text-xs text-gray-500">Created</div>
-                  </div>
-                  <div className="rounded bg-white border border-green-100 py-2">
-                    <div className="text-xl font-bold text-green-700">{bootstrapResult.components_updated}</div>
-                    <div className="text-xs text-gray-500">Updated</div>
-                  </div>
-                  <div className="rounded bg-white border border-green-100 py-2">
-                    <div className="text-xl font-bold text-green-700">{bootstrapResult.keys_imported}</div>
-                    <div className="text-xs text-gray-500">Keys</div>
-                  </div>
-                </div>
-                {bootstrapResult.flat_keys_in_common > 0 && (
-                  <p className="text-xs text-gray-500">{bootstrapResult.flat_keys_in_common} flat key(s) grouped into <code className="bg-gray-100 px-1 rounded">common</code></p>
-                )}
-                <p className="text-xs text-gray-500">Components: {bootstrapResult.components.join(', ')}</p>
-              </div>
-            )}
-          </div>
-        </Modal>
+          onClose={() => setShowBootstrapModal(false)}
+          applicationId={applicationId}
+          defaultStage={appStage}
+          onImported={handleAfterBootstrap}
+        />
+
+        {/* Pending Deployments — modal triggered from the page header. Lists
+            locales with draft/staging changes; bulk-deploy per locale. */}
+        <PendingDeploymentsModal
+          isOpen={showPendingDeploysModal}
+          onClose={() => setShowPendingDeploysModal(false)}
+          applicationId={applicationId}
+          onDeployed={async () => {
+            await Promise.all([
+              loadPendingDeploys(),
+              dispatch(fetchApplication(applicationId)),
+            ])
+          }}
+        />
+
+        {/* Add / Edit Component — replaces the previous push('/components')
+            redirect so the user stays on the per-app page. */}
+        <ComponentFormModal
+          isOpen={showComponentModal}
+          onClose={() => {
+            setShowComponentModal(false)
+            setEditingComponent(null)
+          }}
+          component={editingComponent}
+          applications={currentApplication ? [{ id: currentApplication.id, name: currentApplication.name }] : []}
+          defaultApplicationId={applicationId}
+          onSaved={() => {
+            setShowComponentModal(false)
+            setEditingComponent(null)
+            reloadComponents(componentsSearch, componentsCurrentPage)
+          }}
+        />
 
         <Modal
           isOpen={!!showNewKeyModal}

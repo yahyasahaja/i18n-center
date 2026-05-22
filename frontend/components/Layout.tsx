@@ -42,8 +42,16 @@ function LayoutInner({ children }: { children: React.ReactNode }) {
     router.push('/login')
   }
 
+  // Routes whose meaning is anchored to a specific application: clicking the
+  // sidebar item without an app selected is a 404 in spirit, so we disable
+  // them with a tooltip nudge.
   const APPLICATION_CONTEXT_ROUTES = ['/components', '/tags', '/pages', '/cms']
 
+  // 'Components' is a shortcut into the current app's detail page (which is
+  // the canonical Components view post-restructure). The sidebar still lists
+  // it under the legacy `/components` href so the disabled-state guard and
+  // the active-tab highlight keep working; we just rewrite the actual link
+  // target below when an app is selected.
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: Home },
     { name: 'Applications', href: '/applications', icon: Globe },
@@ -55,11 +63,26 @@ function LayoutInner({ children }: { children: React.ReactNode }) {
     { name: 'Users', href: '/users', icon: Users, roles: ['super_admin', 'user_manager'] as const },
   ]
 
-  const isActive = (href: string) => pathname?.startsWith(href)
+  const isActive = (href: string) => {
+    if (!pathname) return false
+    // The "Components" item should also feel active while the user is on the
+    // per-app detail page since that's where it routes.
+    if (href === '/components' && pathname.startsWith('/applications/')) return true
+    return pathname.startsWith(href)
+  }
 
   // Disable Components, Tags, Pages only when no application is selected
   const needsApplication = (href: string) => APPLICATION_CONTEXT_ROUTES.includes(href)
-  const linkHref = buildHref
+
+  // Rewrite /components → /applications/<currentAppId> so the sidebar shortcut
+  // drops users straight into the per-app components grid. Other routes pass
+  // through buildHref unchanged.
+  const linkHref = (href: string) => {
+    if (href === '/components' && applicationId) {
+      return buildHref(`/applications/${applicationId}`)
+    }
+    return buildHref(href)
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">

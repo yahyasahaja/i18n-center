@@ -150,13 +150,19 @@ type ApplicationRequest struct {
 	OpenAIKey        string   `json:"openai_key"` // Accept from frontend
 }
 
-// UpdateApplicationRequest represents the request payload for updating applications
+// UpdateApplicationRequest represents the request payload for updating applications.
+//
+// EnabledLanguages is a pointer slice so the FE can omit it (preserve existing
+// value) without sending an explicit empty array (which would clear the field).
+// The locale management UI lives on the per-app detail page now; the
+// application edit form no longer edits the languages list, so the FE just
+// leaves the key out and we keep the previously-stored value.
 type UpdateApplicationRequest struct {
-	Name             string   `json:"name" binding:"required"`
-	Code             string   `json:"code"` // Optional on update; keeps existing if omitted
-	Description      string   `json:"description"`
-	EnabledLanguages []string `json:"enabled_languages"`
-	OpenAIKey        string   `json:"openai_key"`
+	Name             string    `json:"name" binding:"required"`
+	Code             string    `json:"code"` // Optional on update; keeps existing if omitted
+	Description      string    `json:"description"`
+	EnabledLanguages *[]string `json:"enabled_languages,omitempty"`
+	OpenAIKey        string    `json:"openai_key"`
 }
 
 // CreateApplication creates a new application
@@ -260,7 +266,12 @@ func (h *ApplicationHandler) UpdateApplication(c *gin.Context) {
 		app.Code = req.Code
 	}
 	app.Description = req.Description
-	app.EnabledLanguages = req.EnabledLanguages
+	// EnabledLanguages is a sticky patch field: nil → preserve, non-nil → set.
+	// This lets the FE leave it out entirely on edits while still allowing an
+	// explicit `enabled_languages: []` to clear the list when actually intended.
+	if req.EnabledLanguages != nil {
+		app.EnabledLanguages = *req.EnabledLanguages
+	}
 	app.UpdatedBy = userID
 	if req.OpenAIKey != "" {
 		app.OpenAIKey = req.OpenAIKey

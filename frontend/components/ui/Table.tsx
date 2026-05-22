@@ -29,13 +29,18 @@ export const Table: React.FC<TableProps> = ({ headers, children }) => {
 
 interface TableRowProps {
   children: React.ReactNode
-  onClick?: () => void
+  // onClick receives the full MouseEvent so callers can inspect the click
+  // target (e.g. ignore clicks that originated inside a nested button so the
+  // row click doesn't fight per-row action buttons).
+  onClick?: (e: React.MouseEvent<HTMLTableRowElement>) => void
+  className?: string
 }
 
-export const TableRow: React.FC<TableRowProps> = ({ children, onClick }) => {
+export const TableRow: React.FC<TableRowProps> = ({ children, onClick, className }) => {
+  const baseClass = onClick ? 'cursor-pointer hover:bg-gray-50' : ''
   return (
     <tr
-      className={onClick ? 'cursor-pointer hover:bg-gray-50' : ''}
+      className={[baseClass, className].filter(Boolean).join(' ')}
       onClick={onClick}
     >
       {children}
