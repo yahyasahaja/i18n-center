@@ -1,27 +1,41 @@
+# Multi-stage build for the i18n-center backend image.
+#
+# Produces ONE image that contains TWO binaries:
+#   /usr/local/bin/i18n-center          — Gin HTTP server (default CMD)
+#   /usr/local/bin/i18n-center-migrate  — goose migration CLI (run via ArgoCD PreSync Job)
+#
+# The same image is reused for the `backend` deployment (default entrypoint) and the
+# `migrate` Helm "migration"-type Job (overridden via `command:` in the Helm values).
+# Migrations are embedded into the binary via //go:embed in migrations/migrations.go,
+# so the image is self-contained — no SQL files copied at runtime.
+
 FROM golang:1.23-alpine AS builder
 
-WORKDIR /app
+WORKDIR /src
 
-# Copy go mod files
+# Cache module downloads in a separate layer.
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
 COPY . .
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main ./main.go
+# Build both binaries with CGO disabled for a static binary on alpine.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/i18n-center         ./main.go \
+ && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/i18n-center-migrate ./cmd/migrate
 
-# Final stage
-FROM alpine:latest
+# ── Final stage ───────────────────────────────────────────────────────────────
+FROM alpine:3.20
 
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates tzdata \
+ && addgroup -g 65532 -S app \
+ && adduser  -u 65532 -S app -G app
 
-WORKDIR /root/
+COPY --from=builder /out/i18n-center         /usr/local/bin/i18n-center
+COPY --from=builder /out/i18n-center-migrate /usr/local/bin/i18n-center-migrate
 
-COPY --from=builder /app/main .
+USER 65532:65532
+WORKDIR /home/app
 
 EXPOSE 8080
 
-CMD ["./main"]
-
+ENTRYPOINT ["/usr/local/bin/i18n-center"]

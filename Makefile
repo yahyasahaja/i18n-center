@@ -1,6 +1,19 @@
 .PHONY: help build-backend build-frontend test-backend docker-build docker-push deploy \
         dev run run-deps run-backend run-frontend stop logs \
-        e2e e2e-install e2e-api e2e-ui e2e-report
+        e2e e2e-install e2e-api e2e-ui e2e-report \
+        test compile build push cleanup
+
+# ── CI/CD variables ────────────────────────────────────────────────────────────
+# Match the convention used by go-payment-be / identity-management:
+#   - Push to asia-docker.pkg.dev/lapakgaming-production/lapakgaming/<project>/<svc>
+#   - VERSION defaults to short commit hash; Jenkins reuses this exact tag in
+#     kubernetes-gcp/products/lapakgaming/environments/<env>/i18n-center/values.yaml
+export ARTIFACT_REGISTRY ?= asia-docker.pkg.dev/lapakgaming-production/lapakgaming
+export PROJECT_NAME      ?= i18n-center
+export VERSION           ?= $(shell git show -q --format=%h)
+
+BACKEND_IMAGE  = $(ARTIFACT_REGISTRY)/$(PROJECT_NAME)/backend
+FRONTEND_IMAGE = $(ARTIFACT_REGISTRY)/$(PROJECT_NAME)/frontend
 
 help:
 	@echo "Available targets:"
@@ -105,4 +118,29 @@ docker-push:
 deploy:
 	kubectl apply -f k8s/backend-deployment.yaml
 	kubectl apply -f k8s/frontend-deployment.yaml
+
+# ── Jenkins targets (mirror identity-management / go-payment-be conventions) ──
+# These are what Jenkins invokes. They produce images tagged with the short
+# commit hash and push to Artifact Registry. The ArgoCD sync (in the kubernetes-gcp
+# repo) picks up the new tag once the image-tag commit lands on main.
+
+test: test-backend
+
+# `compile` is a no-op for Go (Docker builder does the build) but kept for
+# pipeline-shape parity with other services that pre-compile binaries.
+compile:
+	@echo "i18n-center: compilation happens inside Dockerfile (multi-stage builds)"
+
+build:
+	docker build -t $(BACKEND_IMAGE):$(VERSION)  -f backend/Dockerfile  backend
+	docker build -t $(FRONTEND_IMAGE):$(VERSION) -f frontend/Dockerfile frontend
+
+push:
+	docker push $(BACKEND_IMAGE):$(VERSION)
+	docker push $(FRONTEND_IMAGE):$(VERSION)
+
+cleanup:
+	@echo "Cleaning up local docker images"
+	-docker rmi $(BACKEND_IMAGE):$(VERSION)  || true
+	-docker rmi $(FRONTEND_IMAGE):$(VERSION) || true
 
