@@ -119,13 +119,16 @@ export default function PagesPage() {
     if (!addToPageModal || addToPageSelected.length === 0) return
     setAddToPageLoading(true)
     try {
-      for (const compId of addToPageSelected) {
-        const comp = await componentApi.getById(compId) as { id: string; pages?: { id: string }[] }
-        const currentPageIds = (comp.pages || []).map((p) => p.id)
-        if (currentPageIds.includes(addToPageModal.page.id)) continue
-        await componentApi.update(compId, { page_ids: [...currentPageIds, addToPageModal.page.id] })
-      }
-      toast.success('Components added to page')
+      // Single bulk-attach call (backend uses INSERT ON CONFLICT DO NOTHING).
+      // Replaces the previous N×2 round-trip loop (GET component → PUT with
+      // updated page_ids) which was slow and racy under concurrent operator
+      // edits of the same component.
+      const result = await pageApi.attachComponents(addToPageModal.page.id, addToPageSelected)
+      const msg =
+        result.newly_attached === result.requested_count
+          ? `${result.newly_attached} component${result.newly_attached !== 1 ? 's' : ''} added`
+          : `${result.newly_attached} added, ${result.already_attached} already attached`
+      toast.success(msg)
       const list = await pageApi.getComponents(addToPageModal.page.id)
       setComponentsModal((prev) => (prev ? { ...prev, components: list || [] } : null))
       setAddToPageModal(null)
@@ -139,9 +142,10 @@ export default function PagesPage() {
   const removeComponentFromPage = async (compId: string) => {
     if (!componentsModal) return
     try {
-      const comp = await componentApi.getById(compId) as { id: string; pages?: { id: string }[] }
-      const newPageIds = (comp.pages || []).map((p) => p.id).filter((id) => id !== componentsModal.page.id)
-      await componentApi.update(compId, { page_ids: newPageIds })
+      // Single DELETE on the junction row; previously read-modify-wrote the
+      // full page_ids set on the component which raced against concurrent
+      // edits of the same component.
+      await pageApi.detachComponent(componentsModal.page.id, compId)
       toast.success('Component removed from page')
       const list = await pageApi.getComponents(componentsModal.page.id)
       setComponentsModal({ ...componentsModal, components: list || [] })

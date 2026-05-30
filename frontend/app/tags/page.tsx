@@ -118,13 +118,15 @@ export default function TagsPage() {
     if (!addToTagModal || addToTagSelected.length === 0) return
     setAddToTagLoading(true)
     try {
-      for (const compId of addToTagSelected) {
-        const comp = await componentApi.getById(compId) as { id: string; tags?: { id: string }[] }
-        const currentTagIds = (comp.tags || []).map((t) => t.id)
-        if (currentTagIds.includes(addToTagModal.tag.id)) continue
-        await componentApi.update(compId, { tag_ids: [...currentTagIds, addToTagModal.tag.id] })
-      }
-      toast.success('Components added to tag')
+      // Single bulk-attach call (backend uses INSERT ON CONFLICT DO NOTHING).
+      // Replaces the previous N×2 round-trip loop (GET component → PUT with
+      // updated tag_ids) which was slow and racy.
+      const result = await tagApi.attachComponents(addToTagModal.tag.id, addToTagSelected)
+      const msg =
+        result.newly_attached === result.requested_count
+          ? `${result.newly_attached} component${result.newly_attached !== 1 ? 's' : ''} added`
+          : `${result.newly_attached} added, ${result.already_attached} already attached`
+      toast.success(msg)
       const list = await tagApi.getComponents(addToTagModal.tag.id)
       setComponentsModal((prev) => (prev ? { ...prev, components: list || [] } : null))
       setAddToTagModal(null)
@@ -138,9 +140,9 @@ export default function TagsPage() {
   const removeComponentFromTag = async (compId: string) => {
     if (!componentsModal) return
     try {
-      const comp = await componentApi.getById(compId) as { id: string; tags?: { id: string }[] }
-      const newTagIds = (comp.tags || []).map((t) => t.id).filter((id) => id !== componentsModal.tag.id)
-      await componentApi.update(compId, { tag_ids: newTagIds })
+      // Single DELETE on the junction row; previously read-modify-wrote the
+      // full tag_ids set on the component which raced against concurrent edits.
+      await tagApi.detachComponent(componentsModal.tag.id, compId)
       toast.success('Component removed from tag')
       const list = await tagApi.getComponents(componentsModal.tag.id)
       setComponentsModal({ ...componentsModal, components: list || [] })

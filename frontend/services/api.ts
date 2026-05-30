@@ -177,6 +177,16 @@ export const tagApi = {
     const response = await api.get(`/tags/${tagId}/components`)
     return response.data
   },
+  // Bulk-attach is idempotent on the backend (ON CONFLICT DO NOTHING); calling
+  // it with already-attached IDs is a no-op. Returns { newly_attached, already_attached }.
+  attachComponents: async (tagId: string, componentIds: string[]) => {
+    const response = await api.post(`/tags/${tagId}/components`, { component_ids: componentIds })
+    return response.data as { tag_id: string; requested_count: number; newly_attached: number; already_attached: number }
+  },
+  detachComponent: async (tagId: string, componentId: string) => {
+    const response = await api.delete(`/tags/${tagId}/components/${componentId}`)
+    return response.data
+  },
 }
 
 export const pageApi = {
@@ -202,6 +212,16 @@ export const pageApi = {
   },
   getComponents: async (pageId: string) => {
     const response = await api.get(`/pages/${pageId}/components`)
+    return response.data
+  },
+  // Bulk-attach is idempotent on the backend (ON CONFLICT DO NOTHING); calling
+  // it with already-attached IDs is a no-op. Returns { newly_attached, already_attached }.
+  attachComponents: async (pageId: string, componentIds: string[]) => {
+    const response = await api.post(`/pages/${pageId}/components`, { component_ids: componentIds })
+    return response.data as { page_id: string; requested_count: number; newly_attached: number; already_attached: number }
+  },
+  detachComponent: async (pageId: string, componentId: string) => {
+    const response = await api.delete(`/pages/${pageId}/components/${componentId}`)
     return response.data
   },
 }

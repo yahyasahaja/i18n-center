@@ -289,7 +289,33 @@ export function ComponentFormModal({
         {formData.application_id && (
           <>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Tags</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700">Tags</label>
+                {appTags.length > 1 && (
+                  // Select all / Clear shortcut. Real value when one component
+                  // belongs to many tags (e.g. an "always-loaded" set on every
+                  // tag) — turns N clicks into one.
+                  <div className="flex gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, tag_ids: appTags.map((t) => t.id) })}
+                      className="text-blue-600 hover:underline disabled:text-gray-400 disabled:no-underline"
+                      disabled={formData.tag_ids.length === appTags.length}
+                    >
+                      Select all
+                    </button>
+                    <span className="text-gray-300">|</span>
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, tag_ids: [] })}
+                      className="text-gray-600 hover:underline disabled:text-gray-400 disabled:no-underline"
+                      disabled={formData.tag_ids.length === 0}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+              </div>
               <div className="border border-gray-200 rounded-md p-2 space-y-2 text-gray-900">
                 {appTags.length === 0 ? (
                   <span className="text-gray-500 text-sm">No tags in this application</span>
@@ -361,7 +387,33 @@ export function ComponentFormModal({
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Pages</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700">Pages</label>
+                {appPages.length > 1 && (
+                  // Select all / Clear shortcut. Designed for the bootstrap
+                  // onboarding case where one "always-loaded" component goes
+                  // on every page in the app — N clicks → one.
+                  <div className="flex gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, page_ids: appPages.map((p) => p.id) })}
+                      className="text-blue-600 hover:underline disabled:text-gray-400 disabled:no-underline"
+                      disabled={formData.page_ids.length === appPages.length}
+                    >
+                      Select all
+                    </button>
+                    <span className="text-gray-300">|</span>
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, page_ids: [] })}
+                      className="text-gray-600 hover:underline disabled:text-gray-400 disabled:no-underline"
+                      disabled={formData.page_ids.length === 0}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+              </div>
               <div className="border border-gray-200 rounded-md p-2 space-y-2 text-gray-900">
                 {appPages.length === 0 ? (
                   <span className="text-gray-500 text-sm">No pages in this application</span>
