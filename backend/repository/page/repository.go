@@ -38,4 +38,16 @@ type Repository interface {
 	// GetComponentIDs returns the IDs of every non-deleted component grouped
 	// under this page. Drives translation aggregation in `by-page` reads.
 	GetComponentIDs(ctx context.Context, q repository.Queryer, pageID uuid.UUID) ([]uuid.UUID, error)
+
+	// AttachComponents adds the given component IDs to this page via INSERT
+	// ON CONFLICT DO NOTHING — idempotent and race-safe. Non-existent or
+	// soft-deleted component IDs are silently skipped (JOIN guards against
+	// dangling junction rows). Returns the number of NEW rows inserted (i.e.
+	// excludes IDs that were already attached), so the caller can audit-log
+	// only meaningful additions.
+	AttachComponents(ctx context.Context, q repository.Queryer, pageID uuid.UUID, componentIDs []uuid.UUID) (int64, error)
+
+	// DetachComponent removes a single component from this page. ErrNotFound
+	// if the junction row didn't exist.
+	DetachComponent(ctx context.Context, q repository.Queryer, pageID, componentID uuid.UUID) error
 }

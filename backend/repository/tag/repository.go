@@ -47,4 +47,15 @@ type Repository interface {
 	// GetComponentIDs returns the IDs of every non-deleted component that has
 	// this tag attached. Drives `GET /tags/:id/components`.
 	GetComponentIDs(ctx context.Context, q repository.Queryer, tagID uuid.UUID) ([]uuid.UUID, error)
+
+	// AttachComponents adds the given component IDs to this tag via INSERT
+	// ON CONFLICT DO NOTHING — idempotent and race-safe. Non-existent or
+	// soft-deleted component IDs are silently skipped. Returns the number of
+	// NEW rows inserted (excludes already-attached IDs) so callers can
+	// audit-log only meaningful additions.
+	AttachComponents(ctx context.Context, q repository.Queryer, tagID uuid.UUID, componentIDs []uuid.UUID) (int64, error)
+
+	// DetachComponent removes a single component from this tag. ErrNotFound
+	// if the junction row didn't exist.
+	DetachComponent(ctx context.Context, q repository.Queryer, tagID, componentID uuid.UUID) error
 }

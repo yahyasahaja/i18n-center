@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"github.com/your-org/i18n-center/repository"
 )
@@ -63,6 +64,27 @@ const (
 		WHERE cp.page_id = $1
 		  AND c.deleted_at IS NULL
 		ORDER BY c.created_at DESC
+	`
+
+	// queryAttachComponentsBulk inserts (page_id, component_id) rows using a
+	// SELECT-from-unnest pattern so the same query handles any number of IDs
+	// in one round trip. The JOIN to `components` filters out IDs that don't
+	// exist or are soft-deleted — protecting the junction from dangling rows.
+	// ON CONFLICT DO NOTHING makes the operation idempotent at the composite
+	// primary key (component_id, page_id).
+	queryAttachComponentsToPage = `
+		INSERT INTO component_pages (component_id, page_id)
+		SELECT c.id, $1
+		FROM components c
+		WHERE c.id = ANY($2::uuid[])
+		  AND c.deleted_at IS NULL
+		ON CONFLICT DO NOTHING
+	`
+
+	queryDetachComponentFromPage = `
+		DELETE FROM component_pages
+		WHERE page_id = $1
+		  AND component_id = $2
 	`
 )
 
@@ -152,4 +174,36 @@ func (r *Impl) GetComponentIDs(ctx context.Context, q repository.Queryer, pageID
 		return nil, err
 	}
 	return ids, nil
+}
+
+func (r *Impl) AttachComponents(ctx context.Context, q repository.Queryer, pageID uuid.UUID, componentIDs []uuid.UUID) (int64, error) {
+	if len(componentIDs) == 0 {
+		return 0, nil
+	}
+	// Marshal []uuid.UUID → []string for pq.Array (Postgres uuid[] expects
+	// a textual array; sqlx doesn't know how to encode []uuid.UUID directly).
+	strs := make([]string, len(componentIDs))
+	for i, id := range componentIDs {
+		strs[i] = id.String()
+	}
+	result, err := q.ExecContext(ctx, queryAttachComponentsToPage, pageID, pq.Array(strs))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (r *Impl) DetachComponent(ctx context.Context, q repository.Queryer, pageID, componentID uuid.UUID) error {
+	result, err := q.ExecContext(ctx, queryDetachComponentFromPage, pageID, componentID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return repository.ErrNotFound
+	}
+	return nil
 }

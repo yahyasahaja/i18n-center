@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"github.com/your-org/i18n-center/repository"
 )
@@ -67,6 +68,26 @@ const (
 		WHERE ct.tag_id = $1
 		  AND c.deleted_at IS NULL
 		ORDER BY c.created_at DESC
+	`
+
+	// queryAttachComponentsToTag inserts (tag_id, component_id) rows from a
+	// SELECT-from-unnest pattern so the same query handles any number of IDs
+	// in one round trip. JOIN to `components` filters out IDs that don't
+	// exist or are soft-deleted. ON CONFLICT DO NOTHING keeps the operation
+	// idempotent at the composite primary key.
+	queryAttachComponentsToTag = `
+		INSERT INTO component_tags (component_id, tag_id)
+		SELECT c.id, $1
+		FROM components c
+		WHERE c.id = ANY($2::uuid[])
+		  AND c.deleted_at IS NULL
+		ON CONFLICT DO NOTHING
+	`
+
+	queryDetachComponentFromTag = `
+		DELETE FROM component_tags
+		WHERE tag_id = $1
+		  AND component_id = $2
 	`
 )
 
@@ -156,4 +177,34 @@ func (r *Impl) GetComponentIDs(ctx context.Context, q repository.Queryer, tagID 
 		return nil, err
 	}
 	return ids, nil
+}
+
+func (r *Impl) AttachComponents(ctx context.Context, q repository.Queryer, tagID uuid.UUID, componentIDs []uuid.UUID) (int64, error) {
+	if len(componentIDs) == 0 {
+		return 0, nil
+	}
+	strs := make([]string, len(componentIDs))
+	for i, id := range componentIDs {
+		strs[i] = id.String()
+	}
+	result, err := q.ExecContext(ctx, queryAttachComponentsToTag, tagID, pq.Array(strs))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (r *Impl) DetachComponent(ctx context.Context, q repository.Queryer, tagID, componentID uuid.UUID) error {
+	result, err := q.ExecContext(ctx, queryDetachComponentFromTag, tagID, componentID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return repository.ErrNotFound
+	}
+	return nil
 }

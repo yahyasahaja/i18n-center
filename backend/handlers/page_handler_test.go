@@ -220,3 +220,116 @@ func TestPageHandler_BasicFlows(t *testing.T) {
 		assert.Equal(t, http.StatusOK, w.Code)
 	})
 }
+
+// TestPageHandler_AttachAndDetach exercises the bulk-attach + single-detach
+// endpoints. Mocks the page-existence lookup + the junction insert / delete.
+// Covers validation (bad UUID in body, malformed JSON, missing param),
+// not-found (page or junction row), and the happy path's newly_attached
+// arithmetic when some IDs are already linked.
+func TestPageHandler_AttachAndDetach(t *testing.T) {
+	h, mock := setupPageHandler(t)
+	r := gin.New()
+	r.POST("/pages/:id/components", h.AttachComponents)
+	r.DELETE("/pages/:id/components/:cid", h.DetachComponent)
+
+	appID := uuid.New()
+	pageID := uuid.New()
+	compID := uuid.New()
+	now := time.Now()
+
+	t.Run("Attach_BadPageID", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/pages/not-uuid/components", bytes.NewBufferString(`{"component_ids":["x"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("Attach_MissingBody", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/pages/"+pageID.String()+"/components", bytes.NewBufferString(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("Attach_BadUUIDInBody", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/pages/"+pageID.String()+"/components",
+			bytes.NewBufferString(`{"component_ids":["not-a-uuid"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("Attach_PageNotFound", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT .*FROM pages`).WithArgs(pageID).WillReturnRows(sqlmock.NewRows(pageColumns()))
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/pages/"+pageID.String()+"/components",
+			bytes.NewBufferString(`{"component_ids":["`+compID.String()+`"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("Attach_Happy", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT .*FROM pages`).
+			WithArgs(pageID).
+			WillReturnRows(sqlmock.NewRows(pageColumns()).AddRow(pageID, appID, "home", now, now))
+		// INSERT ON CONFLICT — affecting 1 row out of 2 requested (one was already attached).
+		mock.ExpectExec(`INSERT INTO component_pages`).WillReturnResult(sqlmock.NewResult(0, 1))
+		body := `{"component_ids":["` + compID.String() + `","` + uuid.New().String() + `"]}`
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/pages/"+pageID.String()+"/components",
+			bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+		var resp map[string]interface{}
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		assert.EqualValues(t, 1, resp["newly_attached"])
+		assert.EqualValues(t, 1, resp["already_attached"])
+	})
+
+	t.Run("Detach_BadIDs", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/pages/not-uuid/components/"+compID.String(), nil)
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+
+		w = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodDelete, "/pages/"+pageID.String()+"/components/not-uuid", nil)
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("Detach_PageNotFound", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT .*FROM pages`).WithArgs(pageID).WillReturnRows(sqlmock.NewRows(pageColumns()))
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/pages/"+pageID.String()+"/components/"+compID.String(), nil)
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("Detach_JunctionMissing", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT .*FROM pages`).
+			WithArgs(pageID).
+			WillReturnRows(sqlmock.NewRows(pageColumns()).AddRow(pageID, appID, "home", now, now))
+		mock.ExpectExec(`DELETE FROM component_pages`).WillReturnResult(sqlmock.NewResult(0, 0))
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/pages/"+pageID.String()+"/components/"+compID.String(), nil)
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("Detach_Happy", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT .*FROM pages`).
+			WithArgs(pageID).
+			WillReturnRows(sqlmock.NewRows(pageColumns()).AddRow(pageID, appID, "home", now, now))
+		mock.ExpectExec(`DELETE FROM component_pages`).WillReturnResult(sqlmock.NewResult(0, 1))
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/pages/"+pageID.String()+"/components/"+compID.String(), nil)
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+}

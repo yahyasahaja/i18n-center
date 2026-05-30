@@ -207,6 +207,15 @@ definitions:
     - locale
     - stage
     type: object
+  handlers.attachComponentsBody:
+    properties:
+      component_ids:
+        items:
+          type: string
+        type: array
+    required:
+    - component_ids
+    type: object
   handlers.backfillCmsLocalizationBody:
     properties:
       source_locale:
@@ -2132,6 +2141,83 @@ paths:
       summary: Liveness check
       tags:
       - health
+  /pages/{id}/components:
+    post:
+      consumes:
+      - application/json
+      description: Adds the given component IDs to this page. Already-attached IDs
+        are silently ignored. Component IDs that don't exist or are soft-deleted are
+        filtered out at the DB level — no error is returned for them.
+      parameters:
+      - description: Page ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Component IDs to attach
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.attachComponentsBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Attach components to a page (bulk, idempotent)
+      tags:
+      - pages
+  /pages/{id}/components/{cid}:
+    delete:
+      parameters:
+      - description: Page ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Component ID (UUID)
+        in: path
+        name: cid
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Detach a single component from a page
+      tags:
+      - pages
   /ready:
     get:
       consumes:
@@ -2148,6 +2234,83 @@ paths:
       summary: Readiness check
       tags:
       - health
+  /tags/{id}/components:
+    post:
+      consumes:
+      - application/json
+      description: Adds the given component IDs to this tag. Already-attached IDs
+        are silently ignored. Component IDs that don't exist or are soft-deleted are
+        filtered at the DB level — no error is returned for them.
+      parameters:
+      - description: Tag ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Component IDs to attach
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.attachComponentsBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Attach components to a tag (bulk, idempotent)
+      tags:
+      - tags
+  /tags/{id}/components/{cid}:
+    delete:
+      parameters:
+      - description: Tag ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Component ID (UUID)
+        in: path
+        name: cid
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Detach a single component from a tag
+      tags:
+      - tags
   /translate-jobs/{job_id}:
     get:
       description: Poll for the status of a single async translation job

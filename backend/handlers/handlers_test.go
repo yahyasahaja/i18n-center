@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/mock"
 
 	"github.com/your-org/i18n-center/cache"
 	"github.com/your-org/i18n-center/database"
@@ -45,9 +46,21 @@ func withMockDB(t *testing.T, xdb *sqlx.DB) {
 	})
 }
 
-// newMockAuditService returns a configured MockAuditServicer.
+// newMockAuditService returns a MockAuditServicer with permissive Maybe()
+// matchers wired for every Log* method. Audit calls from a handler are
+// best-effort — they must never affect the response — so this baseline
+// catches every signature without forcing per-test setup. Tests that need
+// to assert audit content can still attach explicit On() expectations.
 func newMockAuditService() *mocks.MockAuditServicer {
 	m := &mocks.MockAuditServicer{}
+	m.On("LogCreate", mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	m.On("LogUpdate", mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	m.On("LogDelete", mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	m.On("LogAction", mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 	return m
 }
 

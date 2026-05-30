@@ -125,6 +125,9 @@ func SetupRoutes() *gin.Engine {
 	api.PUT("/tags/:id", tagHandler.Update, middleware.RequireRole("super_admin", "operator"))
 	api.DELETE("/tags/:id", tagHandler.Delete, middleware.RequireRole("super_admin", "operator"))
 	api.GET("/tags/:id/components", tagHandler.GetComponents, middleware.RequireRole("super_admin", "operator"))
+	// Bulk attach (idempotent) + single detach. Body for POST: {component_ids: [uuid...]}.
+	api.POST("/tags/:id/components", tagHandler.AttachComponents, middleware.RequireRole("super_admin", "operator"))
+	api.DELETE("/tags/:id/components/:cid", tagHandler.DetachComponent, middleware.RequireRole("super_admin", "operator"))
 
 	// Page routes
 	api.GET("/applications/:id/pages", pageHandler.ListByApplication, middleware.RequireRole("super_admin", "operator"))
@@ -133,6 +136,9 @@ func SetupRoutes() *gin.Engine {
 	api.PUT("/pages/:id", pageHandler.Update, middleware.RequireRole("super_admin", "operator"))
 	api.DELETE("/pages/:id", pageHandler.Delete, middleware.RequireRole("super_admin", "operator"))
 	api.GET("/pages/:id/components", pageHandler.GetComponents, middleware.RequireRole("super_admin", "operator"))
+	// Bulk attach (idempotent) + single detach. Body for POST: {component_ids: [uuid...]}.
+	api.POST("/pages/:id/components", pageHandler.AttachComponents, middleware.RequireRole("super_admin", "operator"))
+	api.DELETE("/pages/:id/components/:cid", pageHandler.DetachComponent, middleware.RequireRole("super_admin", "operator"))
 
 	translations := api.Group("/components/:id")
 	translations.GET("/translations", translationHandler.GetTranslation, middleware.RequireRole("super_admin", "operator"))

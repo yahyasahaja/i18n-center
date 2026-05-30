@@ -234,3 +234,98 @@ func TestTagHandler_BasicFlows(t *testing.T) {
 		assert.Equal(t, http.StatusOK, w.Code)
 	})
 }
+
+// tagSqlxColumns matches the sqlx repository projection (no deleted_at).
+func tagSqlxColumns() []string {
+	return []string{"id", "application_id", "code", "created_at", "updated_at"}
+}
+
+// TestTagHandler_AttachAndDetach exercises the bulk-attach + single-detach
+// endpoints. Mirrors TestPageHandler_AttachAndDetach.
+func TestTagHandler_AttachAndDetach(t *testing.T) {
+	h, mock := setupTagHandler(t)
+	r := gin.New()
+	r.POST("/tags/:id/components", h.AttachComponents)
+	r.DELETE("/tags/:id/components/:cid", h.DetachComponent)
+
+	appID := uuid.New()
+	tagID := uuid.New()
+	compID := uuid.New()
+	now := time.Now()
+
+	t.Run("Attach_BadTagID", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/tags/not-uuid/components",
+			bytes.NewBufferString(`{"component_ids":["x"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("Attach_BadUUIDInBody", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/tags/"+tagID.String()+"/components",
+			bytes.NewBufferString(`{"component_ids":["not-a-uuid"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("Attach_TagNotFound", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT .*FROM tags`).WithArgs(tagID).WillReturnRows(sqlmock.NewRows(tagSqlxColumns()))
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/tags/"+tagID.String()+"/components",
+			bytes.NewBufferString(`{"component_ids":["`+compID.String()+`"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("Attach_Happy", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT .*FROM tags`).
+			WithArgs(tagID).
+			WillReturnRows(sqlmock.NewRows(tagSqlxColumns()).AddRow(tagID, appID, "checkout", now, now))
+		mock.ExpectExec(`INSERT INTO component_tags`).WillReturnResult(sqlmock.NewResult(0, 2))
+		body := `{"component_ids":["` + compID.String() + `","` + uuid.New().String() + `"]}`
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/tags/"+tagID.String()+"/components",
+			bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+		var resp map[string]interface{}
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		assert.EqualValues(t, 2, resp["newly_attached"])
+		assert.EqualValues(t, 0, resp["already_attached"])
+	})
+
+	t.Run("Detach_TagNotFound", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT .*FROM tags`).WithArgs(tagID).WillReturnRows(sqlmock.NewRows(tagSqlxColumns()))
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/tags/"+tagID.String()+"/components/"+compID.String(), nil)
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("Detach_JunctionMissing", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT .*FROM tags`).
+			WithArgs(tagID).
+			WillReturnRows(sqlmock.NewRows(tagSqlxColumns()).AddRow(tagID, appID, "checkout", now, now))
+		mock.ExpectExec(`DELETE FROM component_tags`).WillReturnResult(sqlmock.NewResult(0, 0))
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/tags/"+tagID.String()+"/components/"+compID.String(), nil)
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("Detach_Happy", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT .*FROM tags`).
+			WithArgs(tagID).
+			WillReturnRows(sqlmock.NewRows(tagSqlxColumns()).AddRow(tagID, appID, "checkout", now, now))
+		mock.ExpectExec(`DELETE FROM component_tags`).WillReturnResult(sqlmock.NewResult(0, 1))
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/tags/"+tagID.String()+"/components/"+compID.String(), nil)
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+}
