@@ -13,7 +13,11 @@
 pipeline {
   agent any
   tools {
-      go 'go-1.23'
+      // Use what's installed on the dev Jenkins agents. Go is forward-compatible —
+      // go.mod declares `go 1.25.7` which the 1.25.1 toolchain satisfies via
+      // GOTOOLCHAIN=auto (auto-fetches the required patch transparently). Bump
+      // this when Jenkins admin installs a newer Go.
+      go 'go-1.25.1'
   }
   environment {
     REPO_LOCATION = "asia"
