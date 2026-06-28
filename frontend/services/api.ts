@@ -1,6 +1,16 @@
 import axios from 'axios'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+// NEXT_PUBLIC_* env vars are inlined at BUILD time (not runtime), so this
+// resolves once during `next build`. Logic:
+//   - If NEXT_PUBLIC_API_URL is explicitly set (incl. empty string), honour it.
+//   - Otherwise, in production builds default to '' so the browser calls the
+//     SAME origin the admin UI is served from — GKE Ingress path-routes /api/*
+//     to the backend service.
+//   - In dev (yarn dev / yarn test), fall back to localhost:8080 so the local
+//     workflow of running `make dev` keeps working.
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL ??
+  (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080')
 
 const api = axios.create({
   baseURL: `${API_URL}/api`,
