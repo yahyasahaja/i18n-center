@@ -11,9 +11,9 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 
-	"github.com/your-org/i18n-center/repository"
-	"github.com/your-org/i18n-center/repository/page"
-	"github.com/your-org/i18n-center/repository/tag"
+	"github.com/lapakgaming/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository/page"
+	"github.com/lapakgaming/i18n-center/repository/tag"
 )
 
 // ─── Queries ─────────────────────────────────────────────────────────────────

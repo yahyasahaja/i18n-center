@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/your-org/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/database"
 )
 
 // withMockSQLX swaps in a sqlmock-backed *sqlx.DB so retention tests can

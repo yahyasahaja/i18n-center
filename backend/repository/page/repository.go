@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/your-org/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository"
 )
 
 // Page is the in-memory representation of a row from `pages`.

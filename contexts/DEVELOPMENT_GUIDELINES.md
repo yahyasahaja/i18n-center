@@ -28,7 +28,7 @@ import (
     "github.com/gin-gonic/gin"
 
     // Local
-    "github.com/your-org/i18n-center/models"
+    "github.com/lapakgaming/i18n-center/models"
 )
 ```
 

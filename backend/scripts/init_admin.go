@@ -9,10 +9,10 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/your-org/i18n-center/auth"
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/repository"
-	"github.com/your-org/i18n-center/repository/user"
+	"github.com/lapakgaming/i18n-center/auth"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository/user"
 )
 
 func main() {

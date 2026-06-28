@@ -10,12 +10,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/your-org/i18n-center/auth"
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/repository"
-	"github.com/your-org/i18n-center/repository/apikey"
-	"github.com/your-org/i18n-center/repository/application"
-	"github.com/your-org/i18n-center/services"
+	"github.com/lapakgaming/i18n-center/auth"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository/apikey"
+	"github.com/lapakgaming/i18n-center/repository/application"
+	"github.com/lapakgaming/i18n-center/services"
 )
 
 const keySegmentLen = 32 // 32 bytes = 64 hex chars after sk_

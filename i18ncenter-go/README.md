@@ -5,7 +5,7 @@ Go SDK for the i18n-center translation service. Provides a simple, type-safe int
 ## Installation
 
 ```bash
-go get github.com/your-org/i18n-center-go
+go get github.com/lapakgaming/i18n-center-go
 ```
 
 ## Quick Start
@@ -19,7 +19,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/your-org/i18n-center-go"
+    "github.com/lapakgaming/i18n-center-go"
 )
 
 func main() {
@@ -50,7 +50,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/your-org/i18n-center-go"
+    "github.com/lapakgaming/i18n-center-go"
 )
 
 func main() {
@@ -276,7 +276,7 @@ import (
     "encoding/json"
     "net/http"
 
-    "github.com/your-org/i18n-center-go"
+    "github.com/lapakgaming/i18n-center-go"
 )
 
 var client = i18ncenter.NewClient(i18ncenter.Config{
@@ -314,7 +314,7 @@ package main
 
 import (
     "github.com/gin-gonic/gin"
-    "github.com/your-org/i18n-center-go"
+    "github.com/lapakgaming/i18n-center-go"
 )
 
 var client = i18ncenter.NewClient(i18ncenter.Config{

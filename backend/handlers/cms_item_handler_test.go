@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"github.com/your-org/i18n-center/mocks"
+	"github.com/lapakgaming/i18n-center/mocks"
 )
 
 // ── column helpers ────────────────────────────────────────────────────────────

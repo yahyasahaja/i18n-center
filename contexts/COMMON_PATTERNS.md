@@ -23,7 +23,7 @@ import (
     "context"
 
     "github.com/google/uuid"
-    "github.com/your-org/i18n-center/repository"
+    "github.com/lapakgaming/i18n-center/repository"
 )
 
 type Component struct {
@@ -59,7 +59,7 @@ import (
     "errors"
 
     "github.com/google/uuid"
-    "github.com/your-org/i18n-center/repository"
+    "github.com/lapakgaming/i18n-center/repository"
 )
 
 // ── Queries (top of file, const, fully-formed) ──────────────────────────────
@@ -230,7 +230,7 @@ Both retry up to 5 times against the partial unique index (`idx_cms_loc_unique_v
 ### Detect unique-key violation
 
 ```go
-import "github.com/your-org/i18n-center/services"
+import "github.com/lapakgaming/i18n-center/services"
 
 if err := tx.Create(&row).Error; err != nil {
     if services.IsUniqueViolation(err) {

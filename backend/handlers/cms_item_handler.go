@@ -10,13 +10,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/middleware"
-	"github.com/your-org/i18n-center/repository"
-	"github.com/your-org/i18n-center/repository/cms"
-	"github.com/your-org/i18n-center/repository/job"
-	"github.com/your-org/i18n-center/repository/translation"
-	"github.com/your-org/i18n-center/services"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/middleware"
+	"github.com/lapakgaming/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository/cms"
+	"github.com/lapakgaming/i18n-center/repository/job"
+	"github.com/lapakgaming/i18n-center/repository/translation"
+	"github.com/lapakgaming/i18n-center/services"
 )
 
 // normalizeIdentifier matches the SDK's case-folding so an item created as

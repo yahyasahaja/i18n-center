@@ -7,10 +7,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/models"
-	"github.com/your-org/i18n-center/repository"
-	"github.com/your-org/i18n-center/repository/audit"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/models"
+	"github.com/lapakgaming/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository/audit"
 )
 
 // AuditService is the legacy-shaped facade in front of the new audit

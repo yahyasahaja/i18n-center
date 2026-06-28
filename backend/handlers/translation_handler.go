@@ -12,17 +12,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 
-	"github.com/your-org/i18n-center/cache"
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/middleware"
-	"github.com/your-org/i18n-center/repository"
-	"github.com/your-org/i18n-center/repository/application"
-	"github.com/your-org/i18n-center/repository/component"
-	"github.com/your-org/i18n-center/repository/job"
-	"github.com/your-org/i18n-center/repository/page"
-	"github.com/your-org/i18n-center/repository/tag"
-	"github.com/your-org/i18n-center/repository/translation"
-	"github.com/your-org/i18n-center/services"
+	"github.com/lapakgaming/i18n-center/cache"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/middleware"
+	"github.com/lapakgaming/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository/application"
+	"github.com/lapakgaming/i18n-center/repository/component"
+	"github.com/lapakgaming/i18n-center/repository/job"
+	"github.com/lapakgaming/i18n-center/repository/page"
+	"github.com/lapakgaming/i18n-center/repository/tag"
+	"github.com/lapakgaming/i18n-center/repository/translation"
+	"github.com/lapakgaming/i18n-center/services"
 )
 
 type TranslationHandler struct {

@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/your-org/i18n-center/auth"
+	"github.com/lapakgaming/i18n-center/auth"
 )
 
 // AuthMiddleware validates JWT token

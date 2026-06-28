@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/observability"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/observability"
 )
 
 type HealthHandler struct{}

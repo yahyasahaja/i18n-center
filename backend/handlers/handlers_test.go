@@ -9,9 +9,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/mock"
 
-	"github.com/your-org/i18n-center/cache"
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/mocks"
+	"github.com/lapakgaming/i18n-center/cache"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/mocks"
 )
 
 func init() {

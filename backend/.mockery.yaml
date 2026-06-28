@@ -1,6 +1,6 @@
 with-expecter: true
 packages:
-  github.com/your-org/i18n-center/services:
+  github.com/lapakgaming/i18n-center/services:
     interfaces:
       AuditServicer:
         config:

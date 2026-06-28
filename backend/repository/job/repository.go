@@ -18,8 +18,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 
-	"github.com/your-org/i18n-center/repository"
-	"github.com/your-org/i18n-center/repository/translation"
+	"github.com/lapakgaming/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository/translation"
 )
 
 // Status constants for all three job types.

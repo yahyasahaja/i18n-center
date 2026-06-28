@@ -11,8 +11,8 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/your-org/i18n-center/auth"
-	"github.com/your-org/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/auth"
+	"github.com/lapakgaming/i18n-center/database"
 )
 
 // withMockDB swaps database.SQLX for a sqlmock-backed *sqlx.DB so the

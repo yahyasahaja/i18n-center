@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/your-org/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/database"
 )
 
 // setupAPIKeyDB wires a sqlmock-backed *sqlx.DB into database.SQLX so

@@ -7,8 +7,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/observability"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/observability"
 )
 
 // retentionInterval is how often the soft-delete sweep runs. Like the version

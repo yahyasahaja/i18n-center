@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/your-org/i18n-center/observability"
+	"github.com/lapakgaming/i18n-center/observability"
 )
 
 var (

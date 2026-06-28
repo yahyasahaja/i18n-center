@@ -5,7 +5,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"github.com/your-org/i18n-center/models"
+	"github.com/lapakgaming/i18n-center/models"
 )
 
 func TestMockAuditServicer_Methods(t *testing.T) {

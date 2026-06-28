@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/your-org/i18n-center/models"
+	"github.com/lapakgaming/i18n-center/models"
 )
 
 // setupAuthHandler uses the real constructor so h.users (the sqlx-backed user

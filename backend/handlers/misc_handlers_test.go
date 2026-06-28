@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"github.com/your-org/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/database"
 )
 
 func TestTagPageAndUtilityHandlers_ValidationPaths(t *testing.T) {

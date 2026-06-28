@@ -1,4 +1,4 @@
-module github.com/your-org/i18n-center-go
+module github.com/lapakgaming/i18n-center-go
 
 go 1.23
 

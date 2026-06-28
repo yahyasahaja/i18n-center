@@ -11,13 +11,13 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/joho/godotenv"
-	"github.com/your-org/i18n-center/cache"
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/jobs"
-	"github.com/your-org/i18n-center/observability"
-	"github.com/your-org/i18n-center/routes"
+	"github.com/lapakgaming/i18n-center/cache"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/jobs"
+	"github.com/lapakgaming/i18n-center/observability"
+	"github.com/lapakgaming/i18n-center/routes"
 
-	_ "github.com/your-org/i18n-center/docs" // Swagger docs
+	_ "github.com/lapakgaming/i18n-center/docs" // Swagger docs
 )
 
 // @title           i18n Center API

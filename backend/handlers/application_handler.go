@@ -10,16 +10,16 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 
-	"github.com/your-org/i18n-center/cache"
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/jobs"
-	"github.com/your-org/i18n-center/repository"
-	"github.com/your-org/i18n-center/repository/application"
-	"github.com/your-org/i18n-center/repository/component"
-	"github.com/your-org/i18n-center/repository/job"
-	"github.com/your-org/i18n-center/repository/localedeploy"
-	"github.com/your-org/i18n-center/repository/translation"
-	"github.com/your-org/i18n-center/services"
+	"github.com/lapakgaming/i18n-center/cache"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/jobs"
+	"github.com/lapakgaming/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository/application"
+	"github.com/lapakgaming/i18n-center/repository/component"
+	"github.com/lapakgaming/i18n-center/repository/job"
+	"github.com/lapakgaming/i18n-center/repository/localedeploy"
+	"github.com/lapakgaming/i18n-center/repository/translation"
+	"github.com/lapakgaming/i18n-center/services"
 )
 
 // pqStringArray is a local alias so the file can reference `pq.StringArray`

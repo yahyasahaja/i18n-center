@@ -9,10 +9,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/repository"
-	"github.com/your-org/i18n-center/repository/cms"
-	"github.com/your-org/i18n-center/services"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository/cms"
+	"github.com/lapakgaming/i18n-center/services"
 )
 
 type CmsTemplateHandler struct {

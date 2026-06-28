@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/your-org/i18n-center/observability"
+	"github.com/lapakgaming/i18n-center/observability"
 )
 
 func init() {

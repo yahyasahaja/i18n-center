@@ -6,9 +6,9 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/observability"
-	"github.com/your-org/i18n-center/repository/translation"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/observability"
+	"github.com/lapakgaming/i18n-center/repository/translation"
 )
 
 // cleanupInterval is how often the version-retention sweep runs. The job is

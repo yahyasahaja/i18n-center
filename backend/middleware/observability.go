@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 
-	"github.com/your-org/i18n-center/observability"
+	"github.com/lapakgaming/i18n-center/observability"
 )
 
 // ObservabilityMiddleware logs every request and emits the i18n_center_latency_seconds metric.

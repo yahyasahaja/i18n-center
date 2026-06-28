@@ -10,7 +10,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 
-	"github.com/your-org/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository"
 )
 
 // maxSaveAttempts caps the SaveVersion retry loop. A high collision count

@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/your-org/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository"
 )
 
 // APIKey is the in-memory representation of `application_api_keys`. The full

@@ -7,11 +7,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/your-org/i18n-center/auth"
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/repository"
-	"github.com/your-org/i18n-center/repository/user"
-	"github.com/your-org/i18n-center/services"
+	"github.com/lapakgaming/i18n-center/auth"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository/user"
+	"github.com/lapakgaming/i18n-center/services"
 )
 
 type AuthHandler struct {

@@ -32,7 +32,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 
-	"github.com/your-org/i18n-center/migrations"
+	"github.com/lapakgaming/i18n-center/migrations"
 )
 
 // allowedCommands documents what we expose. goose itself supports more, but

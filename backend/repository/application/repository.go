@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 
-	"github.com/your-org/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository"
 )
 
 // Application matches the `applications` row layout. enabled_languages is a

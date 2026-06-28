@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"github.com/your-org/i18n-center/auth"
+	"github.com/lapakgaming/i18n-center/auth"
 )
 
 func TestAuthMiddleware(t *testing.T) {

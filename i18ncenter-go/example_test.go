@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/your-org/i18n-center-go"
+	"github.com/lapakgaming/i18n-center-go"
 )
 
 func ExampleClient_GetTranslation() {

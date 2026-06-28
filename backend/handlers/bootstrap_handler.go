@@ -9,15 +9,15 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"github.com/your-org/i18n-center/cache"
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/observability"
-	"github.com/your-org/i18n-center/repository"
-	"github.com/your-org/i18n-center/repository/application"
-	"github.com/your-org/i18n-center/repository/component"
-	"github.com/your-org/i18n-center/repository/localedeploy"
-	"github.com/your-org/i18n-center/repository/translation"
-	"github.com/your-org/i18n-center/services"
+	"github.com/lapakgaming/i18n-center/cache"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/observability"
+	"github.com/lapakgaming/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository/application"
+	"github.com/lapakgaming/i18n-center/repository/component"
+	"github.com/lapakgaming/i18n-center/repository/localedeploy"
+	"github.com/lapakgaming/i18n-center/repository/translation"
+	"github.com/lapakgaming/i18n-center/services"
 )
 
 // BootstrapHandler handles application-level bulk seeding from a locale JSON file.

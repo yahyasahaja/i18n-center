@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/your-org/i18n-center/repository"
+	"github.com/lapakgaming/i18n-center/repository"
 )
 
 // Role constants for User.Role. Stored as TEXT — Postgres has no enum here

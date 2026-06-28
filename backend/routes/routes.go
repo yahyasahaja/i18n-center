@@ -8,8 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
-	"github.com/your-org/i18n-center/handlers"
-	"github.com/your-org/i18n-center/middleware"
+	"github.com/lapakgaming/i18n-center/handlers"
+	"github.com/lapakgaming/i18n-center/middleware"
 )
 
 func SetupRoutes() *gin.Engine {

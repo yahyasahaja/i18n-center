@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/your-org/i18n-center/database"
-	"github.com/your-org/i18n-center/repository/apikey"
+	"github.com/lapakgaming/i18n-center/database"
+	"github.com/lapakgaming/i18n-center/repository/apikey"
 )
 
 // APIKeyPrefix is the literal prefix every issued key must carry. Stored as a

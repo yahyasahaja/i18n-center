@@ -2,7 +2,7 @@ package services
 
 import (
 	"github.com/google/uuid"
-	"github.com/your-org/i18n-center/models"
+	"github.com/lapakgaming/i18n-center/models"
 )
 
 // AuditServicer defines the audit logging interface used by handlers.
