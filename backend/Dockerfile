@@ -9,7 +9,7 @@
 # Migrations are embedded into the binary via //go:embed in migrations/migrations.go,
 # so the image is self-contained — no SQL files copied at runtime.
 
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 
