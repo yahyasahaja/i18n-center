@@ -1,6 +1,6 @@
 module github.com/lapakgaming/i18n-center
 
-go 1.25.7
+go 1.25.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
@@ -12,7 +12,7 @@ require (
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/joho/godotenv v1.5.1
 	github.com/lib/pq v1.12.3
-	github.com/pressly/goose/v3 v3.27.1
+	github.com/pressly/goose/v3 v3.26.0
 	github.com/redis/go-redis/v9 v9.7.3
 	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/files v1.0.1
