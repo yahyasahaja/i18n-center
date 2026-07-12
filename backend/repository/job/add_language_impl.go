@@ -4,10 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 
 	"github.com/lapakgaming/i18n-center/repository"
 )
@@ -19,7 +19,7 @@ const (
 		       error_message, error_detail, claimed_by, created_by,
 		       created_at, updated_at
 		FROM add_language_jobs
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -29,7 +29,7 @@ const (
 		       error_message, error_detail, claimed_by, created_by,
 		       created_at, updated_at
 		FROM add_language_jobs
-		WHERE id = $1 AND application_id = $2
+		WHERE id = ? AND application_id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -39,8 +39,8 @@ const (
 		       error_message, error_detail, claimed_by, created_by,
 		       created_at, updated_at
 		FROM add_language_jobs
-		WHERE application_id = $1
-		  AND locale = $2
+		WHERE application_id = ?
+		  AND locale = ?
 		  AND status IN ('pending', 'running')
 		  AND deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -53,7 +53,7 @@ const (
 		       error_message, error_detail, claimed_by, created_by,
 		       created_at, updated_at
 		FROM add_language_jobs
-		WHERE application_id = $1
+		WHERE application_id = ?
 		  AND status IN ('pending', 'running')
 		  AND deleted_at IS NULL
 		ORDER BY created_at ASC
@@ -65,71 +65,89 @@ const (
 			total_components, completed_components,
 			error_message, error_detail, claimed_by, created_by,
 			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, 'pending', 0, 0, '', '', '', $5, NOW(), NOW())
+		) VALUES (?, ?, ?, ?, 'pending', 0, 0, '', '', '', ?, NOW(), NOW())
 	`
 
-	// Claim atomically. UPDATE...RETURNING with a FOR UPDATE SKIP LOCKED
-	// sub-select guarantees exactly one worker claims a given job, even with
-	// multiple replicas racing. Returns no rows when nothing's pending.
-	queryAddLangClaim = `
+	// Claim atomically. MySQL 8 has no RETURNING, so the claim is 3 statements
+	// inside a transaction:
+	//   1. Pick the oldest pending row under FOR UPDATE SKIP LOCKED — other
+	//      replicas racing on the same tick will skip our candidate.
+	//   2. UPDATE to flip status to running with our claimed_by.
+	//   3. SELECT the fresh row so the worker gets consistent data.
+	// Returns no rows when nothing's pending — surfaced as (nil, nil).
+	queryAddLangClaimSelect = `
+		SELECT id FROM add_language_jobs
+		WHERE status = 'pending' AND deleted_at IS NULL
+		ORDER BY created_at ASC
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED
+	`
+
+	queryAddLangClaimUpdate = `
 		UPDATE add_language_jobs
-		SET status = 'running', claimed_by = $1, updated_at = NOW()
-		WHERE id = (
-			SELECT id FROM add_language_jobs
-			WHERE status = 'pending' AND deleted_at IS NULL
-			ORDER BY created_at ASC
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
-		)
-		RETURNING id, application_id, locale, auto_translate, status,
-		          total_components, completed_components,
-		          error_message, error_detail, claimed_by, created_by,
-		          created_at, updated_at
+		SET status = 'running', claimed_by = ?, updated_at = NOW()
+		WHERE id = ?
+	`
+
+	queryAddLangClaimSelectRow = `
+		SELECT id, application_id, locale, auto_translate, status,
+		       total_components, completed_components,
+		       error_message, error_detail, claimed_by, created_by,
+		       created_at, updated_at
+		FROM add_language_jobs
+		WHERE id = ?
 	`
 
 	queryAddLangResetStuck = `
 		UPDATE add_language_jobs
 		SET status = 'pending', claimed_by = '', updated_at = NOW()
 		WHERE status = 'running'
-		  AND updated_at < NOW() - ($1 || ' seconds')::INTERVAL
+		  AND updated_at < NOW() - INTERVAL ? SECOND
 		  AND deleted_at IS NULL
 	`
 
 	queryAddLangUpdateTotals = `
 		UPDATE add_language_jobs
-		SET total_components = $2,
-		    completed_components = $3,
+		SET total_components = ?,
+		    completed_components = ?,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 	`
 
 	queryAddLangIncrementCompleted = `
 		UPDATE add_language_jobs
 		SET completed_components = completed_components + 1,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 	`
 
 	queryAddLangMarkCompleted = `
 		UPDATE add_language_jobs
 		SET status = 'completed', updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 	`
 
 	queryAddLangMarkFailed = `
 		UPDATE add_language_jobs
 		SET status = 'failed',
-		    error_message = $2,
-		    error_detail = $3,
+		    error_message = ?,
+		    error_detail = ?,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 	`
 )
 
-type addLangImpl struct{}
+// addLangImpl carries the underlying *sqlx.DB for the ClaimNext transaction.
+// Every other method uses the passed Queryer so it composes with an outer
+// WithTx.
+type addLangImpl struct {
+	db *sqlx.DB
+}
 
 // NewAddLanguageRepository returns the default AddLanguageJob repository.
-func NewAddLanguageRepository() AddLanguageRepository { return &addLangImpl{} }
+func NewAddLanguageRepository(db *sqlx.DB) AddLanguageRepository {
+	return &addLangImpl{db: db}
+}
 
 func (r *addLangImpl) GetByID(ctx context.Context, q repository.Queryer, id uuid.UUID) (*AddLanguageJob, error) {
 	var j AddLanguageJob
@@ -189,25 +207,40 @@ func (r *addLangImpl) Insert(ctx context.Context, q repository.Queryer, j *AddLa
 	return nil
 }
 
-func (r *addLangImpl) ClaimNext(ctx context.Context, q repository.Queryer, instanceID string) (*AddLanguageJob, error) {
-	var j AddLanguageJob
-	if err := q.GetContext(ctx, &j, queryAddLangClaim, instanceID); err != nil {
+// ClaimNext atomically picks the oldest pending add-language job. See
+// translate_impl.go's ClaimNext for the full rationale — same 3-statement
+// pattern, same "no pending work → (nil, nil)" semantics (distinct from
+// ErrNotFound so worker callers can loop without treating an empty queue as
+// an error).
+func (r *addLangImpl) ClaimNext(ctx context.Context, _ repository.Queryer, instanceID string) (*AddLanguageJob, error) {
+	var job AddLanguageJob
+	err := repository.WithTx(ctx, r.db, func(tx repository.Queryer) error {
+		var id uuid.UUID
+		if err := tx.GetContext(ctx, &id, queryAddLangClaimSelect); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, queryAddLangClaimUpdate, instanceID, id); err != nil {
+			return err
+		}
+		return tx.GetContext(ctx, &job, queryAddLangClaimSelectRow, id)
+	})
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil // no pending work — distinct from ErrNotFound
+			return nil, nil
 		}
 		return nil, err
 	}
-	return &j, nil
+	return &job, nil
 }
 
 func (r *addLangImpl) ResetStuck(ctx context.Context, q repository.Queryer, stuckAfter time.Duration) error {
 	seconds := int64(stuckAfter.Seconds())
-	_, err := q.ExecContext(ctx, queryAddLangResetStuck, fmt.Sprintf("%d", seconds))
+	_, err := q.ExecContext(ctx, queryAddLangResetStuck, seconds)
 	return err
 }
 
 func (r *addLangImpl) UpdateTotals(ctx context.Context, q repository.Queryer, jobID uuid.UUID, total, completed int) error {
-	_, err := q.ExecContext(ctx, queryAddLangUpdateTotals, jobID, total, completed)
+	_, err := q.ExecContext(ctx, queryAddLangUpdateTotals, total, completed, jobID)
 	return err
 }
 
@@ -222,6 +255,6 @@ func (r *addLangImpl) MarkCompleted(ctx context.Context, q repository.Queryer, j
 }
 
 func (r *addLangImpl) MarkFailed(ctx context.Context, q repository.Queryer, jobID uuid.UUID, errMsg, errDetail string) error {
-	_, err := q.ExecContext(ctx, queryAddLangMarkFailed, jobID, errMsg, errDetail)
+	_, err := q.ExecContext(ctx, queryAddLangMarkFailed, errMsg, errDetail, jobID)
 	return err
 }

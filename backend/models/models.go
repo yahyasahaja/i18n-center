@@ -16,14 +16,15 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/lapakgaming/i18n-center/repository"
 )
 
-// JSONB type for PostgreSQL JSONB columns.
+// JSONB type for JSON columns (name kept for compatibility; backing store is
+// now MySQL JSON — semantics are the same for our usage).
 type JSONB map[string]interface{}
 
 func (j JSONB) Value() (driver.Value, error) {
@@ -43,74 +44,6 @@ func (j *JSONB) Scan(value interface{}) error {
 		return errors.New("type assertion to []byte failed")
 	}
 	return json.Unmarshal(bytes, j)
-}
-
-// StringArray type for PostgreSQL text[] columns. lib/pq has its own
-// StringArray now — prefer that in new code; this one is kept because
-// some Swagger annotations and legacy types still reference it.
-type StringArray []string
-
-func (a StringArray) Value() (driver.Value, error) {
-	if a == nil {
-		return nil, nil
-	}
-	if len(a) == 0 {
-		return "{}", nil
-	}
-	values := make([]string, len(a))
-	for i, v := range a {
-		v = strings.ReplaceAll(v, `\`, `\\`)
-		v = strings.ReplaceAll(v, `"`, `\"`)
-		values[i] = `"` + v + `"`
-	}
-	return "{" + strings.Join(values, ",") + "}", nil
-}
-
-func (a *StringArray) Scan(value interface{}) error {
-	if value == nil {
-		*a = nil
-		return nil
-	}
-
-	var str string
-	switch v := value.(type) {
-	case []byte:
-		str = string(v)
-	case string:
-		str = v
-	default:
-		return fmt.Errorf("cannot scan %T into StringArray", value)
-	}
-
-	str = strings.TrimSpace(str)
-	if str == "{}" {
-		*a = []string{}
-		return nil
-	}
-
-	str = strings.TrimPrefix(str, "{")
-	str = strings.TrimSuffix(str, "}")
-	if str == "" {
-		*a = []string{}
-		return nil
-	}
-
-	parts := strings.Split(str, ",")
-	result := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if len(part) >= 2 && part[0] == '"' && part[len(part)-1] == '"' {
-			part = part[1 : len(part)-1]
-			part = strings.ReplaceAll(part, `\"`, `"`)
-			part = strings.ReplaceAll(part, `\\`, `\`)
-		}
-		if part != "" {
-			result = append(result, part)
-		}
-	}
-
-	*a = result
-	return nil
 }
 
 // UserRole represents user roles. Mirrored in `user.Role*` constants — both
@@ -143,7 +76,7 @@ type Application struct {
 	Description      string      `db:"description"       json:"description"`
 	OpenAIKey        string      `db:"openai_key"        json:"-"`
 	HasOpenAIKey     bool        `db:"-"                 json:"has_openai_key"`
-	EnabledLanguages StringArray `db:"enabled_languages" json:"enabled_languages"`
+	EnabledLanguages repository.JSONStringArray `db:"enabled_languages" json:"enabled_languages"`
 	CreatedBy        uuid.UUID   `db:"created_by"        json:"created_by"`
 	UpdatedBy        uuid.UUID   `db:"updated_by"        json:"updated_by"`
 	CreatedAt        time.Time   `db:"created_at"        json:"created_at"`
@@ -214,7 +147,7 @@ type TranslateJob struct {
 	ComponentID   uuid.UUID   `db:"component_id"   json:"component_id"`
 	JobType       string      `db:"job_type"       json:"job_type"`
 	SourceLocale  string      `db:"source_locale"  json:"source_locale"`
-	TargetLocales StringArray `db:"target_locales" json:"target_locales"`
+	TargetLocales repository.JSONStringArray `db:"target_locales" json:"target_locales"`
 	Status        string      `db:"status"         json:"status"`
 	ErrorMessage  string      `db:"error_message"  json:"error_message,omitempty"`
 	ErrorDetail   string      `db:"error_detail"   json:"error_detail,omitempty"`

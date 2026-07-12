@@ -1,20 +1,26 @@
 services:
-  postgres:
-    image: postgres:15-alpine
-    container_name: i18n-center-postgres
+  mysql:
+    image: mysql:8.0
+    container_name: i18n-center-mysql
     environment:
-      POSTGRES_USER: i18n_user
-      POSTGRES_PASSWORD: i18n_password
-      POSTGRES_DB: i18n_center
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_USER: i18n_user
+      MYSQL_PASSWORD: i18n_password
+      MYSQL_DATABASE: i18n_center
+    command:
+      - --default-authentication-plugin=caching_sha2_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --explicit-defaults-for-timestamp=1
     ports:
-      - "5432:5432"
+      - "3306:3306"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U i18n_user"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "i18n_user", "-pi18n_password"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
     restart: unless-stopped
 
   redis:
@@ -32,6 +38,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  postgres_data:
+  mysql_data:
   redis_data:
-

@@ -17,14 +17,14 @@ const (
 	queryGetByID = `
 		SELECT id, username, password_hash, role, is_active, created_at, updated_at
 		FROM users
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
 	queryGetActiveByUsername = `
 		SELECT id, username, password_hash, role, is_active, created_at, updated_at
 		FROM users
-		WHERE username = $1
+		WHERE username = ?
 		  AND is_active = TRUE
 		  AND deleted_at IS NULL
 		LIMIT 1
@@ -39,16 +39,16 @@ const (
 
 	queryInsert = `
 		INSERT INTO users (id, username, password_hash, role, is_active, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $6)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
 
 	queryUpdate = `
 		UPDATE users
-		SET role = $2,
-		    is_active = $3,
-		    password_hash = $4,
+		SET role = ?,
+		    is_active = ?,
+		    password_hash = ?,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 )
@@ -103,7 +103,7 @@ func (r *Impl) Create(ctx context.Context, q repository.Queryer, u *User) error 
 	}
 	u.UpdatedAt = u.CreatedAt
 	_, err := q.ExecContext(ctx, queryInsert,
-		u.ID, u.Username, u.PasswordHash, u.Role, u.IsActive, u.CreatedAt,
+		u.ID, u.Username, u.PasswordHash, u.Role, u.IsActive, u.CreatedAt, u.CreatedAt,
 	)
 	if err != nil {
 		if repository.IsUniqueViolation(err) {
@@ -116,7 +116,7 @@ func (r *Impl) Create(ctx context.Context, q repository.Queryer, u *User) error 
 
 func (r *Impl) Update(ctx context.Context, q repository.Queryer, u *User) error {
 	result, err := q.ExecContext(ctx, queryUpdate,
-		u.ID, u.Role, u.IsActive, u.PasswordHash,
+		u.Role, u.IsActive, u.PasswordHash, u.ID,
 	)
 	if err != nil {
 		return err

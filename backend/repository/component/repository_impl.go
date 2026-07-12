@@ -4,12 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/lib/pq"
 
 	"github.com/lapakgaming/i18n-center/repository"
 	"github.com/lapakgaming/i18n-center/repository/page"
@@ -30,7 +28,7 @@ const (
 		       key_contexts, default_locale, created_by, updated_by,
 		       created_at, updated_at
 		FROM components
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -39,7 +37,7 @@ const (
 		       key_contexts, default_locale, created_by, updated_by,
 		       created_at, updated_at
 		FROM components
-		WHERE code = $1
+		WHERE code = ?
 		  AND deleted_at IS NULL
 		LIMIT 1
 	`
@@ -61,19 +59,19 @@ const (
 			id, application_id, name, code, description,
 			key_contexts, default_locale, created_by, updated_by,
 			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, NOW(), NOW())
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
 	`
 
 	queryUpdate = `
 		UPDATE components
-		SET name = $2,
-		    code = $3,
-		    description = $4,
-		    key_contexts = $5,
-		    default_locale = $6,
-		    updated_by = $7,
+		SET name = ?,
+		    code = ?,
+		    description = ?,
+		    key_contexts = ?,
+		    default_locale = ?,
+		    updated_by = ?,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -81,39 +79,38 @@ const (
 		UPDATE components
 		SET deleted_at = NOW(),
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
 	// Junction table maintenance — DELETE the full set, then bulk-INSERT the
 	// new IDs. The DELETE uses the junction's primary key index; the INSERT is
-	// a single round-trip via Postgres array-unnest.
-	queryDetachAllTags  = `DELETE FROM component_tags  WHERE component_id = $1`
-	queryDetachAllPages = `DELETE FROM component_pages WHERE component_id = $1`
+	// a single round-trip that filters out soft-deleted parents via a SELECT
+	// against tags/pages and uses INSERT IGNORE for duplicate-PK skip.
+	queryDetachAllTags  = `DELETE FROM component_tags  WHERE component_id = ?`
+	queryDetachAllPages = `DELETE FROM component_pages WHERE component_id = ?`
 
 	queryAttachTagsBulk = `
-		INSERT INTO component_tags (component_id, tag_id)
-		SELECT $1, t.id
+		INSERT IGNORE INTO component_tags (component_id, tag_id)
+		SELECT ?, t.id
 		FROM tags t
-		WHERE t.id = ANY($2::uuid[])
+		WHERE t.id IN (?)
 		  AND t.deleted_at IS NULL
-		ON CONFLICT DO NOTHING
 	`
 
 	queryAttachPagesBulk = `
-		INSERT INTO component_pages (component_id, page_id)
-		SELECT $1, p.id
+		INSERT IGNORE INTO component_pages (component_id, page_id)
+		SELECT ?, p.id
 		FROM pages p
-		WHERE p.id = ANY($2::uuid[])
+		WHERE p.id IN (?)
 		  AND p.deleted_at IS NULL
-		ON CONFLICT DO NOTHING
 	`
 
 	queryLoadTags = `
 		SELECT t.id, t.application_id, t.code, t.created_at, t.updated_at
 		FROM tags t
 		JOIN component_tags ct ON ct.tag_id = t.id
-		WHERE ct.component_id = $1
+		WHERE ct.component_id = ?
 		  AND t.deleted_at IS NULL
 		ORDER BY t.code
 	`
@@ -122,7 +119,7 @@ const (
 		SELECT p.id, p.application_id, p.code, p.created_at, p.updated_at
 		FROM pages p
 		JOIN component_pages cp ON cp.page_id = p.id
-		WHERE cp.component_id = $1
+		WHERE cp.component_id = ?
 		  AND p.deleted_at IS NULL
 		ORDER BY p.code
 	`
@@ -184,7 +181,7 @@ const queryGetByAppCode = `
 	       key_contexts, default_locale, created_by, updated_by,
 	       created_at, updated_at
 	FROM components
-	WHERE application_id = $1 AND code = $2
+	WHERE application_id = ? AND code = ?
 	  AND deleted_at IS NULL
 	LIMIT 1
 `
@@ -207,15 +204,19 @@ func (r *Impl) ListByIDs(ctx context.Context, q repository.Queryer, ids []uuid.U
 	if len(ids) == 0 {
 		return []Component{}, nil
 	}
-	const query = `
+	const base = `
 		SELECT id, application_id, name, code, description,
 		       key_contexts, default_locale, created_by, updated_by,
 		       created_at, updated_at
 		FROM components
-		WHERE id = ANY($1) AND deleted_at IS NULL
+		WHERE id IN (?) AND deleted_at IS NULL
 	`
+	query, args, err := sqlx.In(base, ids)
+	if err != nil {
+		return nil, err
+	}
 	rows := []Component{}
-	if err := q.SelectContext(ctx, &rows, query, pq.Array(ids)); err != nil {
+	if err := q.SelectContext(ctx, &rows, query, args...); err != nil {
 		return nil, err
 	}
 	return rows, nil
@@ -224,26 +225,25 @@ func (r *Impl) ListByIDs(ctx context.Context, q repository.Queryer, ids []uuid.U
 func (r *Impl) List(ctx context.Context, q repository.Queryer, f ListFilter) ([]Component, int, error) {
 	// Build the WHERE additions dynamically. Static prefix comes from the const
 	// so the query plan is stable across most call patterns; the conditional
-	// suffix is appended below with numbered placeholders.
+	// suffix is appended below with positional `?` placeholders.
 	sb := strings.Builder{}
 	cb := strings.Builder{}
 	sb.WriteString(queryListBase)
 	cb.WriteString(queryCountBase)
 	args := []any{}
-	i := 1
 	if f.ApplicationID != uuid.Nil {
-		fmt.Fprintf(&sb, " AND application_id = $%d", i)
-		fmt.Fprintf(&cb, " AND application_id = $%d", i)
+		sb.WriteString(" AND application_id = ?")
+		cb.WriteString(" AND application_id = ?")
 		args = append(args, f.ApplicationID)
-		i++
 	}
 	if s := strings.TrimSpace(f.Search); s != "" {
-		// pg_trgm makes ILIKE cheap; trigram GIN index on name + code.
-		fmt.Fprintf(&sb, " AND (name ILIKE $%d OR code ILIKE $%d)", i, i+1)
-		fmt.Fprintf(&cb, " AND (name ILIKE $%d OR code ILIKE $%d)", i, i+1)
+		// Case-insensitivity comes from the utf8mb4_unicode_ci collation on the
+		// name/code columns — LIKE is case-insensitive by default. At ~200 rows
+		// per app the full-scan cost is fine; no trigram index needed.
+		sb.WriteString(" AND (name LIKE ? OR code LIKE ?)")
+		cb.WriteString(" AND (name LIKE ? OR code LIKE ?)")
 		like := "%" + s + "%"
 		args = append(args, like, like)
-		i += 2
 	}
 	// Count first so a slow LIMIT/OFFSET doesn't poison the count read.
 	countArgs := append([]any(nil), args...)
@@ -252,15 +252,16 @@ func (r *Impl) List(ctx context.Context, q repository.Queryer, f ListFilter) ([]
 		return nil, 0, err
 	}
 
-	// Ordering and pagination on the row read. Limit=0 means "no limit" —
-	// used by callers that need the full set (e.g. the AddLanguage worker
-	// fan-out). Pass NULL so Postgres treats it as unbounded.
+	// Ordering and pagination on the row read. Limit=0 means "no limit" — used
+	// by callers that need the full set (e.g. the AddLanguage worker fan-out).
+	// MySQL requires LIMIT alongside OFFSET, so the unbounded branch uses the
+	// max-uint64 sentinel documented in the MySQL manual.
 	sb.WriteString(" ORDER BY created_at DESC")
 	if f.Limit > 0 {
-		fmt.Fprintf(&sb, " LIMIT $%d OFFSET $%d", i, i+1)
+		sb.WriteString(" LIMIT ? OFFSET ?")
 		args = append(args, f.Limit, f.Offset)
 	} else if f.Offset > 0 {
-		fmt.Fprintf(&sb, " OFFSET $%d", i)
+		sb.WriteString(" LIMIT 18446744073709551615 OFFSET ?")
 		args = append(args, f.Offset)
 	}
 
@@ -275,9 +276,11 @@ func (r *Impl) Create(ctx context.Context, q repository.Queryer, c *Component) e
 	if c.ID == uuid.Nil {
 		c.ID = uuid.New()
 	}
+	// created_by and updated_by are seeded to the same actor on insert; the
+	// old $8/$8 reuse becomes two positional args in MySQL.
 	if _, err := q.ExecContext(ctx, queryInsert,
 		c.ID, c.ApplicationID, c.Name, c.Code, c.Description,
-		c.KeyContexts, c.DefaultLocale, c.CreatedBy,
+		c.KeyContexts, c.DefaultLocale, c.CreatedBy, c.CreatedBy,
 	); err != nil {
 		if repository.IsUniqueViolation(err) {
 			return repository.ErrConflict
@@ -288,8 +291,9 @@ func (r *Impl) Create(ctx context.Context, q repository.Queryer, c *Component) e
 }
 
 func (r *Impl) Update(ctx context.Context, q repository.Queryer, c *Component) error {
+	// MySQL is positional — SET args come first, WHERE id last.
 	result, err := q.ExecContext(ctx, queryUpdate,
-		c.ID, c.Name, c.Code, c.Description, c.KeyContexts, c.DefaultLocale, c.UpdatedBy,
+		c.Name, c.Code, c.Description, c.KeyContexts, c.DefaultLocale, c.UpdatedBy, c.ID,
 	)
 	if err != nil {
 		if repository.IsUniqueViolation(err) {
@@ -332,8 +336,13 @@ func (r *Impl) AttachTags(ctx context.Context, q repository.Queryer, componentID
 	if len(tagIDs) == 0 {
 		return nil
 	}
-	// pq.Array handles the []uuid.UUID → uuid[] conversion for Postgres.
-	if _, err := q.ExecContext(ctx, queryAttachTagsBulk, componentID, pq.Array(uuidToStringSlice(tagIDs))); err != nil {
+	// sqlx.In expands the `IN (?)` placeholder to `IN (?,?,?…)` and interleaves
+	// the args in order — componentID first, then the tag ID slice.
+	query, args, err := sqlx.In(queryAttachTagsBulk, componentID, tagIDs)
+	if err != nil {
+		return err
+	}
+	if _, err := q.ExecContext(ctx, query, args...); err != nil {
 		return err
 	}
 	return nil
@@ -346,7 +355,11 @@ func (r *Impl) AttachPages(ctx context.Context, q repository.Queryer, componentI
 	if len(pageIDs) == 0 {
 		return nil
 	}
-	if _, err := q.ExecContext(ctx, queryAttachPagesBulk, componentID, pq.Array(uuidToStringSlice(pageIDs))); err != nil {
+	query, args, err := sqlx.In(queryAttachPagesBulk, componentID, pageIDs)
+	if err != nil {
+		return err
+	}
+	if _, err := q.ExecContext(ctx, query, args...); err != nil {
 		return err
 	}
 	return nil
@@ -367,19 +380,3 @@ func (r *Impl) LoadPages(ctx context.Context, q repository.Queryer, componentID 
 	}
 	return out, nil
 }
-
-// uuidToStringSlice converts a []uuid.UUID to []string for pq.Array (which
-// needs a slice of types it can serialise as a Postgres array element).
-// Going through string is the cheapest broadly-supported path.
-func uuidToStringSlice(ids []uuid.UUID) []string {
-	out := make([]string, len(ids))
-	for i, id := range ids {
-		out[i] = id.String()
-	}
-	return out
-}
-
-// Unused import suppressor — sqlx is imported indirectly via repository.Queryer
-// but the file compiles cleanly without an explicit reference. Keeping for
-// future use when this file grows additional sqlx-specific helpers.
-var _ = sqlx.In

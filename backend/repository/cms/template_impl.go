@@ -18,7 +18,7 @@ const (
 		SELECT id, application_id, name, code, description,
 		       created_by, updated_by, created_at, updated_at
 		FROM cms_templates
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -26,7 +26,7 @@ const (
 		SELECT id, application_id, name, code, description,
 		       created_by, updated_by, created_at, updated_at
 		FROM cms_templates
-		WHERE application_id = $1
+		WHERE application_id = ?
 		  AND deleted_at IS NULL
 		ORDER BY created_at DESC
 	`
@@ -35,16 +35,16 @@ const (
 		INSERT INTO cms_templates (
 			id, application_id, name, code, description,
 			created_by, updated_by, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $6, NOW(), NOW())
+		) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
 	`
 
 	queryUpdateTemplate = `
 		UPDATE cms_templates
-		SET name = $2,
-		    description = $3,
-		    updated_by = $4,
+		SET name = ?,
+		    description = ?,
+		    updated_by = ?,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -52,30 +52,30 @@ const (
 		UPDATE cms_templates
 		SET deleted_at = NOW(),
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
 	queryLoadFields = `
-		SELECT id, template_id, key, label, value_type, required, sort_order, created_at, updated_at
+		SELECT id, template_id, ` + "`key`" + `, label, value_type, required, sort_order, created_at, updated_at
 		FROM cms_template_fields
-		WHERE template_id = $1
-		ORDER BY sort_order, key
+		WHERE template_id = ?
+		ORDER BY sort_order, ` + "`key`" + `
 	`
 
 	queryDeleteAllFields = `
-		DELETE FROM cms_template_fields WHERE template_id = $1
+		DELETE FROM cms_template_fields WHERE template_id = ?
 	`
 
 	queryInsertField = `
 		INSERT INTO cms_template_fields (
-			id, template_id, key, label, value_type, required, sort_order, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+			id, template_id, ` + "`key`" + `, label, value_type, required, sort_order, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
 	`
 
 	queryCountItemsForTemplate = `
 		SELECT COUNT(*) FROM cms_items
-		WHERE template_id = $1
+		WHERE template_id = ?
 		  AND deleted_at IS NULL
 	`
 )
@@ -124,7 +124,7 @@ func (r *templateImpl) Create(ctx context.Context, q repository.Queryer, t *Temp
 		t.ID = uuid.New()
 	}
 	if _, err := q.ExecContext(ctx, queryInsertTemplate,
-		t.ID, t.ApplicationID, t.Name, t.Code, t.Description, t.CreatedBy,
+		t.ID, t.ApplicationID, t.Name, t.Code, t.Description, t.CreatedBy, t.CreatedBy,
 	); err != nil {
 		if repository.IsUniqueViolation(err) {
 			return repository.ErrConflict
@@ -135,7 +135,7 @@ func (r *templateImpl) Create(ctx context.Context, q repository.Queryer, t *Temp
 }
 
 func (r *templateImpl) Update(ctx context.Context, q repository.Queryer, t *Template) error {
-	result, err := q.ExecContext(ctx, queryUpdateTemplate, t.ID, t.Name, t.Description, t.UpdatedBy)
+	result, err := q.ExecContext(ctx, queryUpdateTemplate, t.Name, t.Description, t.UpdatedBy, t.ID)
 	if err != nil {
 		return err
 	}

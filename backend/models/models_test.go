@@ -4,13 +4,11 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-// JSONB and StringArray are still real types in this package — exercise their
-// sql.Scanner / driver.Valuer interfaces. The BeforeCreate / TableName tests
-// were tied to the now-removed GORM hooks; UUID generation is the repository
-// layer's responsibility under Commit I, so those tests are gone.
+// JSONB is the only sql.Scanner / driver.Valuer type left in this package —
+// the legacy Postgres text[] `StringArray` was removed alongside the MySQL
+// port; `repository.JSONStringArray` covers that role now.
 
 func TestJSONB_Value(t *testing.T) {
 	tests := []struct {
@@ -88,20 +86,3 @@ func TestJSONB_Scan(t *testing.T) {
 	}
 }
 
-func TestStringArray_ValueAndScan(t *testing.T) {
-	arr := StringArray{"en", "id"}
-	v, err := arr.Value()
-	require.NoError(t, err)
-	assert.Equal(t, `{"en","id"}`, v)
-
-	var scanned StringArray
-	require.NoError(t, scanned.Scan([]byte(`{"en","id"}`)))
-	assert.Equal(t, StringArray{"en", "id"}, scanned)
-
-	var nilScan StringArray
-	require.NoError(t, nilScan.Scan(nil))
-	assert.Nil(t, nilScan)
-
-	err = scanned.Scan(42)
-	assert.Error(t, err)
-}

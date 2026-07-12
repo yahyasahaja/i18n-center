@@ -23,9 +23,9 @@ const (
 		       data, source_locale, is_active,
 		       created_by, updated_by, created_at, updated_at
 		FROM cms_localizations
-		WHERE cms_item_id = $1
-		  AND locale = $2
-		  AND stage = $3
+		WHERE cms_item_id = ?
+		  AND locale = ?
+		  AND stage = ?
 		  AND is_active = TRUE
 		  AND deleted_at IS NULL
 		ORDER BY version DESC
@@ -37,10 +37,10 @@ const (
 		       data, source_locale, is_active,
 		       created_by, updated_by, created_at, updated_at
 		FROM cms_localizations
-		WHERE cms_item_id = $1
-		  AND locale = $2
-		  AND stage = $3
-		  AND version = $4
+		WHERE cms_item_id = ?
+		  AND locale = ?
+		  AND stage = ?
+		  AND version = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -49,7 +49,7 @@ const (
 		       data, source_locale, is_active,
 		       created_by, updated_by, created_at, updated_at
 		FROM cms_localizations
-		WHERE cms_item_id = $1
+		WHERE cms_item_id = ?
 		  AND deleted_at IS NULL
 		ORDER BY locale, stage, version DESC
 	`
@@ -59,9 +59,9 @@ const (
 		       data, source_locale, is_active,
 		       created_by, updated_by, created_at, updated_at
 		FROM cms_localizations
-		WHERE cms_item_id = $1
-		  AND locale = $2
-		  AND stage = $3
+		WHERE cms_item_id = ?
+		  AND locale = ?
+		  AND stage = ?
 		  AND deleted_at IS NULL
 		ORDER BY version DESC
 	`
@@ -69,9 +69,9 @@ const (
 	queryNextLocalizationVersion = `
 		SELECT COALESCE(MAX(version), 0) + 1
 		FROM cms_localizations
-		WHERE cms_item_id = $1
-		  AND locale = $2
-		  AND stage = $3
+		WHERE cms_item_id = ?
+		  AND locale = ?
+		  AND stage = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -81,7 +81,7 @@ const (
 			data, source_locale, is_active,
 			created_by, updated_by, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, TRUE, $8, $8, NOW(), NOW()
+			?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?, NOW(), NOW()
 		)
 	`
 )
@@ -146,7 +146,7 @@ func (r *localizationImpl) SaveLocalizationVersion(ctx context.Context, q reposi
 		l.Version = next
 		_, err := q.ExecContext(ctx, queryInsertLocalization,
 			l.ID, l.CmsItemID, l.Locale, l.Stage, l.Version,
-			l.Data, l.SourceLocale, l.CreatedBy,
+			l.Data, l.SourceLocale, l.CreatedBy, l.CreatedBy,
 		)
 		if err == nil {
 			return nil

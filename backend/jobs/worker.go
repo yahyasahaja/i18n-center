@@ -44,13 +44,16 @@ const (
 	stuckJobAfter        = 15 * time.Minute // rows running longer than this get reset to pending
 )
 
-// Package-level repository handles — instantiated once. The repos are
-// stateless (no per-instance config) so sharing is cheap and avoids
-// reallocating closures on every poll tick.
+// Package-level repository handles. The job repos need database.SQLX (their
+// ClaimNext opens its own transaction), and that handle is only set after
+// database.InitDatabase() runs in main() — which is after this package's var
+// init has already run. So the job repos start nil and are populated in
+// initRepos() before the first tick. The rest are stateless and safe to init
+// at package load.
 var (
-	addLangRepo      = job.NewAddLanguageRepository()
-	translateRepo    = job.NewTranslateRepository()
-	cmsTranslateRepo = job.NewCmsTranslateRepository()
+	addLangRepo      job.AddLanguageRepository
+	translateRepo    job.TranslateRepository
+	cmsTranslateRepo job.CmsTranslateRepository
 	deployRepo       = localedeploy.New()
 	appRepo          = application.New()
 	componentRepo    = component.New()
@@ -59,10 +62,19 @@ var (
 	cmsLocRepo       = cms.NewLocalizationRepository()
 )
 
+// initRepos wires the job repositories to database.SQLX. Idempotent so
+// callers (Run + tests) can invoke it freely once the DB is initialised.
+func initRepos() {
+	addLangRepo = job.NewAddLanguageRepository(database.SQLX)
+	translateRepo = job.NewTranslateRepository(database.SQLX)
+	cmsTranslateRepo = job.NewCmsTranslateRepository(database.SQLX)
+}
+
 // Run starts the in-process worker loop. Claims jobs from all three job tables
 // (AddLanguage / Translate / CmsTranslate) on each tick. Safe for multiple K8s
 // replicas via FOR UPDATE SKIP LOCKED in each ClaimNext.
 func Run(ctx context.Context) {
+	initRepos()
 	instanceID := os.Getenv("HOSTNAME")
 	if instanceID == "" {
 		instanceID = os.Getenv("WORKER_ID")

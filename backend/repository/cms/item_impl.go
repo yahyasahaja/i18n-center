@@ -15,7 +15,7 @@ const (
 		SELECT id, application_id, template_id, identifier, name, description,
 		       created_by, updated_by, created_at, updated_at
 		FROM cms_items
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -23,8 +23,8 @@ const (
 		SELECT id, application_id, template_id, identifier, name, description,
 		       created_by, updated_by, created_at, updated_at
 		FROM cms_items
-		WHERE application_id = $1
-		  AND identifier = $2
+		WHERE application_id = ?
+		  AND identifier = ?
 		  AND deleted_at IS NULL
 		LIMIT 1
 	`
@@ -33,7 +33,7 @@ const (
 		SELECT id, application_id, template_id, identifier, name, description,
 		       created_by, updated_by, created_at, updated_at
 		FROM cms_items
-		WHERE application_id = $1
+		WHERE application_id = ?
 		  AND deleted_at IS NULL
 		ORDER BY created_at DESC
 	`
@@ -42,17 +42,17 @@ const (
 		INSERT INTO cms_items (
 			id, application_id, template_id, identifier, name, description,
 			created_by, updated_by, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, NOW(), NOW())
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
 	`
 
 	queryUpdateItem = `
 		UPDATE cms_items
-		SET template_id = $2,
-		    name = $3,
-		    description = $4,
-		    updated_by = $5,
+		SET template_id = ?,
+		    name = ?,
+		    description = ?,
+		    updated_by = ?,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -60,7 +60,7 @@ const (
 		UPDATE cms_items
 		SET deleted_at = NOW(),
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 )
@@ -126,7 +126,7 @@ func (r *itemImpl) Create(ctx context.Context, q repository.Queryer, i *Item) er
 		i.ID = uuid.New()
 	}
 	if _, err := q.ExecContext(ctx, queryInsertItem,
-		i.ID, i.ApplicationID, i.TemplateID, i.Identifier, i.Name, i.Description, i.CreatedBy,
+		i.ID, i.ApplicationID, i.TemplateID, i.Identifier, i.Name, i.Description, i.CreatedBy, i.CreatedBy,
 	); err != nil {
 		if repository.IsUniqueViolation(err) {
 			return repository.ErrConflict
@@ -138,7 +138,7 @@ func (r *itemImpl) Create(ctx context.Context, q repository.Queryer, i *Item) er
 
 func (r *itemImpl) Update(ctx context.Context, q repository.Queryer, i *Item) error {
 	result, err := q.ExecContext(ctx, queryUpdateItem,
-		i.ID, i.TemplateID, i.Name, i.Description, i.UpdatedBy,
+		i.TemplateID, i.Name, i.Description, i.UpdatedBy, i.ID,
 	)
 	if err != nil {
 		return err

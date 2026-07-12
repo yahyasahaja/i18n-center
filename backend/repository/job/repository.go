@@ -6,9 +6,11 @@
 //
 // All three share the FOR UPDATE SKIP LOCKED claim pattern: workers claim
 // the oldest pending job atomically, mark it `running` with their pod's
-// claimed_by, and process it out-of-band. Stuck-running jobs older than
-// 15 minutes get reset to pending so a crashed pod doesn't permanently
-// orphan its in-flight work.
+// claimed_by, and process it out-of-band. On MySQL 8 the atomic claim is
+// implemented as a 3-statement transaction (SELECT ... FOR UPDATE SKIP
+// LOCKED, UPDATE, SELECT-back) since MySQL has no RETURNING clause. Stuck-
+// running jobs older than 15 minutes get reset to pending so a crashed pod
+// doesn't permanently orphan its in-flight work.
 package job
 
 import (
@@ -16,7 +18,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 
 	"github.com/lapakgaming/i18n-center/repository"
 	"github.com/lapakgaming/i18n-center/repository/translation"
@@ -78,22 +79,25 @@ type AddLanguageRepository interface {
 // ─── TranslateJob ────────────────────────────────────────────────────────────
 
 // TranslateJob describes a per-component translation task.
-// TargetLocales is a Postgres text[]; single-target jobs have one element,
-// multi-target backfills have N. Storage uses lib/pq's StringArray.
+// TargetLocales is a MySQL JSON array; single-target jobs have one element,
+// multi-target backfills have N. Storage uses repository.JSONStringArray
+// (marshals to/from `["en","id"]` in the `target_locales` JSON column). The
+// dedupe index keys on the generated column `first_target_locale`, which
+// mirrors the first element.
 type TranslateJob struct {
-	ID            uuid.UUID      `db:"id"             json:"id"`
-	ApplicationID uuid.UUID      `db:"application_id" json:"application_id"`
-	ComponentID   uuid.UUID      `db:"component_id"   json:"component_id"`
-	JobType       string         `db:"job_type"       json:"job_type"`
-	SourceLocale  string         `db:"source_locale"  json:"source_locale"`
-	TargetLocales pq.StringArray `db:"target_locales" json:"target_locales"`
-	Status        string         `db:"status"         json:"status"`
-	ErrorMessage  string         `db:"error_message"  json:"error_message,omitempty"`
-	ErrorDetail   string         `db:"error_detail"   json:"error_detail,omitempty"`
-	ClaimedBy     string         `db:"claimed_by"     json:"claimed_by,omitempty"`
-	CreatedBy     uuid.UUID      `db:"created_by"     json:"created_by"`
-	CreatedAt     time.Time      `db:"created_at"     json:"created_at"`
-	UpdatedAt     time.Time      `db:"updated_at"     json:"updated_at"`
+	ID            uuid.UUID                  `db:"id"             json:"id"`
+	ApplicationID uuid.UUID                  `db:"application_id" json:"application_id"`
+	ComponentID   uuid.UUID                  `db:"component_id"   json:"component_id"`
+	JobType       string                     `db:"job_type"       json:"job_type"`
+	SourceLocale  string                     `db:"source_locale"  json:"source_locale"`
+	TargetLocales repository.JSONStringArray `db:"target_locales" json:"target_locales"`
+	Status        string                     `db:"status"         json:"status"`
+	ErrorMessage  string                     `db:"error_message"  json:"error_message,omitempty"`
+	ErrorDetail   string                     `db:"error_detail"   json:"error_detail,omitempty"`
+	ClaimedBy     string                     `db:"claimed_by"     json:"claimed_by,omitempty"`
+	CreatedBy     uuid.UUID                  `db:"created_by"     json:"created_by"`
+	CreatedAt     time.Time                  `db:"created_at"     json:"created_at"`
+	UpdatedAt     time.Time                  `db:"updated_at"     json:"updated_at"`
 }
 
 type TranslateRepository interface {

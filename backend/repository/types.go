@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -106,11 +107,12 @@ func WithTx(ctx context.Context, db *sqlx.DB, fn func(tx Queryer) error) error {
 	return tx.Commit()
 }
 
-// ─── JSONB: custom type for Postgres jsonb columns ───────────────────────────
+// ─── JSONB: custom type for MySQL JSON columns ───────────────────────────────
 
-// JSONB is a Go map serialised to/from Postgres jsonb. database/sql doesn't
-// know jsonb natively, so every model with a jsonb column embeds this and
-// gets Scan/Value for free.
+// JSONB is a Go map serialised to/from a MySQL JSON column. The name is kept
+// for continuity with the Postgres-era code, but the semantics are the same:
+// database/sql doesn't know JSON natively, so every model with a JSON column
+// embeds this and gets Scan/Value for free.
 //
 // Nil maps round-trip as SQL NULL.
 type JSONB map[string]any
@@ -145,10 +147,54 @@ func (j *JSONB) Scan(src any) error {
 	return json.Unmarshal(b, j)
 }
 
+// ─── JSONStringArray: MySQL JSON array ↔ Go []string ─────────────────────────
+
+// JSONStringArray marshals a []string to/from a MySQL JSON column as a JSON
+// array (`["en","id"]`). Replaces the Postgres-era `pq.StringArray` type.
+//
+// Nil slices round-trip as JSON `[]`, matching the DEFAULT '[]' in the schema.
+type JSONStringArray []string
+
+// Value implements driver.Valuer.
+func (a JSONStringArray) Value() (driver.Value, error) {
+	if a == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal([]string(a))
+}
+
+// Scan implements sql.Scanner.
+func (a *JSONStringArray) Scan(src any) error {
+	if src == nil {
+		*a = nil
+		return nil
+	}
+	var b []byte
+	switch v := src.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("JSONStringArray.Scan: unsupported source type %T", src)
+	}
+	if len(b) == 0 {
+		*a = nil
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(b, &out); err != nil {
+		return fmt.Errorf("JSONStringArray.Scan: %w", err)
+	}
+	*a = out
+	return nil
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-// IsUniqueViolation reports whether err is a Postgres SQLSTATE 23505
-// (unique_violation). Message-matched so we don't take a hard pgconn dep.
+// IsUniqueViolation reports whether err is a unique-key violation from either
+// MySQL (Error 1062) or Postgres (SQLSTATE 23505 — kept for tests that still
+// build against pgx-shaped errors during the migration window).
 //
 // Callers retry on true (e.g. version-race in SaveVersion) or wrap as
 // ErrConflict before bubbling up.
@@ -156,14 +202,19 @@ func IsUniqueViolation(err error) bool {
 	if err == nil {
 		return false
 	}
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+		return true
+	}
 	msg := err.Error()
-	return contains(msg, "SQLSTATE 23505") ||
+	return contains(msg, "Error 1062") ||
+		contains(msg, "SQLSTATE 23505") ||
 		contains(msg, "duplicate key value") ||
-		contains(msg, "unique constraint")
+		contains(msg, "unique constraint") ||
+		contains(msg, "Duplicate entry")
 }
 
-// contains is a tiny strings.Contains shim to keep this file dependency-free
-// (it's already a pretty central package).
+// contains is a tiny strings.Contains shim to keep this file dependency-light.
 func contains(s, sub string) bool {
 	if len(sub) == 0 {
 		return true

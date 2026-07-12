@@ -18,10 +18,10 @@ FRONTEND_IMAGE = $(ARTIFACT_REGISTRY)/$(PROJECT_NAME)/frontend
 help:
 	@echo "Available targets:"
 	@echo "  dev              - Start everything (DB, Redis, backend, frontend) — main dev command"
-	@echo "  stop             - Stop all Docker containers (Postgres, Redis)"
+	@echo "  stop             - Stop all Docker containers (MySQL, Redis)"
 	@echo "  logs             - Tail logs of all Docker containers"
-	@echo "  run              - Start deps (Postgres, Redis) and run backend locally"
-	@echo "  run-deps         - Start Postgres and Redis via docker-compose"
+	@echo "  run              - Start deps (MySQL, Redis) and run backend locally"
+	@echo "  run-deps         - Start MySQL and Redis via docker-compose"
 	@echo "  run-backend      - Run Go backend (requires run-deps or existing DB/Redis)"
 	@echo "  run-frontend     - Run Next.js frontend (yarn dev)"
 	@echo "  build-backend    - Build Go backend"
@@ -37,7 +37,7 @@ help:
 	@echo "  deploy           - Deploy to GKE"
 
 # ── Main dev command ─────────────────────────────────────────────────────────
-# Starts Postgres + Redis, waits until healthy, then runs backend & frontend
+# Starts MySQL + Redis, waits until healthy, then runs backend & frontend
 # concurrently. Ctrl-C cleanly kills all three.
 
 dev: run-deps wait-deps
@@ -48,8 +48,8 @@ dev: run-deps wait-deps
 	  wait
 
 wait-deps:
-	@echo "==> Waiting for Postgres to be ready..."
-	@until docker exec i18n-center-postgres pg_isready -U i18n_user -q 2>/dev/null; do \
+	@echo "==> Waiting for MySQL to be ready..."
+	@until docker exec i18n-center-mysql mysqladmin ping -h localhost -u i18n_user -pi18n_password 2>/dev/null | grep -q "mysqld is alive"; do \
 	  printf '.'; sleep 1; \
 	done; echo " ready."
 	@echo "==> Waiting for Redis to be ready..."

@@ -6,7 +6,7 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
-	"github.com/lib/pq"
+	"github.com/jmoiron/sqlx"
 
 	"github.com/lapakgaming/i18n-center/repository"
 )
@@ -15,15 +15,15 @@ const (
 	queryGetByID = `
 		SELECT id, application_id, code, created_at, updated_at
 		FROM pages
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
 	queryGetByAppCode = `
 		SELECT id, application_id, code, created_at, updated_at
 		FROM pages
-		WHERE application_id = $1
-		  AND code = $2
+		WHERE application_id = ?
+		  AND code = ?
 		  AND deleted_at IS NULL
 		LIMIT 1
 	`
@@ -31,21 +31,21 @@ const (
 	queryListByApp = `
 		SELECT id, application_id, code, created_at, updated_at
 		FROM pages
-		WHERE application_id = $1
+		WHERE application_id = ?
 		  AND deleted_at IS NULL
 		ORDER BY code
 	`
 
 	queryInsert = `
 		INSERT INTO pages (id, application_id, code, created_at, updated_at)
-		VALUES ($1, $2, $3, NOW(), NOW())
+		VALUES (?, ?, ?, NOW(), NOW())
 	`
 
 	queryUpdate = `
 		UPDATE pages
-		SET code = $2,
+		SET code = ?,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -53,7 +53,7 @@ const (
 		UPDATE pages
 		SET deleted_at = NOW(),
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -61,30 +61,30 @@ const (
 		SELECT c.id
 		FROM components c
 		JOIN component_pages cp ON cp.component_id = c.id
-		WHERE cp.page_id = $1
+		WHERE cp.page_id = ?
 		  AND c.deleted_at IS NULL
 		ORDER BY c.created_at DESC
 	`
 
 	// queryAttachComponentsBulk inserts (page_id, component_id) rows using a
-	// SELECT-from-unnest pattern so the same query handles any number of IDs
+	// SELECT-driven expansion so the same query handles any number of IDs
 	// in one round trip. The JOIN to `components` filters out IDs that don't
 	// exist or are soft-deleted — protecting the junction from dangling rows.
-	// ON CONFLICT DO NOTHING makes the operation idempotent at the composite
-	// primary key (component_id, page_id).
+	// INSERT IGNORE makes the operation idempotent at the composite primary
+	// key (component_id, page_id). The `IN (?)` placeholder is expanded by
+	// sqlx.In at call time.
 	queryAttachComponentsToPage = `
-		INSERT INTO component_pages (component_id, page_id)
-		SELECT c.id, $1
+		INSERT IGNORE INTO component_pages (component_id, page_id)
+		SELECT c.id, ?
 		FROM components c
-		WHERE c.id = ANY($2::uuid[])
+		WHERE c.id IN (?)
 		  AND c.deleted_at IS NULL
-		ON CONFLICT DO NOTHING
 	`
 
 	queryDetachComponentFromPage = `
 		DELETE FROM component_pages
-		WHERE page_id = $1
-		  AND component_id = $2
+		WHERE page_id = ?
+		  AND component_id = ?
 	`
 )
 
@@ -180,13 +180,13 @@ func (r *Impl) AttachComponents(ctx context.Context, q repository.Queryer, pageI
 	if len(componentIDs) == 0 {
 		return 0, nil
 	}
-	// Marshal []uuid.UUID → []string for pq.Array (Postgres uuid[] expects
-	// a textual array; sqlx doesn't know how to encode []uuid.UUID directly).
-	strs := make([]string, len(componentIDs))
-	for i, id := range componentIDs {
-		strs[i] = id.String()
+	// sqlx.In expands the trailing `IN (?)` into the right number of
+	// placeholders and flattens the args in the correct order.
+	query, args, err := sqlx.In(queryAttachComponentsToPage, pageID, componentIDs)
+	if err != nil {
+		return 0, err
 	}
-	result, err := q.ExecContext(ctx, queryAttachComponentsToPage, pageID, pq.Array(strs))
+	result, err := q.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, err
 	}

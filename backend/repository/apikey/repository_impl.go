@@ -15,7 +15,7 @@ const (
 	queryGetByHash = `
 		SELECT id, application_id, key_hash, key_prefix, name, created_at
 		FROM application_api_keys
-		WHERE key_hash = $1
+		WHERE key_hash = ?
 		  AND deleted_at IS NULL
 		LIMIT 1
 	`
@@ -23,7 +23,7 @@ const (
 	queryListByApp = `
 		SELECT id, application_id, key_hash, key_prefix, name, created_at
 		FROM application_api_keys
-		WHERE application_id = $1
+		WHERE application_id = ?
 		  AND deleted_at IS NULL
 		ORDER BY created_at DESC
 	`
@@ -31,22 +31,22 @@ const (
 	queryGetByIDForApp = `
 		SELECT id, application_id, key_hash, key_prefix, name, created_at
 		FROM application_api_keys
-		WHERE id = $1
-		  AND application_id = $2
+		WHERE id = ?
+		  AND application_id = ?
 		  AND deleted_at IS NULL
 		LIMIT 1
 	`
 
 	queryInsert = `
 		INSERT INTO application_api_keys (id, application_id, key_hash, key_prefix, name, created_at)
-		VALUES ($1, $2, $3, $4, $5, NOW())
+		VALUES (?, ?, ?, ?, ?, NOW())
 	`
 
 	querySoftDelete = `
 		UPDATE application_api_keys
 		SET deleted_at = NOW()
-		WHERE id = $1
-		  AND application_id = $2
+		WHERE id = ?
+		  AND application_id = ?
 		  AND deleted_at IS NULL
 	`
 )

@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/lib/pq"
 
 	"github.com/lapakgaming/i18n-center/repository"
 )
@@ -25,30 +24,37 @@ const (
 		       data, source_locale, source_data, is_active,
 		       created_by, updated_by, created_at, updated_at
 		FROM translation_versions
-		WHERE component_id = $1
-		  AND locale = $2
-		  AND stage = $3
+		WHERE component_id = ?
+		  AND locale = ?
+		  AND stage = ?
 		  AND is_active = TRUE
 		  AND deleted_at IS NULL
 		ORDER BY version DESC
 		LIMIT 1
 	`
 
-	// DISTINCT ON returns one row per partition (the first per ORDER BY).
-	// Ordering by (component_id, version DESC) makes "first per component_id"
-	// == "highest version for that component". Backed by idx_tv_lookup.
+	// Per-component-highest-version selection. MySQL has no DISTINCT ON, so we
+	// use ROW_NUMBER() OVER (PARTITION BY component_id ORDER BY version DESC)
+	// in an inner subquery and filter rn = 1 in an outer wrapper — MySQL doesn't
+	// allow window-function results in WHERE directly. Outer explicit column
+	// list drops the extra rn (and any translation_versions columns Version
+	// doesn't bind, e.g. deleted_at) so sqlx StructScan stays strict-safe.
+	// The IN (?) is expanded by sqlx.In at call time. Backed by idx_tv_lookup.
 	queryGetLatestByComponentIDs = `
-		SELECT DISTINCT ON (component_id)
-		       id, component_id, locale, stage, version,
+		SELECT id, component_id, locale, stage, version,
 		       data, source_locale, source_data, is_active,
 		       created_by, updated_by, created_at, updated_at
-		FROM translation_versions
-		WHERE component_id = ANY($1::uuid[])
-		  AND locale = $2
-		  AND stage = $3
-		  AND is_active = TRUE
-		  AND deleted_at IS NULL
-		ORDER BY component_id, version DESC
+		FROM (
+			SELECT tv.*,
+			       ROW_NUMBER() OVER (PARTITION BY component_id ORDER BY version DESC) AS rn
+			FROM translation_versions tv
+			WHERE component_id IN (?)
+			  AND locale = ?
+			  AND stage = ?
+			  AND is_active = TRUE
+			  AND deleted_at IS NULL
+		) t
+		WHERE rn = 1
 	`
 
 	queryGetByVersion = `
@@ -56,10 +62,10 @@ const (
 		       data, source_locale, source_data, is_active,
 		       created_by, updated_by, created_at, updated_at
 		FROM translation_versions
-		WHERE component_id = $1
-		  AND locale = $2
-		  AND stage = $3
-		  AND version = $4
+		WHERE component_id = ?
+		  AND locale = ?
+		  AND stage = ?
+		  AND version = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -68,9 +74,9 @@ const (
 		       data, source_locale, source_data, is_active,
 		       created_by, updated_by, created_at, updated_at
 		FROM translation_versions
-		WHERE component_id = $1
-		  AND locale = $2
-		  AND stage = $3
+		WHERE component_id = ?
+		  AND locale = ?
+		  AND stage = ?
 		  AND deleted_at IS NULL
 		ORDER BY version DESC
 	`
@@ -78,9 +84,9 @@ const (
 	queryNextVersion = `
 		SELECT COALESCE(MAX(version), 0) + 1
 		FROM translation_versions
-		WHERE component_id = $1
-		  AND locale = $2
-		  AND stage = $3
+		WHERE component_id = ?
+		  AND locale = ?
+		  AND stage = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -90,16 +96,19 @@ const (
 			data, source_locale, source_data, is_active,
 			created_by, updated_by, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9, $9, NOW(), NOW()
+			?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?, NOW(), NOW()
 		)
 	`
 
 	queryDeleteByID = `
-		DELETE FROM translation_versions WHERE id = $1
+		DELETE FROM translation_versions WHERE id = ?
 	`
 
 	// Retention sweep. Within each (component_id, locale, stage) partition,
 	// keep only the keepLastN most recent rows by version. Hard delete the rest.
+	// The extra `SELECT id FROM (...) sub` wrapper is required because MySQL
+	// disallows referencing the target table of a DELETE inside its own
+	// subquery unless the subquery is aliased through another derived table.
 	queryDeleteOldVersions = `
 		DELETE FROM translation_versions
 		WHERE id IN (
@@ -111,26 +120,31 @@ const (
 				       ) AS rn
 				FROM translation_versions
 			) sub
-			WHERE rn > $1
+			WHERE rn > ?
 		)
 	`
 
 	queryDeleteByComponentLocale = `
 		DELETE FROM translation_versions
-		WHERE component_id = $1 AND locale = $2
+		WHERE component_id = ? AND locale = ?
 	`
 
 	// ListLatestLocales: one row per locale, highest-versioned, for a single
-	// (component, stage). DISTINCT ON does the per-locale selection without
-	// a self-join; the ORDER BY clause picks the winner.
+	// (component, stage). Same ROW_NUMBER + outer wrapper pattern as
+	// queryGetLatestByComponentIDs but partitioned by locale.
 	queryListLatestLocales = `
-		SELECT DISTINCT ON (locale)
-		       id, component_id, locale, stage, version, data,
-		       source_locale, source_data, is_active, created_by, updated_by,
-		       created_at, updated_at
-		FROM translation_versions
-		WHERE component_id = $1 AND stage = $2 AND is_active = TRUE
-		ORDER BY locale, version DESC
+		SELECT id, component_id, locale, stage, version,
+		       data, source_locale, source_data, is_active,
+		       created_by, updated_by, created_at, updated_at
+		FROM (
+			SELECT tv.*,
+			       ROW_NUMBER() OVER (PARTITION BY locale ORDER BY version DESC) AS rn
+			FROM translation_versions tv
+			WHERE component_id = ?
+			  AND stage = ?
+			  AND is_active = TRUE
+		) t
+		WHERE rn = 1
 	`
 )
 
@@ -153,14 +167,19 @@ func (r *Impl) GetLatestByComponentIDs(ctx context.Context, q repository.Queryer
 	if len(componentIDs) == 0 {
 		return []Version{}, nil
 	}
-	// pq.Array needs a slice of natively-supported types; uuid → string is the
-	// cheapest broadly-supported path. The CAST inside the SQL coerces back.
+	// sqlx.In needs a driver-compatible element type; uuid → string keeps the
+	// path broadly supported by the mysql driver and matches how UUID PKs are
+	// stored (CHAR(36)) in the ported schema.
 	ids := make([]string, len(componentIDs))
 	for i, id := range componentIDs {
 		ids[i] = id.String()
 	}
+	query, args, err := sqlx.In(queryGetLatestByComponentIDs, ids, locale, stage)
+	if err != nil {
+		return nil, err
+	}
 	out := []Version{}
-	if err := q.SelectContext(ctx, &out, queryGetLatestByComponentIDs, pq.Array(ids), locale, stage); err != nil {
+	if err := q.SelectContext(ctx, &out, query, args...); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -189,10 +208,10 @@ func (r *Impl) ListVersions(ctx context.Context, q repository.Queryer, component
 //
 // Two concurrent writers can both compute the same next-version. The partial
 // unique index idx_tv_unique_version turns the collision into a duplicate-key
-// error. We catch that via repository.IsUniqueViolation and re-read MAX(version)
-// up to maxSaveAttempts times. A high collision count here is application-
-// level pathology (one component being hammered by parallel saves), not
-// normal load.
+// error (MySQL 1062). We catch that via repository.IsUniqueViolation and
+// re-read MAX(version) up to maxSaveAttempts times. A high collision count
+// here is application-level pathology (one component being hammered by
+// parallel saves), not normal load.
 //
 // The retry runs inside the caller's Queryer — if they're in a transaction,
 // the colliding INSERT aborts the tx, so retrying requires the caller to
@@ -216,7 +235,7 @@ func (r *Impl) SaveVersion(ctx context.Context, q repository.Queryer, v *Version
 		v.Version = next
 		_, err := q.ExecContext(ctx, queryInsertVersion,
 			v.ID, v.ComponentID, v.Locale, v.Stage, v.Version,
-			v.Data, v.SourceLocale, v.SourceData, v.CreatedBy,
+			v.Data, v.SourceLocale, v.SourceData, v.CreatedBy, v.CreatedBy,
 		)
 		if err == nil {
 			return nil
@@ -225,8 +244,9 @@ func (r *Impl) SaveVersion(ctx context.Context, q repository.Queryer, v *Version
 		if !repository.IsUniqueViolation(err) {
 			return err
 		}
-		// New ID for the retry — Postgres won't reject the same UUID on retry
-		// since we never committed, but generating a fresh one is cheap insurance.
+		// New ID for the retry — the previous attempt's INSERT never committed,
+		// so the same UUID would technically be safe, but generating a fresh
+		// one is cheap insurance.
 		v.ID = uuid.New()
 	}
 	return fmt.Errorf("translation.SaveVersion: exhausted %d retries on unique-version conflict: %w", maxSaveAttempts, lastErr)
@@ -267,6 +287,3 @@ func (r *Impl) ListLatestLocales(ctx context.Context, q repository.Queryer, comp
 	}
 	return rows, nil
 }
-
-// keep sqlx referenced in case future helpers grow here.
-var _ = sqlx.In

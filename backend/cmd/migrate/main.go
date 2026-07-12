@@ -26,10 +26,12 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
+	"strings"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
-	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 
 	"github.com/lapakgaming/i18n-center/migrations"
@@ -85,7 +87,7 @@ func main() {
 	// Read migrations from the embedded FS. The current working directory
 	// doesn't matter — the binary is self-contained.
 	goose.SetBaseFS(migrations.FS)
-	if err := goose.SetDialect("postgres"); err != nil {
+	if err := goose.SetDialect("mysql"); err != nil {
 		log.Fatalf("set dialect: %v", err)
 	}
 
@@ -96,16 +98,34 @@ func main() {
 }
 
 func openDB() (*sql.DB, error) {
-	dsn := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		os.Getenv("DB_HOST"),
-		os.Getenv("DB_PORT"),
+	host := os.Getenv("DB_HOST")
+	port := os.Getenv("DB_PORT")
+	if port == "" {
+		port = "3306"
+	}
+	params := url.Values{}
+	params.Set("parseTime", "true")
+	params.Set("loc", "UTC")
+	params.Set("multiStatements", "true")
+	params.Set("charset", "utf8mb4")
+	params.Set("collation", "utf8mb4_unicode_ci")
+	switch strings.TrimSpace(defaultEnv("DB_SSLMODE", "disable")) {
+	case "", "disable":
+	case "require", "verify-full":
+		params.Set("tls", "true")
+	case "verify-ca":
+		params.Set("tls", "skip-verify")
+	default:
+		params.Set("tls", defaultEnv("DB_SSLMODE", "disable"))
+	}
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?%s",
 		os.Getenv("DB_USER"),
 		os.Getenv("DB_PASSWORD"),
+		host, port,
 		os.Getenv("DB_NAME"),
-		defaultEnv("DB_SSLMODE", "disable"),
+		params.Encode(),
 	)
-	return sql.Open("postgres", dsn)
+	return sql.Open("mysql", dsn)
 }
 
 func defaultEnv(key, dflt string) string {
@@ -126,7 +146,7 @@ func runCreate(args []string) error {
 	if err := os.MkdirAll(migrationsDir, 0o755); err != nil {
 		return err
 	}
-	if err := goose.SetDialect("postgres"); err != nil {
+	if err := goose.SetDialect("mysql"); err != nil {
 		return err
 	}
 	// goose.Create writes to the host filesystem, so don't set BaseFS here.

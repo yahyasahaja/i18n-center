@@ -1,6 +1,6 @@
 // Package database owns the connection lifecycle for the shared Cloud SQL
-// Postgres pool. As of Commit I the whole repository layer is sqlx-backed —
-// GORM is gone. The package exports a single handle:
+// MySQL pool. The whole repository layer is sqlx-backed; the package exports a
+// single handle:
 //
 //   - SQLX (*sqlx.DB) — used by every repository under backend/repository/*.
 //
@@ -13,13 +13,14 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql" // sql driver registration
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq" // sql driver registration
 )
 
 // SQLX is the single application-wide DB handle. Repositories accept a
@@ -32,54 +33,85 @@ var SQLX *sqlx.DB
 // run manually before each deploy that includes a schema change.
 //
 // If the schema is missing entirely, the server will boot fine but every
-// query will fail with `relation "..." does not exist`. The fix is to exec
-// into the pod and run `i18n-center-migrate up`.
+// query will fail with `Table '...' doesn't exist`. The fix is to exec into
+// the pod and run `i18n-center-migrate up`.
 func InitDatabase() error {
-	dsn := fmt.Sprintf(
-		"host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+	dsn := buildDSN(
 		os.Getenv("DB_HOST"),
+		os.Getenv("DB_PORT"),
 		os.Getenv("DB_USER"),
 		os.Getenv("DB_PASSWORD"),
 		os.Getenv("DB_NAME"),
-		os.Getenv("DB_PORT"),
 		os.Getenv("DB_SSLMODE"),
 	)
 
-	// Open with database/sql so we can size the pool before wrapping in sqlx.
-	sqlDB, err := sql.Open("postgres", dsn)
+	sqlDB, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Connection pool sizing. The Cloud SQL Postgres is shared with Hydra
-	// (OAuth2 server in the B2C login hot path), so an unbounded pool here
-	// can starve Hydra under load. Defaults are conservative; tune via env.
-	//
 	//   DB_MAX_OPEN_CONNS — total connections per pod. Default 20.
 	//   DB_MAX_IDLE_CONNS — idle connections kept alive. Default 5.
 	//   DB_CONN_MAX_LIFETIME_MIN — rotate connections every N min to align
 	//       with Cloud SQL's idle-disconnect window. Default 30.
-	//
-	// Budget: 3 replicas × 20 = 60 of Cloud SQL's default max_connections=100.
 	sqlDB.SetMaxOpenConns(envIntOr("DB_MAX_OPEN_CONNS", 20))
 	sqlDB.SetMaxIdleConns(envIntOr("DB_MAX_IDLE_CONNS", 5))
 	sqlDB.SetConnMaxLifetime(time.Duration(envIntOr("DB_CONN_MAX_LIFETIME_MIN", 30)) * time.Minute)
 
-	// Confirm the pool can actually reach the server. Without this, a wrong
-	// host/credentials surfaces as a per-request error later — boot-time
-	// failure is loud and obvious.
 	if err := sqlDB.Ping(); err != nil {
 		return fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	SQLX = sqlx.NewDb(sqlDB, "postgres")
+	SQLX = sqlx.NewDb(sqlDB, "mysql")
 
 	log.Println("Database connected. Reminder: schema is NOT migrated automatically — run `i18n-center-migrate up` in the pod before sending traffic on a fresh deploy.")
 	return nil
 }
 
+// buildDSN assembles the go-sql-driver/mysql DSN. Shape:
+//
+//	user:pass@tcp(host:port)/dbname?parseTime=true&loc=UTC&multiStatements=true[&tls=...]
+//
+// parseTime=true is required for time.Time scanning; loc=UTC keeps timestamps
+// tz-consistent across pods. tls maps from a Postgres-shaped DB_SSLMODE for
+// backwards compatibility with existing k8s secrets:
+//
+//	disable/"" → no TLS (default; internal VPC to Cloud SQL private IP)
+//	require    → tls=true (encrypted, no CA verify)
+//	verify-ca  → tls=skip-verify (encrypted, hostname skipped)
+//	verify-full → tls=true and rely on the driver's built-in verification
+//
+// Anything else is passed through verbatim as the tls param.
+func buildDSN(host, port, user, password, name, sslmode string) string {
+	if port == "" {
+		port = "3306"
+	}
+	params := url.Values{}
+	params.Set("parseTime", "true")
+	params.Set("loc", "UTC")
+	params.Set("multiStatements", "true")
+	params.Set("charset", "utf8mb4")
+	params.Set("collation", "utf8mb4_unicode_ci")
+
+	switch strings.TrimSpace(sslmode) {
+	case "", "disable":
+		// no tls param
+	case "require":
+		params.Set("tls", "true")
+	case "verify-ca":
+		params.Set("tls", "skip-verify")
+	case "verify-full":
+		params.Set("tls", "true")
+	default:
+		params.Set("tls", sslmode)
+	}
+
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?%s",
+		user, password, host, port, name, params.Encode(),
+	)
+}
+
 // envIntOr reads an env var as int, falling back to dflt if unset or unparseable.
-// Used for pool-sizing knobs that operations may want to tune per environment.
 func envIntOr(key string, dflt int) int {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {

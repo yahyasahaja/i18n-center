@@ -42,7 +42,7 @@ func NewCmsItemHandler() *CmsItemHandler {
 		templates:        templates,
 		items:            cms.NewItemRepository(templates),
 		localizations:    cms.NewLocalizationRepository(),
-		cmsTranslateJobs: job.NewCmsTranslateRepository(),
+		cmsTranslateJobs: job.NewCmsTranslateRepository(database.SQLX),
 	}
 }
 

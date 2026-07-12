@@ -1,327 +1,335 @@
 -- +goose Up
 -- +goose StatementBegin
 
--- Initial schema for i18n-center.
+-- Initial schema for i18n-center (MySQL 8).
 --
--- This file is the canonical schema bootstrap. It is intended to be run ONCE
--- against a fresh database via `i18n-center migrate up`. Subsequent schema
--- changes go in new numbered files (00002_..., 00003_...) using goose
--- conventions and Postgres safe-pattern playbook (see migrations/README.md).
-
--- ─── Extensions ──────────────────────────────────────────────────────────────
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
+-- Canonical schema bootstrap. Run ONCE against a fresh database via
+-- `i18n-center migrate up`. Subsequent schema changes go in new numbered
+-- files (00002_..., ...) using goose conventions.
+--
+-- Partial-unique-on-deleted_at semantics are emulated with functional indexes:
+-- IF(deleted_at IS NULL, code, NULL). NULL keys never conflict in MySQL
+-- unique indexes, so soft-deleted rows freely coexist while live rows enforce
+-- the intended uniqueness.
 
 -- ─── Users ───────────────────────────────────────────────────────────────────
 CREATE TABLE users (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    username      TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
+    id            CHAR(36) NOT NULL PRIMARY KEY,
+    username      VARCHAR(255) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
     role          VARCHAR(50) NOT NULL,
     is_active     BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at    TIMESTAMPTZ
+    created_at    DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at    DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at    DATETIME(6) NULL,
+    UNIQUE KEY idx_users_username ((IF(deleted_at IS NULL, username, NULL))),
+    KEY idx_users_deleted_at (deleted_at)
 );
-CREATE UNIQUE INDEX idx_users_username ON users (username) WHERE deleted_at IS NULL;
-CREATE INDEX idx_users_deleted_at ON users (deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- ─── Applications ────────────────────────────────────────────────────────────
 CREATE TABLE applications (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name              TEXT NOT NULL,
-    code              TEXT NOT NULL,
-    description       TEXT NOT NULL DEFAULT '',
-    openai_key        TEXT NOT NULL DEFAULT '',          -- encrypted in prod; never returned in JSON
-    enabled_languages TEXT[] NOT NULL DEFAULT '{}',
-    created_by        UUID NOT NULL,
-    updated_by        UUID NOT NULL,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at        TIMESTAMPTZ
+    id                CHAR(36) NOT NULL PRIMARY KEY,
+    name              VARCHAR(255) NOT NULL,
+    code              VARCHAR(255) NOT NULL,
+    description       TEXT NOT NULL,
+    openai_key        TEXT NOT NULL,
+    enabled_languages JSON NOT NULL,
+    created_by        CHAR(36) NOT NULL,
+    updated_by        CHAR(36) NOT NULL,
+    created_at        DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at        DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at        DATETIME(6) NULL,
+    UNIQUE KEY idx_applications_code ((IF(deleted_at IS NULL, code, NULL))),
+    KEY idx_applications_created_by (created_by),
+    KEY idx_applications_updated_by (updated_by),
+    KEY idx_applications_deleted_at (deleted_at)
 );
-CREATE UNIQUE INDEX idx_applications_code ON applications (code) WHERE deleted_at IS NULL;
-CREATE INDEX idx_applications_created_by ON applications (created_by) WHERE deleted_at IS NULL;
-CREATE INDEX idx_applications_updated_by ON applications (updated_by) WHERE deleted_at IS NULL;
-CREATE INDEX idx_applications_deleted_at ON applications (deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- ─── Application API Keys ────────────────────────────────────────────────────
 CREATE TABLE application_api_keys (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id UUID NOT NULL,
-    key_hash       VARCHAR(64) NOT NULL,                 -- SHA-256 hex of the full key
-    key_prefix     VARCHAR(20) NOT NULL,                 -- first 12 chars for display (sk_abc12345)
+    id             CHAR(36) NOT NULL PRIMARY KEY,
+    application_id CHAR(36) NOT NULL,
+    key_hash       VARCHAR(64) NOT NULL,
+    key_prefix     VARCHAR(20) NOT NULL,
     name           VARCHAR(255) NOT NULL DEFAULT '',
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at     TIMESTAMPTZ
+    created_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at     DATETIME(6) NULL,
+    UNIQUE KEY idx_application_api_keys_hash ((IF(deleted_at IS NULL, key_hash, NULL))),
+    KEY idx_application_api_keys_app_id (application_id),
+    KEY idx_application_api_keys_prefix (key_prefix)
 );
-CREATE UNIQUE INDEX idx_application_api_keys_hash ON application_api_keys (key_hash) WHERE deleted_at IS NULL;
-CREATE INDEX idx_application_api_keys_app_id ON application_api_keys (application_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_application_api_keys_prefix ON application_api_keys (key_prefix) WHERE deleted_at IS NULL;
 
 -- ─── Application Locale Deploys ──────────────────────────────────────────────
 CREATE TABLE application_locale_deploys (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id  UUID NOT NULL,
+    id              CHAR(36) NOT NULL PRIMARY KEY,
+    application_id  CHAR(36) NOT NULL,
     locale          VARCHAR(20) NOT NULL,
-    stage_completed VARCHAR(50) NOT NULL DEFAULT 'draft', -- draft | staging | production
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at      TIMESTAMPTZ
+    stage_completed VARCHAR(50) NOT NULL DEFAULT 'draft',
+    created_at      DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at      DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at      DATETIME(6) NULL,
+    UNIQUE KEY idx_app_locale (application_id, (IF(deleted_at IS NULL, locale, NULL)))
 );
-CREATE UNIQUE INDEX idx_app_locale ON application_locale_deploys (application_id, locale) WHERE deleted_at IS NULL;
 
 -- ─── Tags ────────────────────────────────────────────────────────────────────
 CREATE TABLE tags (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id UUID NOT NULL,
+    id             CHAR(36) NOT NULL PRIMARY KEY,
+    application_id CHAR(36) NOT NULL,
     code           VARCHAR(100) NOT NULL,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at     TIMESTAMPTZ
+    created_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at     DATETIME(6) NULL,
+    UNIQUE KEY idx_tag_app_code (application_id, (IF(deleted_at IS NULL, code, NULL)))
 );
-CREATE UNIQUE INDEX idx_tag_app_code ON tags (application_id, code) WHERE deleted_at IS NULL;
 
 -- ─── Pages ───────────────────────────────────────────────────────────────────
 CREATE TABLE pages (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id UUID NOT NULL,
+    id             CHAR(36) NOT NULL PRIMARY KEY,
+    application_id CHAR(36) NOT NULL,
     code           VARCHAR(100) NOT NULL,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at     TIMESTAMPTZ
+    created_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at     DATETIME(6) NULL,
+    UNIQUE KEY idx_page_app_code (application_id, (IF(deleted_at IS NULL, code, NULL)))
 );
-CREATE UNIQUE INDEX idx_page_app_code ON pages (application_id, code) WHERE deleted_at IS NULL;
 
 -- ─── Components ──────────────────────────────────────────────────────────────
--- NOTE: Component.Structure (jsonb) was removed during the GORM→raw-SQL
--- rewrite. It was stored on every Component and audited but never read at
--- runtime. If a future schema validation feature needs it, add it back via
--- a new migration.
 CREATE TABLE components (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id UUID NOT NULL,
-    name           TEXT NOT NULL,
-    code           TEXT NOT NULL,
-    description    TEXT NOT NULL DEFAULT '',
-    key_contexts   JSONB,                                 -- optional flat {dot.path: hint} map for AI translation hints
-    default_locale TEXT NOT NULL,
-    created_by     UUID NOT NULL,
-    updated_by     UUID NOT NULL,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at     TIMESTAMPTZ
+    id             CHAR(36) NOT NULL PRIMARY KEY,
+    application_id CHAR(36) NOT NULL,
+    name           VARCHAR(255) NOT NULL,
+    code           VARCHAR(255) NOT NULL,
+    description    TEXT NOT NULL,
+    key_contexts   JSON NULL,
+    default_locale VARCHAR(20) NOT NULL,
+    created_by     CHAR(36) NOT NULL,
+    updated_by     CHAR(36) NOT NULL,
+    created_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at     DATETIME(6) NULL,
+    UNIQUE KEY idx_component_app_code (application_id, (IF(deleted_at IS NULL, code, NULL))),
+    KEY idx_components_created_by (created_by),
+    KEY idx_components_updated_by (updated_by),
+    KEY idx_components_deleted_at (deleted_at)
 );
-CREATE UNIQUE INDEX idx_component_app_code ON components (application_id, code) WHERE deleted_at IS NULL;
-CREATE INDEX idx_components_created_by ON components (created_by) WHERE deleted_at IS NULL;
-CREATE INDEX idx_components_updated_by ON components (updated_by) WHERE deleted_at IS NULL;
-CREATE INDEX idx_components_name_trgm ON components USING GIN (name gin_trgm_ops);
-CREATE INDEX idx_components_code_trgm ON components USING GIN (code gin_trgm_ops);
-CREATE INDEX idx_components_deleted_at ON components (deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- ─── Component <-> Tag junction (many-to-many) ───────────────────────────────
 CREATE TABLE component_tags (
-    component_id UUID NOT NULL,
-    tag_id       UUID NOT NULL,
-    PRIMARY KEY (component_id, tag_id)
+    component_id CHAR(36) NOT NULL,
+    tag_id       CHAR(36) NOT NULL,
+    PRIMARY KEY (component_id, tag_id),
+    KEY idx_component_tags_tag_id (tag_id)
 );
-CREATE INDEX idx_component_tags_tag_id ON component_tags (tag_id);
 
 -- ─── Component <-> Page junction (many-to-many) ──────────────────────────────
 CREATE TABLE component_pages (
-    component_id UUID NOT NULL,
-    page_id      UUID NOT NULL,
-    PRIMARY KEY (component_id, page_id)
+    component_id CHAR(36) NOT NULL,
+    page_id      CHAR(36) NOT NULL,
+    PRIMARY KEY (component_id, page_id),
+    KEY idx_component_pages_page_id (page_id)
 );
-CREATE INDEX idx_component_pages_page_id ON component_pages (page_id);
 
 -- ─── Translation Versions ────────────────────────────────────────────────────
 CREATE TABLE translation_versions (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    component_id  UUID NOT NULL,
-    locale        TEXT NOT NULL,
-    stage         VARCHAR(50) NOT NULL,                   -- draft | staging | production
-    version       INTEGER NOT NULL DEFAULT 1,             -- 1, 2, 3, ... monotonic per (component, locale, stage)
-    data          JSONB NOT NULL,
-    source_locale VARCHAR(10) NOT NULL DEFAULT '',        -- empty for manual edits
-    source_data   JSONB,                                  -- snapshot of source at AI translate time; nil for manual edits
+    id            CHAR(36) NOT NULL PRIMARY KEY,
+    component_id  CHAR(36) NOT NULL,
+    locale        VARCHAR(20) NOT NULL,
+    stage         VARCHAR(50) NOT NULL,
+    version       INT NOT NULL DEFAULT 1,
+    data          JSON NOT NULL,
+    source_locale VARCHAR(20) NOT NULL DEFAULT '',
+    source_data   JSON NULL,
     is_active     BOOLEAN NOT NULL DEFAULT TRUE,
-    created_by    UUID NOT NULL,
-    updated_by    UUID NOT NULL,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at    TIMESTAMPTZ
+    created_by    CHAR(36) NOT NULL,
+    updated_by    CHAR(36) NOT NULL,
+    created_at    DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at    DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at    DATETIME(6) NULL,
+    UNIQUE KEY idx_tv_unique_version (
+        component_id,
+        locale,
+        stage,
+        (IF(deleted_at IS NULL, version, NULL))
+    ),
+    KEY idx_tv_lookup (component_id, locale, stage, version),
+    KEY idx_translation_versions_deleted_at (deleted_at)
 );
--- Hot read path: latest active version per (component, locale, stage). Partial-on-deleted
--- keeps the index lean and the WHERE deleted_at IS NULL filter free.
-CREATE INDEX idx_tv_lookup ON translation_versions (component_id, locale, stage, version DESC) WHERE deleted_at IS NULL;
--- Eliminates the read-MAX-then-insert race in services.SaveVersion. Concurrent
--- writers that pick the same nextVersion hit this index and retry.
-CREATE UNIQUE INDEX idx_tv_unique_version ON translation_versions (component_id, locale, stage, version) WHERE deleted_at IS NULL;
-CREATE INDEX idx_translation_versions_deleted_at ON translation_versions (deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- ─── Add Language Jobs ───────────────────────────────────────────────────────
 CREATE TABLE add_language_jobs (
-    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id       UUID NOT NULL,
+    id                   CHAR(36) NOT NULL PRIMARY KEY,
+    application_id       CHAR(36) NOT NULL,
     locale               VARCHAR(20) NOT NULL,
-    auto_translate       BOOLEAN NOT NULL,
-    status               VARCHAR(50) NOT NULL DEFAULT 'pending', -- pending | running | completed | failed
-    total_components     INTEGER NOT NULL DEFAULT 0,
-    completed_components INTEGER NOT NULL DEFAULT 0,
-    error_message        TEXT NOT NULL DEFAULT '',
-    error_detail         TEXT NOT NULL DEFAULT '',
-    claimed_by           VARCHAR(255) NOT NULL DEFAULT '',       -- K8s HOSTNAME of the claiming pod
-    created_by           UUID NOT NULL,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at           TIMESTAMPTZ
+    auto_translate      BOOLEAN NOT NULL,
+    status               VARCHAR(50) NOT NULL DEFAULT 'pending',
+    total_components     INT NOT NULL DEFAULT 0,
+    completed_components INT NOT NULL DEFAULT 0,
+    error_message        TEXT NOT NULL,
+    error_detail         TEXT NOT NULL,
+    claimed_by           VARCHAR(255) NOT NULL DEFAULT '',
+    created_by           CHAR(36) NOT NULL,
+    created_at           DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at           DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at           DATETIME(6) NULL,
+    KEY idx_add_language_jobs_app_id (application_id),
+    KEY idx_add_language_jobs_status (status),
+    KEY idx_add_language_jobs_created_by (created_by)
 );
-CREATE INDEX idx_add_language_jobs_app_id ON add_language_jobs (application_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_add_language_jobs_status ON add_language_jobs (status) WHERE deleted_at IS NULL;
-CREATE INDEX idx_add_language_jobs_created_by ON add_language_jobs (created_by) WHERE deleted_at IS NULL;
 
 -- ─── Translate Jobs ──────────────────────────────────────────────────────────
+-- target_locales stored as JSON array. `first_target_locale` is a stored
+-- generated column extracting the first element — participates in the dedupe
+-- index (MySQL cannot subscript a JSON expression inside a functional index
+-- reliably, so materialise it).
 CREATE TABLE translate_jobs (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id UUID NOT NULL,
-    component_id   UUID NOT NULL,
-    job_type       VARCHAR(50) NOT NULL,                          -- auto_translate | backfill
-    source_locale  VARCHAR(20) NOT NULL,
-    target_locales TEXT[] NOT NULL DEFAULT '{}',
-    status         VARCHAR(50) NOT NULL DEFAULT 'pending',
-    error_message  TEXT NOT NULL DEFAULT '',
-    error_detail   TEXT NOT NULL DEFAULT '',
-    claimed_by     VARCHAR(255) NOT NULL DEFAULT '',
-    created_by     UUID NOT NULL,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at     TIMESTAMPTZ
+    id                   CHAR(36) NOT NULL PRIMARY KEY,
+    application_id       CHAR(36) NOT NULL,
+    component_id         CHAR(36) NOT NULL,
+    job_type             VARCHAR(50) NOT NULL,
+    source_locale        VARCHAR(20) NOT NULL,
+    target_locales       JSON NOT NULL,
+    first_target_locale  VARCHAR(20) GENERATED ALWAYS AS (
+        JSON_UNQUOTE(JSON_EXTRACT(target_locales, '$[0]'))
+    ) STORED,
+    status               VARCHAR(50) NOT NULL DEFAULT 'pending',
+    error_message        TEXT NOT NULL,
+    error_detail         TEXT NOT NULL,
+    claimed_by           VARCHAR(255) NOT NULL DEFAULT '',
+    created_by           CHAR(36) NOT NULL,
+    created_at           DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at           DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at           DATETIME(6) NULL,
+    KEY idx_translate_jobs_app_id (application_id),
+    KEY idx_translate_jobs_component_id (component_id),
+    KEY idx_translate_jobs_status (status),
+    -- Idempotency on (component, source, first target, type) among rows that
+    -- are still pending/running and not soft-deleted. Rows outside that set
+    -- get NULL in every functional slot and don't participate in uniqueness.
+    UNIQUE KEY idx_translate_jobs_dedupe (
+        component_id,
+        source_locale,
+        (IF(deleted_at IS NULL AND status IN ('pending','running'), first_target_locale, NULL)),
+        (IF(deleted_at IS NULL AND status IN ('pending','running'), job_type, NULL))
+    )
 );
-CREATE INDEX idx_translate_jobs_app_id ON translate_jobs (application_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_translate_jobs_component_id ON translate_jobs (component_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_translate_jobs_status ON translate_jobs (status) WHERE deleted_at IS NULL;
--- Idempotency on (component, source, first target locale, type). Catches
--- double-clicks that would otherwise queue duplicate OpenAI work.
-CREATE UNIQUE INDEX idx_translate_jobs_dedupe
-    ON translate_jobs (component_id, source_locale, (target_locales[1]), job_type)
-    WHERE deleted_at IS NULL AND status IN ('pending', 'running');
 
 -- ─── Audit Logs ──────────────────────────────────────────────────────────────
 CREATE TABLE audit_logs (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id       UUID NOT NULL,
-    username      TEXT NOT NULL,
-    action        VARCHAR(50) NOT NULL,                  -- CREATE | UPDATE | DELETE | DEPLOY | AUTO_TRANSLATE | ...
-    resource_type VARCHAR(50) NOT NULL,                  -- application | component | translation | user | cms_item | ...
-    resource_id   UUID NOT NULL,
-    resource_code TEXT NOT NULL DEFAULT '',
-    changes       JSONB,                                 -- {before: ..., after: ...}
-    ip_address    VARCHAR(45) NOT NULL DEFAULT '',       -- IPv6-capable
-    user_agent    TEXT NOT NULL DEFAULT '',
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id            CHAR(36) NOT NULL PRIMARY KEY,
+    user_id       CHAR(36) NOT NULL,
+    username      VARCHAR(255) NOT NULL,
+    action        VARCHAR(50) NOT NULL,
+    resource_type VARCHAR(50) NOT NULL,
+    resource_id   CHAR(36) NOT NULL,
+    resource_code VARCHAR(255) NOT NULL DEFAULT '',
+    changes       JSON NULL,
+    ip_address    VARCHAR(45) NOT NULL DEFAULT '',
+    user_agent    TEXT NOT NULL,
+    created_at    DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    KEY idx_audit_logs_user_id (user_id),
+    KEY idx_audit_logs_action (action),
+    KEY idx_audit_logs_resource_type (resource_type),
+    KEY idx_audit_logs_resource_id (resource_id),
+    KEY idx_audit_logs_resource_code (resource_code),
+    KEY idx_audit_logs_created_at (created_at)
 );
-CREATE INDEX idx_audit_logs_user_id ON audit_logs (user_id);
-CREATE INDEX idx_audit_logs_action ON audit_logs (action);
-CREATE INDEX idx_audit_logs_resource_type ON audit_logs (resource_type);
-CREATE INDEX idx_audit_logs_resource_id ON audit_logs (resource_id);
-CREATE INDEX idx_audit_logs_resource_code ON audit_logs (resource_code);
-CREATE INDEX idx_audit_logs_created_at ON audit_logs (created_at DESC);
 
 -- ─── CMS: Templates ──────────────────────────────────────────────────────────
 CREATE TABLE cms_templates (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id UUID NOT NULL,
-    name           TEXT NOT NULL,
+    id             CHAR(36) NOT NULL PRIMARY KEY,
+    application_id CHAR(36) NOT NULL,
+    name           VARCHAR(255) NOT NULL,
     code           VARCHAR(100) NOT NULL,
-    description    TEXT NOT NULL DEFAULT '',
-    created_by     UUID NOT NULL,
-    updated_by     UUID NOT NULL,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at     TIMESTAMPTZ
+    description    TEXT NOT NULL,
+    created_by     CHAR(36) NOT NULL,
+    updated_by     CHAR(36) NOT NULL,
+    created_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at     DATETIME(6) NULL,
+    UNIQUE KEY idx_cms_template_app_code (application_id, (IF(deleted_at IS NULL, code, NULL)))
 );
-CREATE UNIQUE INDEX idx_cms_template_app_code ON cms_templates (application_id, code) WHERE deleted_at IS NULL;
 
 -- ─── CMS: Template Fields ────────────────────────────────────────────────────
 CREATE TABLE cms_template_fields (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    template_id UUID NOT NULL,
-    key         VARCHAR(100) NOT NULL,
+    id          CHAR(36) NOT NULL PRIMARY KEY,
+    template_id CHAR(36) NOT NULL,
+    `key`       VARCHAR(100) NOT NULL,
     label       VARCHAR(255) NOT NULL,
-    value_type  VARCHAR(50) NOT NULL,                   -- text | textarea | rich_text | json
+    value_type  VARCHAR(50) NOT NULL,
     required    BOOLEAN NOT NULL DEFAULT FALSE,
-    sort_order  INTEGER NOT NULL DEFAULT 0,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    sort_order  INT NOT NULL DEFAULT 0,
+    created_at  DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at  DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    KEY idx_cms_template_fields_template_id (template_id)
 );
-CREATE INDEX idx_cms_template_fields_template_id ON cms_template_fields (template_id);
 
 -- ─── CMS: Items ──────────────────────────────────────────────────────────────
--- identifier is case-folded to lowercase on create (see normalizeIdentifier
--- in handlers/cms_item_handler.go) so SDK lookups always match.
 CREATE TABLE cms_items (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id UUID NOT NULL,
-    template_id    UUID NOT NULL,
+    id             CHAR(36) NOT NULL PRIMARY KEY,
+    application_id CHAR(36) NOT NULL,
+    template_id    CHAR(36) NOT NULL,
     identifier     VARCHAR(100) NOT NULL,
-    name           TEXT NOT NULL,
-    description    TEXT NOT NULL DEFAULT '',
-    created_by     UUID NOT NULL,
-    updated_by     UUID NOT NULL,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at     TIMESTAMPTZ
+    name           VARCHAR(255) NOT NULL,
+    description    TEXT NOT NULL,
+    created_by     CHAR(36) NOT NULL,
+    updated_by     CHAR(36) NOT NULL,
+    created_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at     DATETIME(6) NULL,
+    UNIQUE KEY idx_cms_item_app_identifier (application_id, (IF(deleted_at IS NULL, identifier, NULL))),
+    KEY idx_cms_items_template_id (template_id)
 );
-CREATE UNIQUE INDEX idx_cms_item_app_identifier ON cms_items (application_id, identifier) WHERE deleted_at IS NULL;
-CREATE INDEX idx_cms_items_template_id ON cms_items (template_id) WHERE deleted_at IS NULL;
 
 -- ─── CMS: Localizations ──────────────────────────────────────────────────────
 CREATE TABLE cms_localizations (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    cms_item_id   UUID NOT NULL,
+    id            CHAR(36) NOT NULL PRIMARY KEY,
+    cms_item_id   CHAR(36) NOT NULL,
     locale        VARCHAR(20) NOT NULL,
     stage         VARCHAR(50) NOT NULL,
-    version       INTEGER NOT NULL DEFAULT 1,
-    data          JSONB NOT NULL,
+    version       INT NOT NULL DEFAULT 1,
+    data          JSON NOT NULL,
     source_locale VARCHAR(20) NOT NULL DEFAULT '',
     is_active     BOOLEAN NOT NULL DEFAULT TRUE,
-    created_by    UUID NOT NULL,
-    updated_by    UUID NOT NULL,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at    TIMESTAMPTZ
+    created_by    CHAR(36) NOT NULL,
+    updated_by    CHAR(36) NOT NULL,
+    created_at    DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at    DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at    DATETIME(6) NULL,
+    UNIQUE KEY idx_cms_loc_unique_version (
+        cms_item_id,
+        locale,
+        stage,
+        (IF(deleted_at IS NULL, version, NULL))
+    ),
+    KEY idx_cms_loc_lookup (cms_item_id, locale, stage, version)
 );
--- Hot read path mirror of idx_tv_lookup.
-CREATE INDEX idx_cms_loc_lookup ON cms_localizations (cms_item_id, locale, stage, version DESC) WHERE deleted_at IS NULL;
--- Race guard mirror of idx_tv_unique_version. services.SaveCmsLocalizationVersion
--- retries on collision.
-CREATE UNIQUE INDEX idx_cms_loc_unique_version ON cms_localizations (cms_item_id, locale, stage, version) WHERE deleted_at IS NULL;
 
 -- ─── CMS: Translate Jobs ─────────────────────────────────────────────────────
 CREATE TABLE cms_translate_jobs (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id UUID NOT NULL,
-    cms_item_id    UUID NOT NULL,
+    id             CHAR(36) NOT NULL PRIMARY KEY,
+    application_id CHAR(36) NOT NULL,
+    cms_item_id    CHAR(36) NOT NULL,
     source_locale  VARCHAR(20) NOT NULL,
     target_locale  VARCHAR(20) NOT NULL,
     stage          VARCHAR(50) NOT NULL,
     status         VARCHAR(50) NOT NULL DEFAULT 'pending',
-    error_message  TEXT NOT NULL DEFAULT '',
-    error_detail   TEXT NOT NULL DEFAULT '',
+    error_message  TEXT NOT NULL,
+    error_detail   TEXT NOT NULL,
     claimed_by     VARCHAR(255) NOT NULL DEFAULT '',
-    created_by     UUID NOT NULL,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at     TIMESTAMPTZ
+    created_by     CHAR(36) NOT NULL,
+    created_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    deleted_at     DATETIME(6) NULL,
+    KEY idx_cms_translate_jobs_app_id (application_id),
+    KEY idx_cms_translate_jobs_item_id (cms_item_id),
+    KEY idx_cms_translate_jobs_status (status),
+    UNIQUE KEY idx_cms_translate_jobs_dedupe (
+        cms_item_id,
+        source_locale,
+        target_locale,
+        (IF(deleted_at IS NULL AND status IN ('pending','running'), stage, NULL))
+    )
 );
-CREATE INDEX idx_cms_translate_jobs_app_id ON cms_translate_jobs (application_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_cms_translate_jobs_item_id ON cms_translate_jobs (cms_item_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_cms_translate_jobs_status ON cms_translate_jobs (status) WHERE deleted_at IS NULL;
--- Idempotency mirror of idx_translate_jobs_dedupe (cms has single target_locale).
-CREATE UNIQUE INDEX idx_cms_translate_jobs_dedupe
-    ON cms_translate_jobs (cms_item_id, source_locale, target_locale, stage)
-    WHERE deleted_at IS NULL AND status IN ('pending', 'running');
 
 -- +goose StatementEnd
 
@@ -346,8 +354,5 @@ DROP TABLE IF EXISTS application_locale_deploys;
 DROP TABLE IF EXISTS application_api_keys;
 DROP TABLE IF EXISTS applications;
 DROP TABLE IF EXISTS users;
-
--- Extensions intentionally left in place (other services in the shared
--- Cloud SQL instance may rely on them).
 
 -- +goose StatementEnd

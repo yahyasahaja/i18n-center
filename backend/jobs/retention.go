@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -16,10 +17,10 @@ import (
 const retentionInterval = 6 * time.Hour
 
 // retentionAdvisoryLockKey gates the soft-delete sweep so exactly one pod in
-// the replica set runs it per tick. Different key from
+// the replica set runs it per tick. Different name from
 // `cleanupAdvisoryLockKey` so the two sweeps can run side-by-side without
-// blocking each other.
-const retentionAdvisoryLockKey int64 = 0x6931386e72746e6d // i18nrtnm (truncated tag)
+// blocking each other. MySQL named-lock via GET_LOCK / RELEASE_LOCK.
+const retentionAdvisoryLockKey = "i18n-center:retention"
 
 // retentionPolicy is one row in the retention table — table name, the column
 // we filter on (deleted_at OR updated_at depending on the table), and a TTL.
@@ -108,9 +109,9 @@ var retentionPolicies = []retentionPolicy{
 // RunRetentionTicker runs the soft-delete + terminal-job retention sweep on
 // a periodic ticker. Returns when ctx is cancelled (SIGTERM path).
 //
-// Stateless K8s safety: guarded by `pg_try_advisory_lock` so exactly one pod
-// runs it per tick. Same shape as RunCleanupTicker — see that comment for
-// the full rationale.
+// Stateless K8s safety: guarded by a MySQL `GET_LOCK` named lock so exactly
+// one pod runs it per tick. Same shape as RunCleanupTicker — see that comment
+// for the full rationale.
 func RunRetentionTicker(ctx context.Context) {
 	t := time.NewTicker(retentionInterval)
 	defer t.Stop()
@@ -125,16 +126,18 @@ func RunRetentionTicker(ctx context.Context) {
 }
 
 func tickRetention(ctx context.Context) {
-	var got bool
-	if err := database.SQLX.GetContext(ctx, &got, "SELECT pg_try_advisory_lock($1)", retentionAdvisoryLockKey); err != nil {
+	// GET_LOCK(name, 0) returns 1 on success, 0 if held elsewhere, NULL on
+	// error. Timeout=0 means no blocking — losers skip this tick.
+	var got sql.NullInt64
+	if err := database.SQLX.GetContext(ctx, &got, "SELECT GET_LOCK(?, 0)", retentionAdvisoryLockKey); err != nil {
 		observability.Logger.Warn("retention advisory_lock acquire failed", zap.Error(err))
 		return
 	}
-	if !got {
+	if !got.Valid || got.Int64 != 1 {
 		return
 	}
 	defer func() {
-		if _, err := database.SQLX.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", retentionAdvisoryLockKey); err != nil {
+		if _, err := database.SQLX.ExecContext(ctx, "SELECT RELEASE_LOCK(?)", retentionAdvisoryLockKey); err != nil {
 			observability.Logger.Warn("retention advisory_unlock failed", zap.Error(err))
 		}
 	}()
@@ -173,23 +176,20 @@ func tickRetention(ctx context.Context) {
 	)
 }
 
-// sweepPolicy issues one DELETE per table. The TTL is interpolated as a
-// Postgres interval string — never user-supplied, so the format-string
-// concat here is safe.
-//
-// We pass the TTL as a parameter rather than embedding it in the WHERE
-// directly so the plan is cacheable across ticks (each TTL becomes a
-// constant from Postgres's view, the same way `cleanupOldVersions` does it
-// for keepLastN).
+// sweepPolicy issues one DELETE per table. The column name is interpolated
+// via fmt.Sprintf (never user-supplied — comes from the retentionPolicies
+// table above) so the concat here is safe. The TTL itself is a bound
+// parameter to `INTERVAL ? SECOND` — MySQL treats it as a constant per query,
+// keeping the plan cacheable across ticks.
 func sweepPolicy(ctx context.Context, p retentionPolicy) (int64, error) {
 	seconds := int64(p.ttl.Seconds())
-	where := fmt.Sprintf("%s IS NOT NULL AND %s < NOW() - ($1 || ' seconds')::INTERVAL", p.filterCol, p.filterCol)
+	where := fmt.Sprintf("%s IS NOT NULL AND %s < NOW() - INTERVAL ? SECOND", p.filterCol, p.filterCol)
 	// Terminal job tables have no deleted_at — use the column directly.
 	if p.extraWHERE != "" {
-		where = fmt.Sprintf("%s AND %s < NOW() - ($1 || ' seconds')::INTERVAL", p.extraWHERE, p.filterCol)
+		where = fmt.Sprintf("%s AND %s < NOW() - INTERVAL ? SECOND", p.extraWHERE, p.filterCol)
 	}
 	query := fmt.Sprintf("DELETE FROM %s WHERE %s", p.table, where)
-	result, err := database.SQLX.ExecContext(ctx, query, fmt.Sprintf("%d", seconds))
+	result, err := database.SQLX.ExecContext(ctx, query, seconds)
 	if err != nil {
 		return 0, err
 	}

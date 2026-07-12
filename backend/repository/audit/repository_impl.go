@@ -2,7 +2,6 @@ package audit
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -15,7 +14,7 @@ const (
 		INSERT INTO audit_logs (
 			id, user_id, username, action, resource_type, resource_id,
 			resource_code, changes, ip_address, user_agent, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
 	`
 
 	queryListBase = `
@@ -30,7 +29,7 @@ const (
 		SELECT id, user_id, username, action, resource_type, resource_id,
 		       resource_code, changes, ip_address, user_agent, created_at
 		FROM audit_logs
-		WHERE resource_type = $1 AND resource_id = $2
+		WHERE resource_type = ? AND resource_id = ?
 		ORDER BY created_at DESC
 	`
 )
@@ -59,7 +58,6 @@ func (r *Impl) List(ctx context.Context, q repository.Queryer, f ListFilter) ([]
 	cb.WriteString(queryCountBase)
 	args := []any{}
 	first := true
-	i := 1
 	add := func(clause string, val any) {
 		if first {
 			sb.WriteString(" WHERE ")
@@ -69,22 +67,21 @@ func (r *Impl) List(ctx context.Context, q repository.Queryer, f ListFilter) ([]
 			sb.WriteString(" AND ")
 			cb.WriteString(" AND ")
 		}
-		fmt.Fprintf(&sb, clause, i)
-		fmt.Fprintf(&cb, clause, i)
+		sb.WriteString(clause)
+		cb.WriteString(clause)
 		args = append(args, val)
-		i++
 	}
 	if f.UserID != uuid.Nil {
-		add("user_id = $%d", f.UserID)
+		add("user_id = ?", f.UserID)
 	}
 	if f.ResourceType != "" {
-		add("resource_type = $%d", f.ResourceType)
+		add("resource_type = ?", f.ResourceType)
 	}
 	if f.ResourceID != uuid.Nil {
-		add("resource_id = $%d", f.ResourceID)
+		add("resource_id = ?", f.ResourceID)
 	}
 	if f.Action != "" {
-		add("action = $%d", f.Action)
+		add("action = ?", f.Action)
 	}
 
 	countArgs := append([]any(nil), args...)
@@ -97,7 +94,7 @@ func (r *Impl) List(ctx context.Context, q repository.Queryer, f ListFilter) ([]
 	if limit <= 0 {
 		limit = 50
 	}
-	fmt.Fprintf(&sb, " ORDER BY created_at DESC LIMIT $%d OFFSET $%d", i, i+1)
+	sb.WriteString(" ORDER BY created_at DESC LIMIT ? OFFSET ?")
 	args = append(args, limit, f.Offset)
 
 	rows := []Log{}
@@ -111,7 +108,7 @@ func (r *Impl) History(ctx context.Context, q repository.Queryer, resourceType s
 	query := queryHistoryBase
 	args := []any{resourceType, resourceID}
 	if limit > 0 {
-		query += " LIMIT $3"
+		query += " LIMIT ?"
 		args = append(args, limit)
 	}
 	rows := []Log{}

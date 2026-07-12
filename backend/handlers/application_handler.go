@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 
 	"github.com/lapakgaming/i18n-center/cache"
 	"github.com/lapakgaming/i18n-center/database"
@@ -22,9 +21,10 @@ import (
 	"github.com/lapakgaming/i18n-center/services"
 )
 
-// pqStringArray is a local alias so the file can reference `pq.StringArray`
-// in inline struct definitions without `pq.` clutter at use-sites.
-type pqStringArray = pq.StringArray
+// jsonStringArray is a local alias so the file can reference
+// `repository.JSONStringArray` in inline struct definitions without the
+// `repository.` clutter at use-sites.
+type jsonStringArray = repository.JSONStringArray
 
 type ApplicationHandler struct {
 	auditService  services.AuditServicer
@@ -40,8 +40,8 @@ func NewApplicationHandler() *ApplicationHandler {
 		auditService:  services.NewAuditService(),
 		apps:          application.New(),
 		components:    component.New(),
-		addLangJobs:   job.NewAddLanguageRepository(),
-		translateJobs: job.NewTranslateRepository(),
+		addLangJobs:   job.NewAddLanguageRepository(database.SQLX),
+		translateJobs: job.NewTranslateRepository(database.SQLX),
 		deploys:       localedeploy.New(),
 	}
 }
@@ -666,7 +666,7 @@ func (h *ApplicationHandler) GetActiveJobs(c *gin.Context) {
 		ComponentCode string         `db:"component_code"`
 		ComponentName string         `db:"component_name"`
 		JobType       string         `db:"job_type"`
-		TargetLocales pqStringArray  `db:"target_locales"`
+		TargetLocales jsonStringArray `db:"target_locales"`
 		Status        string         `db:"status"`
 	}
 	const activeTranslateJobsQuery = `
@@ -674,7 +674,7 @@ func (h *ApplicationHandler) GetActiveJobs(c *gin.Context) {
 		       tj.job_type, tj.target_locales, tj.status
 		FROM translate_jobs tj
 		JOIN components c ON c.id = tj.component_id AND c.deleted_at IS NULL
-		WHERE tj.application_id = $1
+		WHERE tj.application_id = ?
 		  AND tj.status IN ('pending', 'running')
 		  AND tj.deleted_at IS NULL
 		ORDER BY tj.created_at ASC

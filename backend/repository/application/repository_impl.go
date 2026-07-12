@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 
 	"github.com/lapakgaming/i18n-center/repository"
 )
@@ -22,7 +21,7 @@ const (
 		SELECT id, name, code, description, openai_key, enabled_languages,
 		       created_by, updated_by, created_at, updated_at
 		FROM applications
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -30,7 +29,7 @@ const (
 		SELECT id, name, code, description, openai_key, enabled_languages,
 		       created_by, updated_by, created_at, updated_at
 		FROM applications
-		WHERE code = $1
+		WHERE code = ?
 		  AND deleted_at IS NULL
 		LIMIT 1
 	`
@@ -47,37 +46,37 @@ const (
 		INSERT INTO applications (
 			id, name, code, description, openai_key, enabled_languages,
 			created_by, updated_by, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, NOW(), NOW())
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
 	`
 
 	queryUpdate = `
 		UPDATE applications
-		SET name = $2,
-		    code = $3,
-		    description = $4,
-		    openai_key = $5,
-		    enabled_languages = $6,
-		    updated_by = $7,
+		SET name = ?,
+		    code = ?,
+		    description = ?,
+		    openai_key = ?,
+		    enabled_languages = ?,
+		    updated_by = ?,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
 	querySoftDelete = `
 		UPDATE applications
 		SET deleted_at = NOW(),
-		    updated_by = $2,
+		    updated_by = ?,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
 	queryUpdateEnabledLanguages = `
 		UPDATE applications
-		SET enabled_languages = $2,
-		    updated_by = $3,
+		SET enabled_languages = ?,
+		    updated_by = ?,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 )
@@ -126,12 +125,12 @@ func (r *Impl) Create(ctx context.Context, q repository.Queryer, a *Application)
 	if a.ID == uuid.Nil {
 		a.ID = uuid.New()
 	}
-	langs := pq.StringArray(a.EnabledLanguages)
+	langs := repository.JSONStringArray(a.EnabledLanguages)
 	if langs == nil {
-		langs = pq.StringArray{}
+		langs = repository.JSONStringArray{}
 	}
 	_, err := q.ExecContext(ctx, queryInsert,
-		a.ID, a.Name, a.Code, a.Description, a.OpenAIKey, langs, a.CreatedBy,
+		a.ID, a.Name, a.Code, a.Description, a.OpenAIKey, langs, a.CreatedBy, a.CreatedBy,
 	)
 	if err != nil {
 		if repository.IsUniqueViolation(err) {
@@ -147,12 +146,12 @@ func (r *Impl) Create(ctx context.Context, q repository.Queryer, a *Application)
 }
 
 func (r *Impl) Update(ctx context.Context, q repository.Queryer, a *Application) error {
-	langs := pq.StringArray(a.EnabledLanguages)
+	langs := repository.JSONStringArray(a.EnabledLanguages)
 	if langs == nil {
-		langs = pq.StringArray{}
+		langs = repository.JSONStringArray{}
 	}
 	result, err := q.ExecContext(ctx, queryUpdate,
-		a.ID, a.Name, a.Code, a.Description, a.OpenAIKey, langs, a.UpdatedBy,
+		a.Name, a.Code, a.Description, a.OpenAIKey, langs, a.UpdatedBy, a.ID,
 	)
 	if err != nil {
 		if repository.IsUniqueViolation(err) {
@@ -172,7 +171,7 @@ func (r *Impl) Update(ctx context.Context, q repository.Queryer, a *Application)
 }
 
 func (r *Impl) SoftDelete(ctx context.Context, q repository.Queryer, id, userID uuid.UUID) error {
-	result, err := q.ExecContext(ctx, querySoftDelete, id, userID)
+	result, err := q.ExecContext(ctx, querySoftDelete, userID, id)
 	if err != nil {
 		return err
 	}
@@ -187,11 +186,11 @@ func (r *Impl) SoftDelete(ctx context.Context, q repository.Queryer, id, userID 
 }
 
 func (r *Impl) UpdateEnabledLanguages(ctx context.Context, q repository.Queryer, id uuid.UUID, langs []string, userID uuid.UUID) error {
-	arr := pq.StringArray(langs)
+	arr := repository.JSONStringArray(langs)
 	if arr == nil {
-		arr = pq.StringArray{}
+		arr = repository.JSONStringArray{}
 	}
-	result, err := q.ExecContext(ctx, queryUpdateEnabledLanguages, id, arr, userID)
+	result, err := q.ExecContext(ctx, queryUpdateEnabledLanguages, arr, userID, id)
 	if err != nil {
 		return err
 	}

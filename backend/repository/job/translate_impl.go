@@ -4,10 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 
 	"github.com/lapakgaming/i18n-center/repository"
 )
@@ -18,22 +18,23 @@ const (
 		       status, error_message, error_detail, claimed_by,
 		       created_by, created_at, updated_at
 		FROM translate_jobs
-		WHERE id = $1 AND deleted_at IS NULL
+		WHERE id = ? AND deleted_at IS NULL
 	`
 
 	// FindActive matches the dedupe-index tuple: (component_id, source_locale,
 	// first target_locale, job_type) among active rows. Used both as an
 	// idempotency check before insert and as a fallback after a unique-key
-	// race on insert.
+	// race on insert. `first_target_locale` is a generated column populated
+	// from `target_locales->>'$[0]'` in the MySQL schema.
 	queryTranslateFindActive = `
 		SELECT id, application_id, component_id, job_type, source_locale, target_locales,
 		       status, error_message, error_detail, claimed_by,
 		       created_by, created_at, updated_at
 		FROM translate_jobs
-		WHERE component_id = $1
-		  AND source_locale = $2
-		  AND target_locales[1] = $3
-		  AND job_type = $4
+		WHERE component_id = ?
+		  AND source_locale = ?
+		  AND first_target_locale = ?
+		  AND job_type = ?
 		  AND status IN ('pending', 'running')
 		  AND deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -45,7 +46,7 @@ const (
 		       status, error_message, error_detail, claimed_by,
 		       created_by, created_at, updated_at
 		FROM translate_jobs
-		WHERE application_id = $1
+		WHERE application_id = ?
 		  AND status IN ('pending', 'running')
 		  AND deleted_at IS NULL
 		ORDER BY created_at ASC
@@ -56,47 +57,70 @@ const (
 			id, application_id, component_id, job_type, source_locale, target_locales,
 			status, error_message, error_detail, claimed_by, created_by,
 			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, 'pending', '', '', '', $7, NOW(), NOW())
+		) VALUES (?, ?, ?, ?, ?, ?, 'pending', '', '', '', ?, NOW(), NOW())
 	`
 
-	queryTranslateClaim = `
+	// Claim pattern for MySQL 8 — 3 statements inside a transaction because
+	// MySQL has no RETURNING clause.
+	//   1. Pick the oldest pending row under a row lock (SKIP LOCKED so other
+	//      replicas don't block on our candidate).
+	//   2. Flip its status to running with our claimed_by.
+	//   3. Read it back so the worker gets the fresh row.
+	queryTranslateClaimSelect = `
+		SELECT id FROM translate_jobs
+		WHERE status = 'pending' AND deleted_at IS NULL
+		ORDER BY created_at ASC
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED
+	`
+
+	queryTranslateClaimUpdate = `
 		UPDATE translate_jobs
-		SET status = 'running', claimed_by = $1, updated_at = NOW()
-		WHERE id = (
-			SELECT id FROM translate_jobs
-			WHERE status = 'pending' AND deleted_at IS NULL
-			ORDER BY created_at ASC
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
-		)
-		RETURNING id, application_id, component_id, job_type, source_locale, target_locales,
-		          status, error_message, error_detail, claimed_by,
-		          created_by, created_at, updated_at
+		SET status = 'running', claimed_by = ?, updated_at = NOW()
+		WHERE id = ?
+	`
+
+	queryTranslateClaimSelectRow = `
+		SELECT id, application_id, component_id, job_type, source_locale, target_locales,
+		       status, error_message, error_detail, claimed_by,
+		       created_by, created_at, updated_at
+		FROM translate_jobs
+		WHERE id = ?
 	`
 
 	queryTranslateResetStuck = `
 		UPDATE translate_jobs
 		SET status = 'pending', claimed_by = '', updated_at = NOW()
 		WHERE status = 'running'
-		  AND updated_at < NOW() - ($1 || ' seconds')::INTERVAL
+		  AND updated_at < NOW() - INTERVAL ? SECOND
 		  AND deleted_at IS NULL
 	`
 
 	queryTranslateMarkCompleted = `
-		UPDATE translate_jobs SET status = 'completed', updated_at = NOW() WHERE id = $1
+		UPDATE translate_jobs SET status = 'completed', updated_at = NOW() WHERE id = ?
 	`
 
 	queryTranslateMarkFailed = `
 		UPDATE translate_jobs
-		SET status = 'failed', error_message = $2, error_detail = $3, updated_at = NOW()
-		WHERE id = $1
+		SET status = 'failed', error_message = ?, error_detail = ?, updated_at = NOW()
+		WHERE id = ?
 	`
 )
 
-type translateImpl struct{}
+// translateImpl carries the underlying *sqlx.DB so ClaimNext can open its own
+// transaction for the multi-statement MySQL claim pattern. All other methods
+// still accept a Queryer arg so they compose with an outer WithTx.
+type translateImpl struct {
+	db *sqlx.DB
+}
 
-// NewTranslateRepository returns the default TranslateJob repository.
-func NewTranslateRepository() TranslateRepository { return &translateImpl{} }
+// NewTranslateRepository returns the default TranslateJob repository. The db
+// handle is used only by ClaimNext (which needs a fresh tx per call regardless
+// of the caller's Queryer); every other method routes through the passed
+// Queryer so it participates in an outer transaction when the caller opens one.
+func NewTranslateRepository(db *sqlx.DB) TranslateRepository {
+	return &translateImpl{db: db}
+}
 
 func (r *translateImpl) GetByID(ctx context.Context, q repository.Queryer, id uuid.UUID) (*TranslateJob, error) {
 	var j TranslateJob
@@ -148,20 +172,42 @@ func (r *translateImpl) Insert(ctx context.Context, q repository.Queryer, j *Tra
 	return nil
 }
 
-func (r *translateImpl) ClaimNext(ctx context.Context, q repository.Queryer, instanceID string) (*TranslateJob, error) {
-	var j TranslateJob
-	if err := q.GetContext(ctx, &j, queryTranslateClaim, instanceID); err != nil {
+// ClaimNext atomically picks the oldest pending translate job, marks it
+// running under instanceID, and returns the fresh row. Semantics preserved
+// from the Postgres one-shot UPDATE...RETURNING: no pending work → (nil, nil).
+//
+// Implementation ignores the passed Queryer and opens a dedicated transaction
+// against r.db. FOR UPDATE SKIP LOCKED must run inside a transaction, and the
+// caller (backend/jobs/worker.go) always calls ClaimNext outside any outer tx.
+func (r *translateImpl) ClaimNext(ctx context.Context, _ repository.Queryer, instanceID string) (*TranslateJob, error) {
+	var job TranslateJob
+	err := repository.WithTx(ctx, r.db, func(tx repository.Queryer) error {
+		// 1. Pick a candidate under a row lock.
+		var id uuid.UUID
+		if err := tx.GetContext(ctx, &id, queryTranslateClaimSelect); err != nil {
+			return err
+		}
+
+		// 2. Flip its status.
+		if _, err := tx.ExecContext(ctx, queryTranslateClaimUpdate, instanceID, id); err != nil {
+			return err
+		}
+
+		// 3. Read the fresh row back.
+		return tx.GetContext(ctx, &job, queryTranslateClaimSelectRow, id)
+	})
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return &j, nil
+	return &job, nil
 }
 
 func (r *translateImpl) ResetStuck(ctx context.Context, q repository.Queryer, stuckAfter time.Duration) error {
 	seconds := int64(stuckAfter.Seconds())
-	_, err := q.ExecContext(ctx, queryTranslateResetStuck, fmt.Sprintf("%d", seconds))
+	_, err := q.ExecContext(ctx, queryTranslateResetStuck, seconds)
 	return err
 }
 
@@ -171,6 +217,6 @@ func (r *translateImpl) MarkCompleted(ctx context.Context, q repository.Queryer,
 }
 
 func (r *translateImpl) MarkFailed(ctx context.Context, q repository.Queryer, jobID uuid.UUID, errMsg, errDetail string) error {
-	_, err := q.ExecContext(ctx, queryTranslateMarkFailed, jobID, errMsg, errDetail)
+	_, err := q.ExecContext(ctx, queryTranslateMarkFailed, errMsg, errDetail, jobID)
 	return err
 }

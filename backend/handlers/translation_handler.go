@@ -10,7 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 
 	"github.com/lapakgaming/i18n-center/cache"
 	"github.com/lapakgaming/i18n-center/database"
@@ -39,7 +38,7 @@ func NewTranslationHandler() *TranslationHandler {
 	return &TranslationHandler{
 		translationService: services.NewTranslationService(),
 		auditService:       services.NewAuditService(),
-		translateJobs:      job.NewTranslateRepository(),
+		translateJobs:      job.NewTranslateRepository(database.SQLX),
 		apps:               application.New(),
 		components:         component.New(),
 		tags:               tag.New(),
@@ -722,7 +721,7 @@ func (h *TranslationHandler) AutoTranslate(c *gin.Context) {
 		ComponentID:   componentID,
 		JobType:       job.TranslateTypeAutoTranslate,
 		SourceLocale:  req.SourceLocale,
-		TargetLocales: pq.StringArray{req.TargetLocale},
+		TargetLocales: repository.JSONStringArray{req.TargetLocale},
 		CreatedBy:     userID,
 	}
 	if err := h.translateJobs.Insert(ctx, database.SQLX, newJob); err != nil {
@@ -835,7 +834,7 @@ func (h *TranslationHandler) BackfillTranslations(c *gin.Context) {
 			ComponentID:   componentID,
 			JobType:       job.TranslateTypeBackfill,
 			SourceLocale:  req.SourceLocale,
-			TargetLocales: pq.StringArray{targetLocale},
+			TargetLocales: repository.JSONStringArray{targetLocale},
 			CreatedBy:     userID,
 		}
 		if err := h.translateJobs.Insert(ctx, database.SQLX, newJob); err != nil {
@@ -921,7 +920,7 @@ func (h *TranslationHandler) ListComponentTranslateJobs(c *gin.Context) {
 		       status, error_message, error_detail, claimed_by,
 		       created_by, created_at, updated_at
 		FROM translate_jobs
-		WHERE component_id = $1 AND deleted_at IS NULL
+		WHERE component_id = ? AND deleted_at IS NULL
 	`
 	args := []interface{}{componentID}
 	query := baseQuery
@@ -930,7 +929,7 @@ func (h *TranslationHandler) ListComponentTranslateJobs(c *gin.Context) {
 		statuses := strings.Split(statusFilter, ",")
 		placeholders := make([]string, len(statuses))
 		for i, s := range statuses {
-			placeholders[i] = fmt.Sprintf("$%d", len(args)+1)
+			placeholders[i] = "?"
 			args = append(args, strings.TrimSpace(s))
 		}
 		query += " AND status IN (" + strings.Join(placeholders, ",") + ")"

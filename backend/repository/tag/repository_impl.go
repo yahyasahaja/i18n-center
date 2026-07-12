@@ -6,7 +6,7 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
-	"github.com/lib/pq"
+	"github.com/jmoiron/sqlx"
 
 	"github.com/lapakgaming/i18n-center/repository"
 )
@@ -15,15 +15,15 @@ const (
 	queryGetByID = `
 		SELECT id, application_id, code, created_at, updated_at
 		FROM tags
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
 	queryGetByAppCode = `
 		SELECT id, application_id, code, created_at, updated_at
 		FROM tags
-		WHERE application_id = $1
-		  AND code = $2
+		WHERE application_id = ?
+		  AND code = ?
 		  AND deleted_at IS NULL
 		LIMIT 1
 	`
@@ -31,21 +31,21 @@ const (
 	queryListByApp = `
 		SELECT id, application_id, code, created_at, updated_at
 		FROM tags
-		WHERE application_id = $1
+		WHERE application_id = ?
 		  AND deleted_at IS NULL
 		ORDER BY code
 	`
 
 	queryInsert = `
 		INSERT INTO tags (id, application_id, code, created_at, updated_at)
-		VALUES ($1, $2, $3, NOW(), NOW())
+		VALUES (?, ?, ?, NOW(), NOW())
 	`
 
 	queryUpdate = `
 		UPDATE tags
-		SET code = $2,
+		SET code = ?,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -53,7 +53,7 @@ const (
 		UPDATE tags
 		SET deleted_at = NOW(),
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = ?
 		  AND deleted_at IS NULL
 	`
 
@@ -65,29 +65,29 @@ const (
 		SELECT c.id
 		FROM components c
 		JOIN component_tags ct ON ct.component_id = c.id
-		WHERE ct.tag_id = $1
+		WHERE ct.tag_id = ?
 		  AND c.deleted_at IS NULL
 		ORDER BY c.created_at DESC
 	`
 
 	// queryAttachComponentsToTag inserts (tag_id, component_id) rows from a
-	// SELECT-from-unnest pattern so the same query handles any number of IDs
+	// SELECT-driven expansion so the same query handles any number of IDs
 	// in one round trip. JOIN to `components` filters out IDs that don't
-	// exist or are soft-deleted. ON CONFLICT DO NOTHING keeps the operation
-	// idempotent at the composite primary key.
+	// exist or are soft-deleted. INSERT IGNORE keeps the operation
+	// idempotent at the composite primary key. The `IN (?)` placeholder is
+	// expanded by sqlx.In at call time.
 	queryAttachComponentsToTag = `
-		INSERT INTO component_tags (component_id, tag_id)
-		SELECT c.id, $1
+		INSERT IGNORE INTO component_tags (component_id, tag_id)
+		SELECT c.id, ?
 		FROM components c
-		WHERE c.id = ANY($2::uuid[])
+		WHERE c.id IN (?)
 		  AND c.deleted_at IS NULL
-		ON CONFLICT DO NOTHING
 	`
 
 	queryDetachComponentFromTag = `
 		DELETE FROM component_tags
-		WHERE tag_id = $1
-		  AND component_id = $2
+		WHERE tag_id = ?
+		  AND component_id = ?
 	`
 )
 
@@ -183,11 +183,13 @@ func (r *Impl) AttachComponents(ctx context.Context, q repository.Queryer, tagID
 	if len(componentIDs) == 0 {
 		return 0, nil
 	}
-	strs := make([]string, len(componentIDs))
-	for i, id := range componentIDs {
-		strs[i] = id.String()
+	// sqlx.In expands the trailing `IN (?)` into the right number of
+	// placeholders and flattens the args in the correct order.
+	query, args, err := sqlx.In(queryAttachComponentsToTag, tagID, componentIDs)
+	if err != nil {
+		return 0, err
 	}
-	result, err := q.ExecContext(ctx, queryAttachComponentsToTag, tagID, pq.Array(strs))
+	result, err := q.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, err
 	}

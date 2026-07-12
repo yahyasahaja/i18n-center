@@ -13,29 +13,28 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 
 	"github.com/lapakgaming/i18n-center/repository"
 )
 
 // Application matches the `applications` row layout. enabled_languages is a
-// Postgres text[]; we use lib/pq's StringArray for round-tripping.
+// MySQL JSON array; we use repository.JSONStringArray for round-tripping.
 //
 // HasOpenAIKey is NOT a column — it's a computed flag derived from whether
 // OpenAIKey is non-empty. Stored as `db:"-"` so sqlx ignores it on scan; the
 // handler/service sets it before returning the value to clients.
 type Application struct {
-	ID               uuid.UUID      `db:"id"                json:"id"`
-	Name             string         `db:"name"              json:"name"`
-	Code             string         `db:"code"              json:"code"`
-	Description      string         `db:"description"       json:"description"`
-	OpenAIKey        string         `db:"openai_key"        json:"-"`
-	HasOpenAIKey     bool           `db:"-"                 json:"has_openai_key"`
-	EnabledLanguages pq.StringArray `db:"enabled_languages" json:"enabled_languages"`
-	CreatedBy        uuid.UUID      `db:"created_by"        json:"created_by"`
-	UpdatedBy        uuid.UUID      `db:"updated_by"        json:"updated_by"`
-	CreatedAt        time.Time      `db:"created_at"        json:"created_at"`
-	UpdatedAt        time.Time      `db:"updated_at"        json:"updated_at"`
+	ID               uuid.UUID                  `db:"id"                json:"id"`
+	Name             string                     `db:"name"              json:"name"`
+	Code             string                     `db:"code"              json:"code"`
+	Description      string                     `db:"description"       json:"description"`
+	OpenAIKey        string                     `db:"openai_key"        json:"-"`
+	HasOpenAIKey     bool                       `db:"-"                 json:"has_openai_key"`
+	EnabledLanguages repository.JSONStringArray `db:"enabled_languages" json:"enabled_languages"`
+	CreatedBy        uuid.UUID                  `db:"created_by"        json:"created_by"`
+	UpdatedBy        uuid.UUID                  `db:"updated_by"        json:"updated_by"`
+	CreatedAt        time.Time                  `db:"created_at"        json:"created_at"`
+	UpdatedAt        time.Time                  `db:"updated_at"        json:"updated_at"`
 }
 
 // PopulateComputed sets HasOpenAIKey from OpenAIKey. Call after fetching a row
