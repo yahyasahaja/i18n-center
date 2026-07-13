@@ -124,9 +124,14 @@ const (
 		)
 	`
 
+	// Soft-delete only. GI-2454: hard-deleting the version rows on
+	// DeleteLanguage lost the audit trail (a customer's translation history
+	// for that locale). The retention sweep (jobs/retention.go, 30-day TTL)
+	// still hard-deletes stale soft-deleted rows on its schedule.
 	queryDeleteByComponentLocale = `
-		DELETE FROM translation_versions
-		WHERE component_id = ? AND locale = ?
+		UPDATE translation_versions
+		SET deleted_at = NOW(6)
+		WHERE component_id = ? AND locale = ? AND deleted_at IS NULL
 	`
 
 	// ListLatestLocales: one row per locale, highest-versioned, for a single

@@ -83,8 +83,11 @@ type Repository interface {
 	// Returns the number of rows deleted.
 	DeleteOldVersions(ctx context.Context, q repository.Queryer, keepLastN int) (int64, error)
 
-	// DeleteByComponentLocale hard-deletes every version for (componentID, locale)
-	// across all stages. Used by the DeleteLanguage cascade.
+	// DeleteByComponentLocale soft-deletes every version for (componentID, locale)
+	// across all stages by setting deleted_at = NOW(). Used by the
+	// DeleteLanguage cascade. Retention sweep hard-deletes 30 days later.
+	// Historical note: pre-GI-2454 this was a hard DELETE, which discarded
+	// the audit trail — kept the interface name for compat, semantics soft now.
 	DeleteByComponentLocale(ctx context.Context, q repository.Queryer, componentID uuid.UUID, locale string) error
 
 	// ListLatestLocales returns the highest-versioned active row for each locale
