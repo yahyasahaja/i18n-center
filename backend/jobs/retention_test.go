@@ -20,7 +20,7 @@ func withMockSQLX(t *testing.T) sqlmock.Sqlmock {
 	t.Helper()
 	sqlDB, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	require.NoError(t, err)
-	xdb := sqlx.NewDb(sqlDB, "postgres")
+	xdb := sqlx.NewDb(sqlDB, "mysql")
 	old := database.SQLX
 	database.SQLX = xdb
 	t.Cleanup(func() {
@@ -38,10 +38,10 @@ func TestSweepPolicy_SoftDeleteShape(t *testing.T) {
 		ttl:       90 * 24 * time.Hour,
 	}
 	expected := regexp.QuoteMeta(
-		`DELETE FROM components WHERE deleted_at IS NOT NULL AND deleted_at < NOW() - ($1 || ' seconds')::INTERVAL`,
+		`DELETE FROM components WHERE deleted_at IS NOT NULL AND deleted_at < NOW() - INTERVAL ? SECOND`,
 	)
 	mock.ExpectExec(expected).
-		WithArgs("7776000").
+		WithArgs(int64(7776000)).
 		WillReturnResult(sqlmock.NewResult(0, 3))
 
 	deleted, err := sweepPolicy(context.Background(), p)
@@ -60,10 +60,10 @@ func TestSweepPolicy_TerminalJobShape(t *testing.T) {
 	}
 	// Terminal-shape WHERE: extraWHERE first, then the TTL clause.
 	expected := regexp.QuoteMeta(
-		`DELETE FROM translate_jobs WHERE status IN ('completed','failed') AND updated_at < NOW() - ($1 || ' seconds')::INTERVAL`,
+		`DELETE FROM translate_jobs WHERE status IN ('completed','failed') AND updated_at < NOW() - INTERVAL ? SECOND`,
 	)
 	mock.ExpectExec(expected).
-		WithArgs("604800").
+		WithArgs(int64(604800)).
 		WillReturnResult(sqlmock.NewResult(0, 12))
 
 	deleted, err := sweepPolicy(context.Background(), p)
@@ -86,20 +86,20 @@ func TestRetentionPolicies_CoverExpectedTables(t *testing.T) {
 	// about. The retention list is the contract; missing entries are silent
 	// data growth in production, so a unit test guards the set.
 	wantTables := map[string]bool{
-		"application_api_keys":        true,
-		"application_locale_deploys":  true,
-		"users":                       true,
-		"tags":                        true,
-		"pages":                       true,
-		"components":                  true,
-		"cms_templates":               true,
-		"cms_items":                   true,
-		"applications":                true,
-		"translation_versions":        true,
-		"cms_localizations":           true,
-		"add_language_jobs":           true,
-		"translate_jobs":              true,
-		"cms_translate_jobs":          true,
+		"application_api_keys":       true,
+		"application_locale_deploys": true,
+		"users":                      true,
+		"tags":                       true,
+		"pages":                      true,
+		"components":                 true,
+		"cms_templates":              true,
+		"cms_items":                  true,
+		"applications":               true,
+		"translation_versions":       true,
+		"cms_localizations":          true,
+		"add_language_jobs":          true,
+		"translate_jobs":             true,
+		"cms_translate_jobs":         true,
 	}
 	got := map[string]bool{}
 	for _, p := range retentionPolicies {

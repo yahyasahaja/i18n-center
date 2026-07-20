@@ -285,7 +285,7 @@ func TestTagHandler_AttachAndDetach(t *testing.T) {
 		mock.ExpectQuery(`SELECT .*FROM tags`).
 			WithArgs(tagID).
 			WillReturnRows(sqlmock.NewRows(tagSqlxColumns()).AddRow(tagID, appID, "checkout", now, now))
-		mock.ExpectExec(`INSERT INTO component_tags`).WillReturnResult(sqlmock.NewResult(0, 2))
+		mock.ExpectExec(`INSERT IGNORE INTO component_tags`).WillReturnResult(sqlmock.NewResult(0, 2))
 		body := `{"component_ids":["` + compID.String() + `","` + uuid.New().String() + `"]}`
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/tags/"+tagID.String()+"/components",

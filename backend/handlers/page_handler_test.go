@@ -276,8 +276,8 @@ func TestPageHandler_AttachAndDetach(t *testing.T) {
 		mock.ExpectQuery(`SELECT .*FROM pages`).
 			WithArgs(pageID).
 			WillReturnRows(sqlmock.NewRows(pageColumns()).AddRow(pageID, appID, "home", now, now))
-		// INSERT ON CONFLICT — affecting 1 row out of 2 requested (one was already attached).
-		mock.ExpectExec(`INSERT INTO component_pages`).WillReturnResult(sqlmock.NewResult(0, 1))
+		// INSERT IGNORE (MySQL) — affecting 1 row out of 2 requested (one was already attached).
+		mock.ExpectExec(`INSERT IGNORE INTO component_pages`).WillReturnResult(sqlmock.NewResult(0, 1))
 		body := `{"component_ids":["` + compID.String() + `","` + uuid.New().String() + `"]}`
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/pages/"+pageID.String()+"/components",

@@ -11,8 +11,8 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
 	"github.com/lapakgaming/i18n-center/models"
+	"github.com/stretchr/testify/assert"
 )
 
 // setupApplicationHandler constructs an ApplicationHandler with its repository
@@ -43,7 +43,9 @@ func appColumns() []string {
 func appRow(id uuid.UUID, name, code string) *sqlmock.Rows {
 	return sqlmock.NewRows(appColumns()).AddRow(
 		id, name, code, "", "",
-		"{}", uuid.Nil, uuid.Nil,
+		// enabled_languages scans into JSONStringArray ([]string) — must be a
+		// JSON array literal, not an object ("{}" fails the scan).
+		"[]", uuid.Nil, uuid.Nil,
 		time.Now(), time.Now(),
 	)
 }
@@ -491,7 +493,7 @@ func TestApplicationHandler_AddLanguage_SyncSuccess(t *testing.T) {
 	id := uuid.New()
 	row := sqlmock.NewRows(appColumns()).AddRow(
 		id, "App", "app", "", "",
-		"{en}", uuid.Nil, uuid.Nil, time.Now(), time.Now(),
+		`["en"]`, uuid.Nil, uuid.Nil, time.Now(), time.Now(),
 	)
 	// New repo path: single-row SELECT (no GORM-style implicit LIMIT arg), and the
 	// UpdateEnabledLanguages query goes through the repository's UPDATE, not a tx-wrapped Save.
@@ -516,7 +518,7 @@ func TestApplicationHandler_AddLanguage_AutoTranslate_NoKey(t *testing.T) {
 	// New repo: 10 columns (no deleted_at in SELECT projection).
 	row := sqlmock.NewRows(appColumns()).AddRow(
 		id, "App", "app", "", "",
-		"{en}", uuid.Nil, uuid.Nil, now, now,
+		`["en"]`, uuid.Nil, uuid.Nil, now, now,
 	)
 	mock.ExpectQuery(`SELECT .*FROM applications`).WithArgs(id).WillReturnRows(row)
 	// The "no key" path short-circuits before the job-check SELECT; no further
